@@ -75,6 +75,7 @@ add_library(
   src/ingest/frame_pool.cpp
   src/ingest/ws_message_sink.cpp
   src/pipeline/live_pipeline.cpp
+  src/pipeline/replay_harness.cpp
   src/decode/dispatch.cpp
   src/decode/exchanges/kalshi/extractor.cpp
   src/decode/exchanges/polymarket/extractor.cpp
@@ -100,6 +101,15 @@ target_link_libraries(
           trading_adapters_logging
           trading_strategy_runtime
           trading_adapters_ws
+          trading_pipeline
+)
+
+add_executable(replay_app apps/replay/main.cpp)
+target_link_libraries(
+  replay_app
+  PRIVATE trading_engine
+          trading_adapters_logging
+          trading_strategy_runtime
           trading_pipeline
 )
 

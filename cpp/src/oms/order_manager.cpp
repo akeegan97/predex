@@ -35,6 +35,8 @@ bool OrderManager::start() {
     parse_failed_count_.store(0, std::memory_order_relaxed);
     update_drop_count_.store(0, std::memory_order_relaxed);
     unsupported_intent_count_.store(0, std::memory_order_relaxed);
+    pending_intent_high_watermark_.store(0, std::memory_order_relaxed);
+    submit_to_send_latency_hist_.reset();
     {
         std::scoped_lock core_lock{core_mutex_};
         core_.reset();
@@ -96,8 +98,15 @@ std::optional<internal::OrderRequestId> OrderManager::submit(internal::OrderInte
         std::scoped_lock queue_lock{queue_mutex_};
         outbound_queue_.push_back(PendingIntent{
             .request_id = request_id,
+            .queued_ts_ns = monotonic_now_ns(),
             .intent = std::move(intent),
         });
+        const std::size_t queue_size = outbound_queue_.size();
+        std::size_t previous = pending_intent_high_watermark_.load(std::memory_order_relaxed);
+        while (queue_size > previous &&
+               !pending_intent_high_watermark_.compare_exchange_weak(
+                   previous, queue_size, std::memory_order_relaxed, std::memory_order_relaxed)) {
+        }
     }
     submitted_count_.fetch_add(1, std::memory_order_relaxed);
     return request_id;
@@ -131,8 +140,11 @@ OrderManagerStats OrderManager::stats() const {
         .policy_reject_count = core_stats.policy_reject_count,
         .unsupported_intent_count = unsupported_intent_count_.load(std::memory_order_relaxed),
         .pending_intent_count = pending_intent_count,
+        .pending_intent_high_watermark =
+            pending_intent_high_watermark_.load(std::memory_order_relaxed),
         .tracked_order_count = core_stats.tracked_order_count,
         .active_order_count = core_stats.active_order_count,
+        .submit_to_send_latency = submit_to_send_latency_hist_.snapshot(),
     };
 }
 
@@ -239,6 +251,12 @@ std::size_t OrderManager::drain_outbound_intents() {
                 continue;
             }
             sent_count_.fetch_add(1, std::memory_order_relaxed);
+            if (pending_intent.queued_ts_ns > 0) {
+                const auto now_ns = monotonic_now_ns();
+                if (now_ns > pending_intent.queued_ts_ns) {
+                    submit_to_send_latency_hist_.observe(now_ns - pending_intent.queued_ts_ns);
+                }
+            }
         } catch (const std::exception& exception) {
             send_failed_count_.fetch_add(1, std::memory_order_relaxed);
             set_error(exception.what());

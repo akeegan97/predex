@@ -45,6 +45,38 @@ bool parse_execution_mode(std::string_view mode_name, TraderExecutionMode& out_m
     return false;
 }
 
+bool parse_strategy_mode(std::string_view mode_name, TraderStrategyMode& out_mode) {
+    if (mode_name == "noop") {
+        out_mode = TraderStrategyMode::kNoop;
+        return true;
+    }
+    if (mode_name == "paper-trade-probe" || mode_name == "paper_trade_probe") {
+        out_mode = TraderStrategyMode::kPaperTradeProbe;
+        return true;
+    }
+    return false;
+}
+
+bool parse_side(std::string_view side_name, internal::Side& out_side) {
+    if (side_name == "buy") {
+        out_side = internal::Side::kBuy;
+        return true;
+    }
+    if (side_name == "sell") {
+        out_side = internal::Side::kSell;
+        return true;
+    }
+    if (side_name == "bid") {
+        out_side = internal::Side::kBid;
+        return true;
+    }
+    if (side_name == "ask") {
+        out_side = internal::Side::kAsk;
+        return true;
+    }
+    return false;
+}
+
 bool parse_positive_size_t(const json& value, std::size_t& out, std::string& error,
                            std::string_view field_name) {
     if (!value.is_number_unsigned()) {
@@ -106,6 +138,18 @@ bool parse_non_negative_qty(const json& value, internal::QtyLots& out, std::stri
         return false;
     }
     out = static_cast<internal::QtyLots>(parsed);
+    return true;
+}
+
+bool parse_positive_qty(const json& value, internal::QtyLots& out, std::string& error,
+                        std::string_view field_name) {
+    if (!parse_non_negative_qty(value, out, error, field_name)) {
+        return false;
+    }
+    if (out <= 0) {
+        error = std::string(field_name) + " must be > 0";
+        return false;
+    }
     return true;
 }
 
@@ -388,6 +432,147 @@ ConfigLoadResult parse_from_json(const json& root) {
         }
     }
 
+    if (const auto strategy_it = root.find("strategy"); strategy_it != root.end()) {
+        if (!strategy_it->is_object()) {
+            result.ok = false;
+            result.error = "strategy must be an object";
+            return result;
+        }
+        const auto& strategy = *strategy_it;
+
+        if (const auto mode_it = strategy.find("mode"); mode_it != strategy.end()) {
+            if (!mode_it->is_string()) {
+                result.ok = false;
+                result.error = "strategy.mode must be a string";
+                return result;
+            }
+            if (!parse_strategy_mode(mode_it->get<std::string>(), result.config.strategy.mode)) {
+                result.ok = false;
+                result.error = "strategy.mode must be one of: noop, paper-trade-probe";
+                return result;
+            }
+        }
+        if (const auto prefix_it = strategy.find("client_order_id_prefix");
+            prefix_it != strategy.end()) {
+            if (!prefix_it->is_string()) {
+                result.ok = false;
+                result.error = "strategy.client_order_id_prefix must be a string";
+                return result;
+            }
+            result.config.strategy.client_order_id_prefix = prefix_it->get<std::string>();
+        }
+        if (const auto side_it = strategy.find("side"); side_it != strategy.end()) {
+            if (!side_it->is_string()) {
+                result.ok = false;
+                result.error = "strategy.side must be a string";
+                return result;
+            }
+            if (!parse_side(side_it->get<std::string>(), result.config.strategy.side)) {
+                result.ok = false;
+                result.error = "strategy.side must be one of: buy, sell, bid, ask";
+                return result;
+            }
+        }
+        if (const auto qty_it = strategy.find("qty_lots"); qty_it != strategy.end()) {
+            if (!parse_positive_qty(qty_it.value(), result.config.strategy.qty_lots, result.error,
+                                    "strategy.qty_lots")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto max_orders_it = strategy.find("max_orders_per_shard");
+            max_orders_it != strategy.end()) {
+            if (!parse_positive_size_t(max_orders_it.value(),
+                                       result.config.strategy.max_orders_per_shard, result.error,
+                                       "strategy.max_orders_per_shard")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto limit_price_it = strategy.find("limit_price_ticks_override");
+            limit_price_it != strategy.end()) {
+            if (limit_price_it->is_null()) {
+                result.config.strategy.limit_price_ticks_override.reset();
+            } else {
+                internal::PriceTicks limit_price_ticks = 0;
+                if (!parse_non_negative_qty(limit_price_it.value(), limit_price_ticks, result.error,
+                                            "strategy.limit_price_ticks_override")) {
+                    result.ok = false;
+                    return result;
+                }
+                result.config.strategy.limit_price_ticks_override = limit_price_ticks;
+            }
+        }
+    }
+
+    if (const auto paper_oms_it = root.find("paper_oms"); paper_oms_it != root.end()) {
+        if (!paper_oms_it->is_object()) {
+            result.ok = false;
+            result.error = "paper_oms must be an object";
+            return result;
+        }
+        const auto& paper_oms = *paper_oms_it;
+        if (const auto value_it = paper_oms.find("auto_fill_on_place");
+            value_it != paper_oms.end()) {
+            if (!parse_bool(value_it.value(), result.config.paper_oms.auto_fill_on_place,
+                            result.error, "paper_oms.auto_fill_on_place")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto value_it = paper_oms.find("fill_parts"); value_it != paper_oms.end()) {
+            if (!parse_positive_size_t(value_it.value(), result.config.paper_oms.fill_parts,
+                                       result.error, "paper_oms.fill_parts")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto value_it = paper_oms.find("place_reject_bps");
+            value_it != paper_oms.end()) {
+            if (!parse_non_negative_size_t(value_it.value(),
+                                           result.config.paper_oms.place_reject_bps, result.error,
+                                           "paper_oms.place_reject_bps")) {
+                result.ok = false;
+                return result;
+            }
+            if (result.config.paper_oms.place_reject_bps > 10'000U) {
+                result.ok = false;
+                result.error = "paper_oms.place_reject_bps must be in [0, 10000]";
+                return result;
+            }
+        }
+        if (const auto value_it = paper_oms.find("ack_delay_ms"); value_it != paper_oms.end()) {
+            if (!parse_non_negative_ms(value_it.value(), result.config.paper_oms.ack_delay,
+                                       result.error, "paper_oms.ack_delay_ms")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto value_it = paper_oms.find("fill_delay_ms"); value_it != paper_oms.end()) {
+            if (!parse_non_negative_ms(value_it.value(), result.config.paper_oms.fill_delay,
+                                       result.error, "paper_oms.fill_delay_ms")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto value_it = paper_oms.find("fill_interval_ms");
+            value_it != paper_oms.end()) {
+            if (!parse_non_negative_ms(value_it.value(), result.config.paper_oms.fill_interval,
+                                       result.error, "paper_oms.fill_interval_ms")) {
+                result.ok = false;
+                return result;
+            }
+        }
+        if (const auto value_it = paper_oms.find("reject_delay_ms");
+            value_it != paper_oms.end()) {
+            if (!parse_non_negative_ms(value_it.value(), result.config.paper_oms.reject_delay,
+                                       result.error, "paper_oms.reject_delay_ms")) {
+                result.ok = false;
+                return result;
+            }
+        }
+    }
+
     if (const auto pipeline_it = root.find("pipeline"); pipeline_it != root.end()) {
         if (!pipeline_it->is_object()) {
             result.ok = false;
@@ -489,6 +674,14 @@ ConfigLoadResult parse_from_json(const json& root) {
                 return result;
             }
         }
+        if (const auto stats_interval_it = runtime.find("stats_log_interval_ms");
+            stats_interval_it != runtime.end()) {
+            if (!parse_non_negative_ms(stats_interval_it.value(), result.config.stats_log_interval,
+                                       result.error, "runtime.stats_log_interval_ms")) {
+                result.ok = false;
+                return result;
+            }
+        }
         if (const auto mode_it = runtime.find("execution_mode"); mode_it != runtime.end()) {
             if (!mode_it->is_string()) {
                 result.ok = false;
@@ -550,6 +743,16 @@ std::string_view execution_mode_name(TraderExecutionMode mode) {
         return "paper";
     case TraderExecutionMode::kMarketDataOnly:
         return "md-only";
+    }
+    return "unknown";
+}
+
+std::string_view strategy_mode_name(TraderStrategyMode mode) {
+    switch (mode) {
+    case TraderStrategyMode::kNoop:
+        return "noop";
+    case TraderStrategyMode::kPaperTradeProbe:
+        return "paper-trade-probe";
     }
     return "unknown";
 }

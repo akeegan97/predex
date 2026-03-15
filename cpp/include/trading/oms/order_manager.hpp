@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "trading/internal/oms_types.hpp"
+#include "trading/metrics/latency_histogram.hpp"
 #include "trading/oms/exchange_adapter.hpp"
 #include "trading/oms/order_event_sink.hpp"
 #include "trading/oms/order_manager_core.hpp"
@@ -45,8 +46,10 @@ struct OrderManagerStats {
     std::uint64_t policy_reject_count{0};
     std::uint64_t unsupported_intent_count{0};
     std::size_t pending_intent_count{0};
+    std::size_t pending_intent_high_watermark{0};
     std::size_t tracked_order_count{0};
     std::size_t active_order_count{0};
+    metrics::LatencyPercentiles submit_to_send_latency{};
 };
 
 class OrderManager final {
@@ -73,6 +76,7 @@ class OrderManager final {
   private:
     struct PendingIntent {
         internal::OrderRequestId request_id{0};
+        internal::TimestampNs queued_ts_ns{0};
         internal::OrderIntent intent;
     };
 
@@ -120,6 +124,8 @@ class OrderManager final {
     std::atomic<std::uint64_t> parse_failed_count_{0};
     std::atomic<std::uint64_t> update_drop_count_{0};
     std::atomic<std::uint64_t> unsupported_intent_count_{0};
+    std::atomic<std::size_t> pending_intent_high_watermark_{0};
+    metrics::AtomicLatencyHistogram submit_to_send_latency_hist_;
 };
 
 } // namespace trading::oms

@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -34,6 +36,7 @@
 #include "trading/oms/ws_order_transport.hpp"
 #include "trading/parsers/exchanges/kalshi/parser.hpp"
 #include "trading/pipeline/live_pipeline.hpp"
+#include "trading/pipeline/replay_harness.hpp"
 #include "trading/router/router.hpp"
 #include "trading/router/shard_dispatch.hpp"
 #include "trading/shards/book_store.hpp"
@@ -41,6 +44,7 @@
 #include "trading/shards/message_parser.hpp"
 #include "trading/strategy/order_intent_sink.hpp"
 #include "trading/strategy/order_manager_intent_sink.hpp"
+#include "trading/strategy/paper_trade_probe_strategy.hpp"
 #include "trading/strategy/ledger_shard_risk_snapshot_provider.hpp"
 #include "trading/strategy/market_filter_event_handler.hpp"
 #include "trading/strategy/shard_risk_gate.hpp"
@@ -636,10 +640,28 @@ TEST(TraderConfigTest, ParsesDropFileOverrides) {
                 "enforce_realized_pnl_floor": true
             }
         },
+        "strategy": {
+            "mode": "paper-trade-probe",
+            "client_order_id_prefix": "probe",
+            "side": "buy",
+            "qty_lots": 2,
+            "max_orders_per_shard": 3,
+            "limit_price_ticks_override": 4321
+        },
+        "paper_oms": {
+            "auto_fill_on_place": true,
+            "fill_parts": 4,
+            "place_reject_bps": 250,
+            "ack_delay_ms": 7,
+            "fill_delay_ms": 9,
+            "fill_interval_ms": 11,
+            "reject_delay_ms": 13
+        },
         "runtime": {
             "execution_mode": "paper",
             "pump_batch_size": 256,
-            "pump_idle_sleep_ms": 2
+            "pump_idle_sleep_ms": 2,
+            "stats_log_interval_ms": 5
         }
     })";
 
@@ -670,9 +692,23 @@ TEST(TraderConfigTest, ParsesDropFileOverrides) {
     EXPECT_EQ(loaded.config.risk.oms_portfolio.max_abs_position_gross_global, 200);
     EXPECT_EQ(loaded.config.risk.oms_portfolio.min_realized_pnl_ticks, -500);
     EXPECT_TRUE(loaded.config.risk.oms_portfolio.enforce_realized_pnl_floor);
+    EXPECT_EQ(loaded.config.strategy.mode, trading::config::TraderStrategyMode::kPaperTradeProbe);
+    EXPECT_EQ(loaded.config.strategy.client_order_id_prefix, "probe");
+    EXPECT_EQ(loaded.config.strategy.side, trading::internal::Side::kBuy);
+    EXPECT_EQ(loaded.config.strategy.qty_lots, 2);
+    EXPECT_EQ(loaded.config.strategy.max_orders_per_shard, 3U);
+    EXPECT_EQ(loaded.config.strategy.limit_price_ticks_override.value_or(0), 4321);
+    EXPECT_TRUE(loaded.config.paper_oms.auto_fill_on_place);
+    EXPECT_EQ(loaded.config.paper_oms.fill_parts, 4U);
+    EXPECT_EQ(loaded.config.paper_oms.place_reject_bps, 250U);
+    EXPECT_EQ(loaded.config.paper_oms.ack_delay, std::chrono::milliseconds{7});
+    EXPECT_EQ(loaded.config.paper_oms.fill_delay, std::chrono::milliseconds{9});
+    EXPECT_EQ(loaded.config.paper_oms.fill_interval, std::chrono::milliseconds{11});
+    EXPECT_EQ(loaded.config.paper_oms.reject_delay, std::chrono::milliseconds{13});
     EXPECT_EQ(loaded.config.execution_mode, trading::config::TraderExecutionMode::kPaper);
     EXPECT_EQ(loaded.config.pump_batch_size, 256U);
     EXPECT_EQ(loaded.config.pump_idle_sleep, std::chrono::milliseconds{2});
+    EXPECT_EQ(loaded.config.stats_log_interval, std::chrono::milliseconds{5});
 }
 
 TEST(TraderConfigTest, RejectsUnknownExchange) {
@@ -699,6 +735,18 @@ TEST(TraderConfigTest, RejectsUnknownExecutionMode) {
     EXPECT_NE(loaded.error.find("runtime.execution_mode"), std::string::npos);
 }
 
+TEST(TraderConfigTest, RejectsUnknownStrategyMode) {
+    constexpr std::string_view kConfig = R"({
+        "strategy": {
+            "mode": "signal-factory-v99"
+        }
+    })";
+
+    const auto loaded = trading::config::load_trader_config_from_json(kConfig);
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_NE(loaded.error.find("strategy.mode"), std::string::npos);
+}
+
 TEST(TraderConfigTest, RejectsInvalidRiskConfig) {
     constexpr std::string_view kConfig = R"({
         "risk": {
@@ -711,6 +759,18 @@ TEST(TraderConfigTest, RejectsInvalidRiskConfig) {
     const auto loaded = trading::config::load_trader_config_from_json(kConfig);
     EXPECT_FALSE(loaded.ok);
     EXPECT_NE(loaded.error.find("risk.shard.max_abs_net_position_per_market"), std::string::npos);
+}
+
+TEST(TraderConfigTest, RejectsOutOfRangePaperOmsRejectRate) {
+    constexpr std::string_view kConfig = R"({
+        "paper_oms": {
+            "place_reject_bps": 10001
+        }
+    })";
+
+    const auto loaded = trading::config::load_trader_config_from_json(kConfig);
+    EXPECT_FALSE(loaded.ok);
+    EXPECT_NE(loaded.error.find("paper_oms.place_reject_bps"), std::string::npos);
 }
 
 TEST(KalshiOmsAdapterTest, BuildsPlaceRequestPayload) {
@@ -1233,6 +1293,64 @@ TEST(StrategyRunnerTest, TracksSinkRejectAndStrategyException) {
     EXPECT_FALSE(runner.on_event(event));
     EXPECT_EQ(runner.stats().strategy_error_count, 1U);
     EXPECT_EQ(runner.last_error(), "strategy failed");
+}
+
+TEST(PaperTradeProbeStrategyTest, EmitsSinglePlaceIntentFromFirstTradeByDefault) {
+    trading::strategy::PaperTradeProbeStrategy strategy{
+        trading::strategy::PaperTradeProbeStrategyConfig{
+            .client_order_id_prefix = "probe",
+            .side = trading::internal::Side::kBuy,
+            .qty_lots = 2,
+            .time_in_force = trading::internal::OmsTimeInForce::kGtc,
+            .max_orders = 1,
+            .limit_price_ticks_override = std::nullopt,
+        },
+        3U};
+
+    const auto first_trade = make_trade_event("KXBTC-YES", 101U, 5789, 1);
+    const auto first_decision = strategy.on_event(first_trade);
+    ASSERT_EQ(first_decision.intents.size(), 1U);
+
+    const auto& first_intent = first_decision.intents.front();
+    EXPECT_EQ(first_intent.action, trading::internal::OmsAction::kPlace);
+    EXPECT_EQ(first_intent.side, trading::internal::Side::kBuy);
+    EXPECT_EQ(first_intent.qty_lots, 2);
+    EXPECT_EQ(first_intent.limit_price_ticks.value_or(0), 5789);
+    EXPECT_EQ(first_intent.time_in_force, trading::internal::OmsTimeInForce::kGtc);
+    EXPECT_NE(first_intent.client_order_id.find("probe-s3-n0"), std::string::npos);
+
+    const auto second_trade = make_trade_event("KXBTC-YES", 102U, 6000, 1);
+    const auto second_decision = strategy.on_event(second_trade);
+    EXPECT_TRUE(second_decision.intents.empty());
+    EXPECT_EQ(strategy.emitted_order_count(), 1U);
+}
+
+TEST(PaperTradeProbeStrategyTest, UsesOverridePriceAndSkipsNonTradeEvents) {
+    trading::strategy::PaperTradeProbeStrategy strategy{
+        trading::strategy::PaperTradeProbeStrategyConfig{
+            .client_order_id_prefix = "override",
+            .side = trading::internal::Side::kSell,
+            .qty_lots = 1,
+            .time_in_force = trading::internal::OmsTimeInForce::kGtc,
+            .max_orders = 2,
+            .limit_price_ticks_override = 4321,
+        },
+        0U};
+
+    const auto delta_event =
+        make_delta_event("KXBTC-YES", 201U, trading::internal::Side::kBid, 5000, 1);
+    const auto delta_decision = strategy.on_event(delta_event);
+    EXPECT_TRUE(delta_decision.intents.empty());
+
+    const auto first_trade = make_trade_event("KXBTC-YES", 202U, 5000, 1);
+    const auto second_trade = make_trade_event("KXBTC-YES", 203U, 7000, 1);
+    const auto first_decision = strategy.on_event(first_trade);
+    const auto second_decision = strategy.on_event(second_trade);
+    ASSERT_EQ(first_decision.intents.size(), 1U);
+    ASSERT_EQ(second_decision.intents.size(), 1U);
+    EXPECT_EQ(first_decision.intents.front().limit_price_ticks.value_or(0), 4321);
+    EXPECT_EQ(second_decision.intents.front().limit_price_ticks.value_or(0), 4321);
+    EXPECT_EQ(strategy.emitted_order_count(), 2U);
 }
 
 TEST(StrategyEventHandlerTest, DelegatesToRunnerAndIntentSink) {
@@ -2563,6 +2681,67 @@ TEST(PaperOrderTransportTest, RejectsUnsupportedActions) {
     EXPECT_EQ(reject.at("msg").at("reason_code"), "paper_action_unsupported");
 }
 
+TEST(PaperOrderTransportTest, SplitsFillAcrossConfiguredParts) {
+    trading::oms::PaperOrderTransport transport{trading::oms::PaperOrderTransportConfig{
+        .auto_fill_on_place = true,
+        .fill_parts = 3,
+    }};
+    ASSERT_TRUE(transport.connect(trading::oms::OrderTransportConfig{
+        .endpoint = "paper://oms",
+    }));
+
+    ASSERT_TRUE(transport.send_text(R"({
+        "action": "place_order",
+        "client_order_id": "cl-paper-split-1",
+        "market_ticker": "KXBTC-YES",
+        "side": "buy",
+        "qty": 7,
+        "limit_price": 49
+    })"));
+
+    const auto ack_payload = transport.recv_text();
+    ASSERT_TRUE(ack_payload.has_value());
+    EXPECT_EQ(nlohmann::json::parse(*ack_payload).at("type"), "order_ack");
+
+    std::int64_t total_fill_qty = 0;
+    std::size_t fill_count = 0;
+    while (fill_count < 3) {
+        const auto fill_payload = transport.recv_text();
+        ASSERT_TRUE(fill_payload.has_value());
+        const auto fill = nlohmann::json::parse(*fill_payload);
+        EXPECT_EQ(fill.at("type"), "fill");
+        total_fill_qty += fill.at("msg").at("fill_qty").get<std::int64_t>();
+        ++fill_count;
+    }
+    EXPECT_EQ(total_fill_qty, 7);
+}
+
+TEST(PaperOrderTransportTest, RejectsPlaceWhenConfiguredRejectRateIsFull) {
+    trading::oms::PaperOrderTransport transport{trading::oms::PaperOrderTransportConfig{
+        .auto_fill_on_place = true,
+        .place_reject_bps = 10'000,
+    }};
+    ASSERT_TRUE(transport.connect(trading::oms::OrderTransportConfig{
+        .endpoint = "paper://oms",
+    }));
+
+    ASSERT_TRUE(transport.send_text(R"({
+        "action": "place_order",
+        "client_order_id": "cl-paper-reject-1",
+        "market_ticker": "KXBTC-YES",
+        "side": "buy",
+        "qty": 1,
+        "limit_price": 50
+    })"));
+
+    const auto reject_payload = transport.recv_text();
+    ASSERT_TRUE(reject_payload.has_value());
+    const auto reject = nlohmann::json::parse(*reject_payload);
+    EXPECT_EQ(reject.at("type"), "order_reject");
+    EXPECT_EQ(reject.at("msg").at("reason_code"), "paper_place_reject");
+    EXPECT_FALSE(transport.recv_text().has_value());
+}
+
 TEST(WsOrderTransportTest, ProxiesWsTransportConnectSendRecvAndClose) {
     QueueingWsTransport ws_transport;
     trading::oms::WsOrderTransport transport{ws_transport};
@@ -3176,6 +3355,106 @@ TEST(LivePipelineTest, InvokesPerShardEventHandlers) {
     EXPECT_TRUE(handler_invoked);
 }
 // NOLINTEND(readability-function-cognitive-complexity)
+
+TEST(ReplayHarnessTest, ReplaysPayloadBatchThroughLivePipelineAndDrains) {
+    constexpr std::size_t kQueueCapacity = 64;
+    trading::pipeline::LivePipeline pipeline{
+        trading::pipeline::LivePipelineConfig{
+            .source = "kalshi",
+            .decode_exchange = trading::decode::ExchangeId::kKalshi,
+            .router_exchange = trading::internal::ExchangeId::kKalshi,
+            .frame_pool_capacity = kQueueCapacity,
+            .frame_queue_capacity = kQueueCapacity,
+            .shard_count = 1,
+            .per_shard_queue_capacity = kQueueCapacity,
+            .shard_idle_sleep = std::chrono::milliseconds{0},
+        },
+    };
+    ASSERT_TRUE(pipeline.start());
+
+    const std::vector<std::string> payloads{
+        R"({
+            "type": "orderbook_snapshot",
+            "sid": 3,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "FED-23DEC-T3.00",
+                "yes": [[95, 54], [94, 1]],
+                "no": [[7, 87], [6, 32]]
+            }
+        })",
+        R"({
+            "type": "orderbook_delta",
+            "sid": 3,
+            "seq": 2,
+            "msg": {
+                "market_ticker": "FED-23DEC-T3.00",
+                "price": 95,
+                "delta": -4,
+                "side": "yes"
+            }
+        })",
+        R"({
+            "type": "trade",
+            "sid": 3,
+            "seq": 1,
+            "msg": {
+                "market_ticker": "FED-23DEC-T3.00",
+                "yes_price": 95,
+                "no_price": 5,
+                "count": 11,
+                "taker_side": "yes"
+            }
+        })",
+    };
+
+    trading::pipeline::ReplayHarness harness{
+        pipeline,
+        trading::pipeline::ReplayHarnessConfig{
+            .push_batch_size = 1,
+            .pump_batch_size = kQueueCapacity,
+            .max_drain_iterations = 256,
+            .drain_sleep = std::chrono::milliseconds{1},
+        },
+    };
+    const auto replay_stats = harness.replay(payloads);
+    const auto pipeline_stats = pipeline.stats();
+    pipeline.stop();
+
+    EXPECT_EQ(replay_stats.attempted_messages, payloads.size());
+    EXPECT_EQ(replay_stats.pushed_messages, payloads.size());
+    EXPECT_EQ(replay_stats.sink_rejected_messages, 0U);
+    EXPECT_TRUE(replay_stats.drain_completed);
+    EXPECT_EQ(replay_stats.final_ingest_queue_depth, 0U);
+    EXPECT_EQ(replay_stats.final_shard_queue_depth, 0U);
+
+    EXPECT_GE(pipeline_stats.ingest_frames_pumped, payloads.size());
+    EXPECT_GE(pipeline_stats.shard_parsed, payloads.size());
+    EXPECT_EQ(pipeline_stats.shard_parser_rejects, 0U);
+    EXPECT_EQ(pipeline_stats.shard_apply_rejects, 0U);
+}
+
+TEST(ReplayHarnessTest, LoadsJsonlReplayFile) {
+    const auto temp_path = std::filesystem::temp_directory_path() / "trading_replay_harness_test.jsonl";
+    {
+        std::ofstream output(temp_path);
+        ASSERT_TRUE(output.good());
+        output << R"({"type":"trade","msg":{"market_ticker":"KXBTC-YES"}})" << '\n';
+        output << '\n';
+        output << "  " << R"({"type":"trade","msg":{"market_ticker":"KXETH-YES"}})" << " \n";
+    }
+
+    std::vector<std::string> payloads;
+    std::string error;
+    const bool loaded = trading::pipeline::ReplayHarness::load_jsonl_file(
+        temp_path.string(), payloads, error);
+    std::filesystem::remove(temp_path);
+
+    EXPECT_TRUE(loaded) << error;
+    ASSERT_EQ(payloads.size(), 2U);
+    EXPECT_NE(payloads[0].find("KXBTC-YES"), std::string::npos);
+    EXPECT_NE(payloads[1].find("KXETH-YES"), std::string::npos);
+}
 
 TEST(KalshiParserTest, ParsesOrderbookSnapshotDocsExample) {
     constexpr std::string_view kTicker = "FED-23DEC-T3.00";

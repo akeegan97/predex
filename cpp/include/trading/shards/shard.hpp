@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "trading/shards/event_handler.hpp"
+#include "trading/metrics/latency_histogram.hpp"
 #include "trading/router/shard_dispatch.hpp"
 #include "trading/shards/book_store.hpp"
 #include "trading/shards/message_parser.hpp"
@@ -36,6 +37,7 @@ struct ShardStats {
     std::uint64_t applied{0};
     std::uint64_t handler_invoked{0};
     std::uint64_t handler_errors{0};
+    metrics::LatencyPercentiles recv_to_parse_latency{};
 };
 
 class Shard final {
@@ -85,6 +87,7 @@ class Shard final {
     std::atomic<std::uint64_t> applied_{0};
     std::atomic<std::uint64_t> handler_invoked_{0};
     std::atomic<std::uint64_t> handler_errors_{0};
+    metrics::AtomicLatencyHistogram recv_to_parse_latency_hist_;
 };
 
 } // namespace trading::shards

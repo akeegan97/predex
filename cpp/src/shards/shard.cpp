@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <string_view>
 #include <thread>
@@ -28,6 +29,13 @@ std::string_view parse_error_name(parsers::ParseError error) noexcept {
         return "unsupported_type";
     }
     return "unknown";
+}
+
+internal::TimestampNs monotonic_now_ns() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch());
+    return elapsed.count() > 0 ? static_cast<internal::TimestampNs>(elapsed.count()) : 0U;
 }
 
 std::string_view apply_reject_name(BookApplyRejectReason reason) noexcept {
@@ -86,6 +94,7 @@ bool Shard::start() {
     applied_.store(0, std::memory_order_relaxed);
     handler_invoked_.store(0, std::memory_order_relaxed);
     handler_errors_.store(0, std::memory_order_relaxed);
+    recv_to_parse_latency_hist_.reset();
     // Publish started state to readers of running().
     running_.store(true, std::memory_order_release);
 
@@ -126,6 +135,7 @@ ShardStats Shard::stats() const {
         .applied = applied_.load(std::memory_order_relaxed),
         .handler_invoked = handler_invoked_.load(std::memory_order_relaxed),
         .handler_errors = handler_errors_.load(std::memory_order_relaxed),
+        .recv_to_parse_latency = recv_to_parse_latency_hist_.snapshot(),
     };
 }
 
@@ -182,6 +192,12 @@ void Shard::run(const std::stop_token& stop_token) {
         }
 
         parsed_.fetch_add(1, std::memory_order_relaxed);
+        if (parsed_event->meta.recv_ns > 0) {
+            const auto now_ns = monotonic_now_ns();
+            if (now_ns > parsed_event->meta.recv_ns) {
+                recv_to_parse_latency_hist_.observe(now_ns - parsed_event->meta.recv_ns);
+            }
+        }
         switch (parsed_event->type) {
         case internal::EventType::kSnapshot:
             parsed_snapshots_.fetch_add(1, std::memory_order_relaxed);

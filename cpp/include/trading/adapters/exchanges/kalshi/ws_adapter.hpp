@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "trading/adapters/exchanges/kalshi/auth_signer.hpp"
 #include "trading/adapters/exchanges/ws_adapter.hpp"
@@ -15,7 +16,9 @@ class WsAdapter final : public exchanges::IExchangeWsAdapter {
 
     [[nodiscard]] std::string name() const override;
     [[nodiscard]] exchanges::ConnectRequest build_connect_request() const override;
-    [[nodiscard]] std::string build_subscribe_message(std::string_view channel) const override;
+    [[nodiscard]] std::string
+    build_subscribe_message(std::string_view channel,
+                            const std::vector<std::string>& market_tickers) const override;
 
   private:
     AuthSigner signer_;

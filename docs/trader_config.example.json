@@ -1,5 +1,5 @@
 {
-  "mode": "paper",
+  "mode": "dev",
   "kalshi": {
     "endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
     "channels": [
@@ -9,6 +9,30 @@
     "credentials": {
       "key_id_env": "KALSHI_KEY_ID",
       "private_key_pem_env": "KALSHI_PRIVATE_KEY_PEM"
+    }
+  },
+  "market_universe": {
+    "tickers": [
+      "KXMVESPORTSMULTIGAMEEXTENDED-S2026AD21949BD3B-764B08F4798"
+    ]
+  },
+  "risk": {
+    "shard": {
+      "max_open_orders_per_market": 20,
+      "max_working_qty_per_market": 200,
+      "max_abs_net_position_per_market": 50
+    },
+    "oms_global": {
+      "max_active_orders_global": 200,
+      "max_active_orders_per_market": 50,
+      "max_outstanding_qty_global": 2000,
+      "max_outstanding_qty_per_market": 500
+    },
+    "oms_portfolio": {
+      "max_abs_net_position_per_market": 100,
+      "max_abs_position_gross_global": 500,
+      "min_realized_pnl_ticks": -2000,
+      "enforce_realized_pnl_floor": false
     }
   },
   "pipeline": {
@@ -21,6 +45,7 @@
     "shard_idle_sleep_ms": 1
   },
   "runtime": {
+    "execution_mode": "md-only",
     "pump_batch_size": 1024,
     "pump_idle_sleep_ms": 1
   }

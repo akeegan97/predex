@@ -1,7 +1,10 @@
 #include "trading/adapters/ws/feed_runner.hpp"
 
+#include <string>
 #include <thread>
 #include <utility>
+
+#include "trading/adapters/logging/logger.hpp"
 
 namespace trading::adapters::ws {
 
@@ -86,11 +89,14 @@ bool WsFeedRunner::connect_and_subscribe() {
     }
 
     for (const auto& channel : config_.channels) {
-        if (!session_.subscribe(channel)) {
+        if (!session_.subscribe(channel, config_.market_tickers)) {
             set_error(session_.last_error());
             session_.close();
             return false;
         }
+        const std::string payload =
+            "channel=" + channel + ", payload=" + session_.last_subscribe_payload();
+        trading::adapters::logging::log_startup("trader.ws.subscribe", payload);
     }
 
     set_error("");

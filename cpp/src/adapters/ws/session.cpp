@@ -35,9 +35,10 @@ bool WsSession::connect() {
     return true;
 }
 
-bool WsSession::subscribe(std::string_view channel) {
+bool WsSession::subscribe(std::string_view channel,
+                          const std::vector<std::string>& market_tickers) {
     try {
-        last_subscribe_payload_ = adapter_.build_subscribe_message(channel);
+        last_subscribe_payload_ = adapter_.build_subscribe_message(channel, market_tickers);
     } catch (const std::exception& exception) {
         last_error_ = exception.what();
         return false;

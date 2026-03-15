@@ -225,6 +225,7 @@ int main(int argc, char** argv) {
         pipeline.message_sink(),
         trading::adapters::ws::WsFeedRunnerConfig{
             .channels = runtime_config.kalshi.channels,
+            .market_tickers = runtime_config.market_universe.tickers,
         },
     };
     if (!feed_runner.start()) {
@@ -270,6 +271,18 @@ int main(int argc, char** argv) {
         ", route_drop=" + std::to_string(pipeline_stats.route_drop) +
         ", sink_drop=" + std::to_string(pipeline_stats.ingest_sink_dropped) +
         ", shard_drop=" + std::to_string(pipeline_stats.shard_dispatch_dropped) +
+        ", parsed=" + std::to_string(pipeline_stats.shard_parsed) +
+        ", parser_rejects=" + std::to_string(pipeline_stats.shard_parser_rejects) +
+        ", book_apply_rejects=" + std::to_string(pipeline_stats.shard_apply_rejects) +
+        ", parse_errors_total=" + std::to_string(pipeline_stats.shard_parse_errors) +
+        ", parse_invalid_json=" + std::to_string(pipeline_stats.parse_error_invalid_json) +
+        ", parse_missing_field=" + std::to_string(pipeline_stats.parse_error_missing_field) +
+        ", parse_invalid_field=" + std::to_string(pipeline_stats.parse_error_invalid_field) +
+        ", parse_unsupported_type=" + std::to_string(pipeline_stats.parse_error_unsupported_type) +
+        ", parsed_snapshot=" + std::to_string(pipeline_stats.parsed_snapshots) +
+        ", parsed_delta=" + std::to_string(pipeline_stats.parsed_deltas) +
+        ", parsed_trade=" + std::to_string(pipeline_stats.parsed_trades) +
+        ", parsed_other=" + std::to_string(pipeline_stats.parsed_other) +
         ", oms_submitted=" + std::to_string(oms_stats.submitted_count) +
         ", oms_sent=" + std::to_string(oms_stats.sent_count) +
         ", oms_rejects=" +

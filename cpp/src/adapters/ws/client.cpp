@@ -268,14 +268,17 @@ std::optional<std::string> BoostBeastWsTransport::recv_text() {
 }
 
 void BoostBeastWsTransport::close() {
-    if (!impl_->connected) {
-        return;
-    }
-
     boost::system::error_code error_code;
-    impl_->ws_stream->close(websocket::close_code::normal, error_code);
+    auto& socket = beast::get_lowest_layer(*impl_->ws_stream).socket();
+
+    socket.cancel(error_code);
+    error_code.clear();
+    socket.shutdown(tcp::socket::shutdown_both, error_code);
+    error_code.clear();
+    socket.close(error_code);
+
     impl_->connected = false;
-    if (error_code) {
+    if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket close error: " + error_code.message();
     }
 }

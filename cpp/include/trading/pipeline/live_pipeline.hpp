@@ -52,6 +52,20 @@ struct LivePipelineStats {
     std::uint64_t frame_release_failures{0};
     std::uint64_t ingest_sink_dropped{0};
     std::uint64_t shard_dispatch_dropped{0};
+    std::uint64_t shard_consumed{0};
+    std::uint64_t shard_parsed{0};
+    std::uint64_t shard_parse_errors{0};
+    std::uint64_t shard_parser_rejects{0};
+    std::uint64_t shard_apply_rejects{0};
+    std::uint64_t shard_applied{0};
+    std::uint64_t parsed_snapshots{0};
+    std::uint64_t parsed_deltas{0};
+    std::uint64_t parsed_trades{0};
+    std::uint64_t parsed_other{0};
+    std::uint64_t parse_error_invalid_json{0};
+    std::uint64_t parse_error_missing_field{0};
+    std::uint64_t parse_error_invalid_field{0};
+    std::uint64_t parse_error_unsupported_type{0};
 };
 
 class LivePipeline final {

@@ -117,6 +117,41 @@ std::size_t LivePipeline::pump_ingest(std::size_t max_frames) noexcept {
 }
 
 LivePipelineStats LivePipeline::stats() const {
+    std::uint64_t shard_consumed = 0;
+    std::uint64_t shard_parsed = 0;
+    std::uint64_t shard_parse_errors = 0;
+    std::uint64_t shard_parser_rejects = 0;
+    std::uint64_t shard_apply_rejects = 0;
+    std::uint64_t shard_applied = 0;
+    std::uint64_t parsed_snapshots = 0;
+    std::uint64_t parsed_deltas = 0;
+    std::uint64_t parsed_trades = 0;
+    std::uint64_t parsed_other = 0;
+    std::uint64_t parse_error_invalid_json = 0;
+    std::uint64_t parse_error_missing_field = 0;
+    std::uint64_t parse_error_invalid_field = 0;
+    std::uint64_t parse_error_unsupported_type = 0;
+    for (const auto& shard : shards_) {
+        if (shard == nullptr) {
+            continue;
+        }
+        const auto shard_stats = shard->stats();
+        shard_consumed += shard_stats.consumed;
+        shard_parsed += shard_stats.parsed;
+        shard_parse_errors += shard_stats.parse_errors;
+        shard_parser_rejects += shard_stats.parser_rejects;
+        shard_apply_rejects += shard_stats.apply_rejects;
+        shard_applied += shard_stats.applied;
+        parsed_snapshots += shard_stats.parsed_snapshots;
+        parsed_deltas += shard_stats.parsed_deltas;
+        parsed_trades += shard_stats.parsed_trades;
+        parsed_other += shard_stats.parsed_other;
+        parse_error_invalid_json += shard_stats.parse_error_invalid_json;
+        parse_error_missing_field += shard_stats.parse_error_missing_field;
+        parse_error_invalid_field += shard_stats.parse_error_invalid_field;
+        parse_error_unsupported_type += shard_stats.parse_error_unsupported_type;
+    }
+
     return LivePipelineStats{
         .ingest_frames_pumped = ingest_frames_pumped_.load(std::memory_order_relaxed),
         .route_success = route_success_.load(std::memory_order_relaxed),
@@ -124,6 +159,20 @@ LivePipelineStats LivePipeline::stats() const {
         .frame_release_failures = frame_release_failures_.load(std::memory_order_relaxed),
         .ingest_sink_dropped = sink_.dropped_count(),
         .shard_dispatch_dropped = shard_dispatch_.dropped_count(),
+        .shard_consumed = shard_consumed,
+        .shard_parsed = shard_parsed,
+        .shard_parse_errors = shard_parse_errors,
+        .shard_parser_rejects = shard_parser_rejects,
+        .shard_apply_rejects = shard_apply_rejects,
+        .shard_applied = shard_applied,
+        .parsed_snapshots = parsed_snapshots,
+        .parsed_deltas = parsed_deltas,
+        .parsed_trades = parsed_trades,
+        .parsed_other = parsed_other,
+        .parse_error_invalid_json = parse_error_invalid_json,
+        .parse_error_missing_field = parse_error_missing_field,
+        .parse_error_invalid_field = parse_error_invalid_field,
+        .parse_error_unsupported_type = parse_error_unsupported_type,
     };
 }
 

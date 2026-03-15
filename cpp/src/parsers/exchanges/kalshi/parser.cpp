@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 
 #include <simdjson.h>
@@ -33,11 +34,28 @@ bool get_int64(simdjson::ondemand::object& obj, std::string_view key, std::int64
     return true;
 }
 
-bool parse_non_negative_decimal_string_to_int64(std::string_view value, std::int64_t& out) noexcept {
+bool get_value(simdjson::ondemand::object& obj,
+               std::string_view key,
+               simdjson::ondemand::value& out) noexcept {
+    auto result = obj.find_field_unordered(key);
+    if (result.error() != simdjson::SUCCESS) {
+        return false;
+    }
+    out = result.value_unsafe();
+    return true;
+}
+
+bool parse_signed_decimal_string_to_int64(std::string_view value, std::int64_t& out) noexcept {
     if (value.empty()) {
         return false;
     }
-    if (value.front() == '-') {
+
+    bool negative = false;
+    if (value.front() == '+' || value.front() == '-') {
+        negative = value.front() == '-';
+        value.remove_prefix(1);
+    }
+    if (value.empty()) {
         return false;
     }
 
@@ -45,7 +63,6 @@ bool parse_non_negative_decimal_string_to_int64(std::string_view value, std::int
     const std::string_view int_part = (dot == std::string_view::npos) ? value : value.substr(0, dot);
     const std::string_view frac_part =
         (dot == std::string_view::npos) ? std::string_view{} : value.substr(dot + 1);
-
     if (int_part.empty()) {
         return false;
     }
@@ -62,12 +79,154 @@ bool parse_non_negative_decimal_string_to_int64(std::string_view value, std::int
 
     std::uint64_t parsed = 0;
     const auto [ptr, ec] = std::from_chars(int_part.data(), int_part.data() + int_part.size(), parsed);
-    if (ec != std::errc{} || ptr != int_part.data() + int_part.size() ||
-        parsed > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
         return false;
     }
 
-    out = static_cast<std::int64_t>(parsed);
+    constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if ((!negative && parsed > kInt64MaxAsU64) || (negative && parsed > (kInt64MaxAsU64 + 1U))) {
+        return false;
+    }
+
+    if (!negative) {
+        out = static_cast<std::int64_t>(parsed);
+        return true;
+    }
+    if (parsed == kInt64MaxAsU64 + 1U) {
+        out = std::numeric_limits<std::int64_t>::min();
+        return true;
+    }
+    out = -static_cast<std::int64_t>(parsed);
+    return true;
+}
+
+bool parse_non_negative_decimal_string_to_int64(std::string_view value, std::int64_t& out) noexcept {
+    if (!parse_signed_decimal_string_to_int64(value, out)) {
+        return false;
+    }
+    if (out < 0) {
+        return false;
+    }
+    return true;
+}
+
+bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& out) noexcept {
+    if (value.empty() || value.front() == '-' || value.front() == '+') {
+        return false;
+    }
+
+    const std::size_t dot = value.find('.');
+    const std::string_view int_part = (dot == std::string_view::npos) ? value : value.substr(0, dot);
+    const std::string_view frac_part =
+        (dot == std::string_view::npos) ? std::string_view{} : value.substr(dot + 1);
+    if (int_part.empty()) {
+        return false;
+    }
+    for (char digit_char : int_part) {
+        if (digit_char < '0' || digit_char > '9') {
+            return false;
+        }
+    }
+    for (char frac_char : frac_part) {
+        if (frac_char < '0' || frac_char > '9') {
+            return false;
+        }
+    }
+
+    std::uint64_t dollars = 0;
+    const auto [ptr, ec] = std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
+    if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
+        return false;
+    }
+
+    std::uint64_t subcent_units = 0;
+    if (!frac_part.empty()) {
+        const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+        for (std::size_t index = 0; index < digits_to_take; ++index) {
+            subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+        }
+        for (std::size_t index = digits_to_take; index < 4U; ++index) {
+            subcent_units *= 10U;
+        }
+
+        if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+            ++subcent_units;
+            if (subcent_units == 10000U) {
+                subcent_units = 0U;
+                ++dollars;
+            }
+        }
+    }
+
+    constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    constexpr auto kScale = 10000U;
+    if (dollars > (kInt64MaxAsU64 - subcent_units) / kScale) {
+        return false;
+    }
+    out = static_cast<std::int64_t>(dollars * kScale + subcent_units);
+    return true;
+}
+
+bool parse_lot_count_value(simdjson::ondemand::value& value, std::int64_t& out) noexcept {
+    auto string_result = value.get_string();
+    if (string_result.error() == simdjson::SUCCESS) {
+        return parse_signed_decimal_string_to_int64(string_result.value_unsafe(), out);
+    }
+
+    auto int_result = value.get_int64();
+    if (int_result.error() == simdjson::SUCCESS) {
+        out = int_result.value_unsafe();
+        return true;
+    }
+
+    auto double_result = value.get_double();
+    if (double_result.error() != simdjson::SUCCESS) {
+        return false;
+    }
+    const double as_double = double_result.value_unsafe();
+    double integer_part = 0.0;
+    if (std::modf(as_double, &integer_part) != 0.0 ||
+        integer_part < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+        integer_part > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        return false;
+    }
+    out = static_cast<std::int64_t>(integer_part);
+    return true;
+}
+
+bool parse_price_ticks_value(simdjson::ondemand::value& value, std::int64_t& out) noexcept {
+    auto string_result = value.get_string();
+    if (string_result.error() == simdjson::SUCCESS) {
+        return parse_non_negative_dollars_to_ticks(string_result.value_unsafe(), out);
+    }
+
+    auto int_result = value.get_int64();
+    if (int_result.error() == simdjson::SUCCESS) {
+        constexpr std::int64_t kCentToSubcentScale = 100;
+        const auto cents_value = int_result.value_unsafe();
+        if (cents_value < 0 ||
+            cents_value > std::numeric_limits<std::int64_t>::max() / kCentToSubcentScale) {
+            return false;
+        }
+        out = cents_value * kCentToSubcentScale;
+        return true;
+    }
+
+    auto double_result = value.get_double();
+    if (double_result.error() != simdjson::SUCCESS) {
+        return false;
+    }
+    const double as_double = double_result.value_unsafe();
+    if (as_double < 0.0) {
+        return false;
+    }
+    const double scaled = as_double * 10000.0;
+    double integer_part = 0.0;
+    if (std::modf(scaled, &integer_part) != 0.0 ||
+        integer_part > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        return false;
+    }
+    out = static_cast<std::int64_t>(integer_part);
     return true;
 }
 
@@ -87,30 +246,54 @@ bool get_uint64(simdjson::ondemand::object& obj, std::string_view key, std::uint
 }
 
 bool get_lot_count(simdjson::ondemand::object& msg, std::int64_t& out) noexcept {
-    if (get_int64(msg, "count", out) || get_int64(msg, "count_fp", out)) {
+    simdjson::ondemand::value count;
+    if (get_value(msg, "count", count) && parse_lot_count_value(count, out)) {
         return out >= 0;
     }
+    simdjson::ondemand::value count_fp;
+    if (get_value(msg, "count_fp", count_fp) && parse_lot_count_value(count_fp, out)) {
+        return out >= 0;
+    }
+    return false;
+}
 
-    auto count_fp_double = msg.find_field_unordered("count_fp").get_double();
-    if (count_fp_double.error() == simdjson::SUCCESS) {
-        const double count = count_fp_double.value_unsafe();
-        if (count < 0) {
-            return false;
+bool parse_first_price_ticks(simdjson::ondemand::object& msg,
+                             std::initializer_list<std::string_view> keys,
+                             std::int64_t& out,
+                             std::string_view* matched_key = nullptr) noexcept {
+    for (const auto key : keys) {
+        simdjson::ondemand::value value;
+        if (!get_value(msg, key, value)) {
+            continue;
         }
-        double integer_part = 0.0;
-        if (std::modf(count, &integer_part) != 0.0 ||
-            integer_part > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
-            return false;
+        if (!parse_price_ticks_value(value, out)) {
+            continue;
         }
-        out = static_cast<std::int64_t>(integer_part);
+        if (matched_key != nullptr) {
+            *matched_key = key;
+        }
         return true;
     }
+    return false;
+}
 
-    std::string_view count_fp_text;
-    if (get_string(msg, "count_fp", count_fp_text)) {
-        return parse_non_negative_decimal_string_to_int64(count_fp_text, out);
+bool parse_first_lot_count(simdjson::ondemand::object& msg,
+                           std::initializer_list<std::string_view> keys,
+                           std::int64_t& out,
+                           std::string_view* matched_key = nullptr) noexcept {
+    for (const auto key : keys) {
+        simdjson::ondemand::value value;
+        if (!get_value(msg, key, value)) {
+            continue;
+        }
+        if (!parse_lot_count_value(value, out)) {
+            continue;
+        }
+        if (matched_key != nullptr) {
+            *matched_key = key;
+        }
+        return true;
     }
-
     return false;
 }
 
@@ -189,22 +372,20 @@ bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& 
 
         internal::Level level{};
 
-        auto price_result = (*iter).get_int64();
-        if (price_result.error() != simdjson::SUCCESS) {
+        simdjson::ondemand::value price_value = *iter;
+        if (!parse_price_ticks_value(price_value, level.price_ticks)) {
             return false;
         }
-        level.price_ticks = price_result.value_unsafe();
 
         ++iter;
         if (iter.error() != simdjson::SUCCESS) {
             return false;
         }
 
-        auto qty_result = (*iter).get_int64();
-        if (qty_result.error() != simdjson::SUCCESS) {
+        simdjson::ondemand::value qty_value = *iter;
+        if (!parse_lot_count_value(qty_value, level.qty_lots)) {
             return false;
         }
-        level.qty_lots = qty_result.value_unsafe();
 
         if (level.price_ticks < 0 || level.qty_lots < 0) {
             return false;
@@ -214,30 +395,53 @@ bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& 
     return true;
 }
 
+enum class OptionalLevelsParse : unsigned char {
+    kNone = 0,
+    kParsed,
+    kInvalid,
+};
+
+OptionalLevelsParse parse_optional_levels(simdjson::ondemand::object& msg,
+                                          std::initializer_list<std::string_view> keys,
+                                          std::vector<internal::Level>& out) noexcept {
+    for (const auto key : keys) {
+        simdjson::ondemand::value value;
+        if (!get_value(msg, key, value)) {
+            continue;
+        }
+
+        auto array_result = value.get_array();
+        if (array_result.error() != simdjson::SUCCESS) {
+            return OptionalLevelsParse::kInvalid;
+        }
+
+        auto levels = array_result.value_unsafe();
+        if (!parse_levels(levels, out)) {
+            return OptionalLevelsParse::kInvalid;
+        }
+        return OptionalLevelsParse::kParsed;
+    }
+
+    return OptionalLevelsParse::kNone;
+}
+
 ParseResult<internal::NormalizedEvent>
 parse_snapshot(simdjson::ondemand::object& msg, internal::NormalizedEvent event) {
-    if (!event.raw_sequence_id.has_value()) {
-        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
-    }
     event.type = internal::EventType::kSnapshot;
 
-    simdjson::ondemand::array yes_levels;
-    if (!get_array(msg, "yes", yes_levels)) {
-        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
-    }
-
     internal::SnapshotData snapshot{};
-    if (!parse_levels(yes_levels, snapshot.bids)) {
+    const auto yes_levels_parse =
+        parse_optional_levels(msg, {"yes", "yes_dollars_fp"}, snapshot.bids);
+    if (yes_levels_parse == OptionalLevelsParse::kInvalid) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
 
-    simdjson::ondemand::array no_levels;
-    if (!get_array(msg, "no", no_levels)) {
-        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
-    }
-    if (!parse_levels(no_levels, snapshot.asks)) {
+    const auto no_levels_parse =
+        parse_optional_levels(msg, {"no", "no_dollars_fp"}, snapshot.asks);
+    if (no_levels_parse == OptionalLevelsParse::kInvalid) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
+
     event.data = std::move(snapshot);
     return ParseResult<internal::NormalizedEvent>::success(std::move(event));
 }
@@ -246,27 +450,60 @@ ParseResult<internal::NormalizedEvent>
 parse_delta(simdjson::ondemand::object& msg,
             internal::NormalizedEvent event,
             bool strict_field_validation) {
-    if (!event.raw_sequence_id.has_value()) {
-        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
-    }
     event.type = internal::EventType::kDelta;
 
     std::int64_t price = 0;
     std::int64_t delta_qty = 0;
-    if (!get_int64(msg, "price", price) || !get_int64(msg, "delta", delta_qty)) {
+    std::string_view side_token;
+    internal::Side resolved_side = internal::Side::kUnknown;
+    bool has_price = false;
+    bool has_delta = false;
+
+    if (get_string(msg, "side", side_token)) {
+        resolved_side = parse_book_side(side_token);
+        has_price = parse_first_price_ticks(msg, {"price", "price_dollars"}, price);
+        has_delta = parse_first_lot_count(msg, {"delta", "delta_fp"}, delta_qty);
+    } else {
+        std::int64_t inferred_price = 0;
+        std::int64_t inferred_delta = 0;
+
+        const bool has_yes =
+            parse_first_price_ticks(msg, {"yes_price", "yes_price_dollars"}, inferred_price) &&
+            parse_first_lot_count(msg, {"yes_delta", "yes_delta_fp"}, inferred_delta);
+        const bool has_no =
+            parse_first_price_ticks(msg, {"no_price", "no_price_dollars"}, inferred_price) &&
+            parse_first_lot_count(msg, {"no_delta", "no_delta_fp"}, inferred_delta);
+        if (has_yes) {
+            resolved_side = internal::Side::kBid;
+            has_price = true;
+            has_delta = true;
+            price = inferred_price;
+            delta_qty = inferred_delta;
+        } else if (has_no) {
+            resolved_side = internal::Side::kAsk;
+            has_price = true;
+            has_delta = true;
+            price = inferred_price;
+            delta_qty = inferred_delta;
+        } else {
+            has_price = parse_first_price_ticks(
+                msg, {"price", "price_dollars", "yes_price", "yes_price_dollars", "no_price",
+                      "no_price_dollars"},
+                price);
+            has_delta = parse_first_lot_count(
+                msg, {"delta", "delta_fp", "yes_delta", "yes_delta_fp", "no_delta", "no_delta_fp"},
+                delta_qty);
+        }
+    }
+    if (!has_price || !has_delta) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
     }
     if (price < 0) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
 
-    std::string_view side_token;
-    if (!get_string(msg, "side", side_token)) {
-        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
-    }
-
     internal::DeltaData delta{};
-    delta.side = parse_book_side(side_token);
+    delta.side = resolved_side;
     if (delta.side == internal::Side::kUnknown && strict_field_validation) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
@@ -285,7 +522,15 @@ parse_trade(simdjson::ondemand::object& msg,
 
     std::int64_t price = 0;
     std::int64_t qty = 0;
-    if ((!get_int64(msg, "yes_price", price) && !get_int64(msg, "price", price)) || !get_lot_count(msg, qty)) {
+    simdjson::ondemand::value price_value;
+    const bool has_price =
+        (get_value(msg, "yes_price", price_value) && parse_price_ticks_value(price_value, price)) ||
+        (get_value(msg, "price", price_value) && parse_price_ticks_value(price_value, price)) ||
+        (get_value(msg, "yes_price_dollars", price_value) &&
+         parse_price_ticks_value(price_value, price)) ||
+        (get_value(msg, "price_dollars", price_value) &&
+         parse_price_ticks_value(price_value, price));
+    if (!has_price || !get_lot_count(msg, qty)) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
     }
     if (price < 0 || qty < 0) {
@@ -297,14 +542,10 @@ parse_trade(simdjson::ondemand::object& msg,
     trade.qty_lots = qty;
 
     std::string_view taker_side;
-    if (!get_string(msg, "taker_side", taker_side)) {
-        if (strict_field_validation) {
-            return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
-        }
-    } else {
+    if (get_string(msg, "taker_side", taker_side)) {
         trade.aggressor = parse_trade_side(taker_side);
         if (trade.aggressor == internal::Side::kUnknown && strict_field_validation) {
-            return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
+            trade.aggressor = internal::Side::kUnknown;
         }
     }
 

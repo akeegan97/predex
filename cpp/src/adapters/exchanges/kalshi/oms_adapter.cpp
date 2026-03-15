@@ -1,5 +1,8 @@
 #include "trading/adapters/exchanges/kalshi/oms_adapter.hpp"
 
+#include <charconv>
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -87,10 +90,87 @@ std::optional<internal::QtyLots> try_get_qty(const nlohmann::json& object, std::
 std::optional<internal::PriceTicks> try_get_price(const nlohmann::json& object,
                                                   std::string_view key) {
     const auto field_it = object.find(key);
-    if (field_it == object.end() || !field_it->is_number_integer()) {
+    if (field_it == object.end()) {
         return std::nullopt;
     }
-    return field_it->get<internal::PriceTicks>();
+
+    constexpr internal::PriceTicks kCentToSubcentScale = 100;
+    if (field_it->is_number_integer()) {
+        const auto cents = field_it->get<internal::PriceTicks>();
+        if (cents < 0 || cents > std::numeric_limits<internal::PriceTicks>::max() / kCentToSubcentScale) {
+            return std::nullopt;
+        }
+        return cents * kCentToSubcentScale;
+    }
+    if (field_it->is_number_float()) {
+        const auto dollars = field_it->get<double>();
+        if (dollars < 0.0) {
+            return std::nullopt;
+        }
+        const double scaled = std::round(dollars * 10000.0);
+        if (scaled < 0.0 ||
+            scaled > static_cast<double>(std::numeric_limits<internal::PriceTicks>::max())) {
+            return std::nullopt;
+        }
+        return static_cast<internal::PriceTicks>(scaled);
+    }
+    if (field_it->is_string()) {
+        const auto value = field_it->get<std::string>();
+        if (value.empty() || value.front() == '-' || value.front() == '+') {
+            return std::nullopt;
+        }
+
+        const std::size_t dot = value.find('.');
+        const std::string_view int_part =
+            (dot == std::string::npos) ? std::string_view{value} : std::string_view{value}.substr(0, dot);
+        const std::string_view frac_part =
+            (dot == std::string::npos) ? std::string_view{} : std::string_view{value}.substr(dot + 1);
+        if (int_part.empty()) {
+            return std::nullopt;
+        }
+        for (const char digit_char : int_part) {
+            if (digit_char < '0' || digit_char > '9') {
+                return std::nullopt;
+            }
+        }
+        for (const char digit_char : frac_part) {
+            if (digit_char < '0' || digit_char > '9') {
+                return std::nullopt;
+            }
+        }
+
+        std::uint64_t dollars = 0;
+        const auto [ptr, ec] =
+            std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
+        if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
+            return std::nullopt;
+        }
+
+        std::uint64_t subcent_units = 0;
+        const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+        for (std::size_t index = 0; index < digits_to_take; ++index) {
+            subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+        }
+        for (std::size_t index = digits_to_take; index < 4U; ++index) {
+            subcent_units *= 10U;
+        }
+        if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+            ++subcent_units;
+            if (subcent_units == 10000U) {
+                subcent_units = 0U;
+                ++dollars;
+            }
+        }
+
+        constexpr std::uint64_t kScale = 10000U;
+        constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<internal::PriceTicks>::max());
+        if (dollars > (kMax - subcent_units) / kScale) {
+            return std::nullopt;
+        }
+        return static_cast<internal::PriceTicks>(dollars * kScale + subcent_units);
+    }
+
+    return std::nullopt;
 }
 
 std::optional<internal::Side> try_get_side(const nlohmann::json& object, std::string_view key) {
@@ -167,7 +247,9 @@ oms::ParseResult<internal::OrderStateUpdate> parse_fill(const nlohmann::json& ro
     const auto client_order_id = try_get_string(message, "client_order_id");
     const auto market_ticker = try_get_string(message, "market_ticker");
     const auto fill_qty = try_get_qty(message, "fill_qty");
-    const auto fill_price = try_get_price(message, "fill_price");
+    const auto fill_price = try_get_price(message, "fill_price").has_value()
+                                ? try_get_price(message, "fill_price")
+                                : try_get_price(message, "fill_price_dollars");
     if (!client_order_id.has_value() || !market_ticker.has_value() || !fill_qty.has_value() ||
         !fill_price.has_value()) {
         return oms::ParseResult<internal::OrderStateUpdate>::failure(

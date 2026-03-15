@@ -37,11 +37,17 @@ exchanges::ConnectRequest WsAdapter::build_connect_request() const {
     };
 }
 
-std::string WsAdapter::build_subscribe_message(std::string_view channel) const {
+std::string WsAdapter::build_subscribe_message(
+    std::string_view channel, const std::vector<std::string>& market_tickers) const {
+    nlohmann::json params{{"channels", {channel}}};
+    if (!market_tickers.empty()) {
+        params["market_tickers"] = market_tickers;
+    }
+
     const nlohmann::json payload{
         {"id", 1},
         {"cmd", "subscribe"},
-        {"params", {{"channels", {channel}}}},
+        {"params", std::move(params)},
     };
     return payload.dump();
 }

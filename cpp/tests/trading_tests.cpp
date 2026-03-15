@@ -824,7 +824,7 @@ TEST(KalshiOmsAdapterTest, ParsesFillUpdate) {
     const auto* fill_data = std::get_if<trading::internal::OrderFill>(&fill_update.data);
     ASSERT_NE(fill_data, nullptr);
     EXPECT_EQ(fill_data->fill_qty_lots, 3);
-    EXPECT_EQ(fill_data->fill_price_ticks, 41);
+    EXPECT_EQ(fill_data->fill_price_ticks, 4100);
     EXPECT_EQ(fill_data->side, trading::internal::Side::kUnknown);
 }
 
@@ -848,6 +848,27 @@ TEST(KalshiOmsAdapterTest, ParsesFillUpdateWithSide) {
     const auto* fill_data = std::get_if<trading::internal::OrderFill>(&fill_update.data);
     ASSERT_NE(fill_data, nullptr);
     EXPECT_EQ(fill_data->side, trading::internal::Side::kSell);
+}
+
+TEST(KalshiOmsAdapterTest, ParsesFillUpdateWithDollarPricePrecision) {
+    constexpr std::string_view kFillPayload = R"({
+        "type": "fill",
+        "recv_ts_ns": 25,
+        "msg": {
+            "client_order_id": "cl-105",
+            "exchange_order_id": "ex-204",
+            "market_ticker": "KXBTC-YES",
+            "fill_qty": 1,
+            "fill_price_dollars": "0.5790"
+        }
+    })";
+
+    const trading::adapters::exchanges::kalshi::OmsAdapter adapter;
+    const auto fill = adapter.parse_update(kFillPayload);
+    const auto& fill_update = require_order_update(fill);
+    const auto* fill_data = std::get_if<trading::internal::OrderFill>(&fill_update.data);
+    ASSERT_NE(fill_data, nullptr);
+    EXPECT_EQ(fill_data->fill_price_ticks, 5790);
 }
 
 TEST(KalshiOmsAdapterTest, RejectsUnsupportedUpdateType) {
@@ -2606,14 +2627,21 @@ TEST(WsSessionTest, SubscribeSendsExpectedPayload) {
     const auto kalshi_adapter = make_kalshi_adapter();
     trading::tests::FakeWsTransport transport;
     trading::adapters::ws::WsSession session{transport, kalshi_adapter};
+    const std::vector<std::string> market_tickers{
+        "KXBTC-YES",
+        "KXETH-YES",
+    };
 
     ASSERT_TRUE(session.connect());
-    ASSERT_TRUE(session.subscribe("trades"));
+    ASSERT_TRUE(session.subscribe("trades", market_tickers));
     ASSERT_EQ(transport.sent_messages().size(), 1U);
 
     const auto subscribe_json = nlohmann::json::parse(session.last_subscribe_payload());
     EXPECT_EQ(subscribe_json.at("cmd"), "subscribe");
     EXPECT_EQ(subscribe_json.at("params").at("channels").at(0), "trades");
+    EXPECT_EQ(subscribe_json.at("params").at("market_tickers").size(), 2U);
+    EXPECT_EQ(subscribe_json.at("params").at("market_tickers").at(0), "KXBTC-YES");
+    EXPECT_EQ(subscribe_json.at("params").at("market_tickers").at(1), "KXETH-YES");
 }
 
 TEST(RouterTest, RoutesEventIntoExactlyOneShardQueue) {
@@ -2936,9 +2964,26 @@ TEST(BookStoreTest, SequencePolicyRejectsStaleAndAcceptsNonContiguous) {
         EXPECT_EQ(state->last_trade.value().price_ticks, 100);
     }
     ASSERT_TRUE(state->last_seq_id.has_value());
-    EXPECT_EQ(state->last_seq_id.value_or(0U), 8U);
+    EXPECT_EQ(state->last_seq_id.value_or(0U), 5U);
 }
 // NOLINTEND(readability-function-cognitive-complexity)
+
+TEST(BookStoreTest, TradeSequenceIsIndependentFromBookSequence) {
+    trading::shards::BookStore books;
+    ASSERT_TRUE(books.apply(make_snapshot_event("KXBTC-YES", 10U, {{100, 5}}, {{101, 5}})));
+    ASSERT_TRUE(
+        books.apply(make_delta_event("KXBTC-YES", 20U, trading::internal::Side::kBid, 100, 1)));
+
+    ASSERT_TRUE(books.apply(make_trade_event("KXBTC-YES", 1U, 100, 2)));
+
+    const auto* state = books.find("KXBTC-YES");
+    ASSERT_NE(state, nullptr);
+    EXPECT_EQ(state->trade_count, 1U);
+    ASSERT_TRUE(state->last_trade.has_value());
+    EXPECT_EQ(state->last_trade->qty_lots, 2);
+    ASSERT_TRUE(state->last_seq_id.has_value());
+    EXPECT_EQ(state->last_seq_id.value_or(0U), 20U);
+}
 
 TEST(RoutedEventParserTest, ParsesKalshiSnapshotFromRoutedEvent) {
     const auto routed_event = make_routed_event(
@@ -3053,6 +3098,14 @@ TEST(LivePipelineTest, RoutesMessageFromSinkThroughRouterIntoShardBooks) {
     EXPECT_TRUE(found_book);
     EXPECT_GE(pipeline_stats.ingest_frames_pumped, 1U);
     EXPECT_GE(pipeline_stats.route_success, 1U);
+    EXPECT_GE(pipeline_stats.shard_parsed, 1U);
+    EXPECT_GE(pipeline_stats.parsed_snapshots, 1U);
+    EXPECT_EQ(pipeline_stats.shard_parser_rejects, 0U);
+    EXPECT_EQ(pipeline_stats.shard_apply_rejects, 0U);
+    EXPECT_EQ(pipeline_stats.parse_error_invalid_json, 0U);
+    EXPECT_EQ(pipeline_stats.parse_error_missing_field, 0U);
+    EXPECT_EQ(pipeline_stats.parse_error_invalid_field, 0U);
+    EXPECT_EQ(pipeline_stats.parse_error_unsupported_type, 0U);
 }
 // NOLINTEND(readability-function-cognitive-complexity)
 
@@ -3158,10 +3211,40 @@ TEST(KalshiParserTest, ParsesOrderbookSnapshotDocsExample) {
     ASSERT_NE(snapshot, nullptr);
     ASSERT_EQ(snapshot->bids.size(), 2U);
     ASSERT_EQ(snapshot->asks.size(), 2U);
-    EXPECT_EQ(snapshot->bids[0].price_ticks, 95);
+    EXPECT_EQ(snapshot->bids[0].price_ticks, 9500);
     EXPECT_EQ(snapshot->bids[0].qty_lots, 54);
-    EXPECT_EQ(snapshot->asks[0].price_ticks, 7);
+    EXPECT_EQ(snapshot->asks[0].price_ticks, 700);
     EXPECT_EQ(snapshot->asks[0].qty_lots, 87);
+}
+
+TEST(KalshiParserTest, ParsesOrderbookSnapshotWithoutLevelsAsEmptyBook) {
+    constexpr std::string_view kTicker = "KXBTC-YES";
+    constexpr std::string_view kPayload = R"({
+        "type": "orderbook_snapshot",
+        "sid": 2,
+        "seq": 1,
+        "msg": {
+            "market_ticker": "KXBTC-YES",
+            "market_id": ""
+        }
+    })";
+
+    const trading::parsers::exchanges::kalshi::Parser parser;
+    const trading::internal::RouterFrame frame{
+        .exchange = trading::internal::ExchangeId::kKalshi,
+        .market_ticker = std::string{kTicker},
+        .sequence_id = std::nullopt,
+        .recv_ns = 35U,
+        .raw_payload_view = kPayload,
+    };
+    const auto parsed_result = parser.parse(frame);
+    const auto& event = require_parsed(parsed_result);
+
+    EXPECT_EQ(event.type, trading::internal::EventType::kSnapshot);
+    const auto* snapshot = std::get_if<trading::internal::SnapshotData>(&event.data);
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_TRUE(snapshot->bids.empty());
+    EXPECT_TRUE(snapshot->asks.empty());
 }
 
 TEST(KalshiParserTest, ParsesOrderbookDeltaDocsExample) {
@@ -3197,8 +3280,73 @@ TEST(KalshiParserTest, ParsesOrderbookDeltaDocsExample) {
     const auto* delta = std::get_if<trading::internal::DeltaData>(&event.data);
     ASSERT_NE(delta, nullptr);
     EXPECT_EQ(delta->side, trading::internal::Side::kBid);
-    EXPECT_EQ(delta->price_ticks, 95);
+    EXPECT_EQ(delta->price_ticks, 9500);
     EXPECT_EQ(delta->delta_qty_lots, -54);
+}
+
+TEST(KalshiParserTest, ParsesOrderbookDeltaDollarFpFields) {
+    constexpr std::string_view kTicker = "KXBTC-YES";
+    constexpr std::string_view kPayload = R"({
+        "type": "orderbook_delta",
+        "sid": 1528,
+        "seq": 346983,
+        "msg": {
+            "market_ticker": "KXBTC-YES",
+            "price_dollars": "0.960",
+            "delta_fp": "-54.00",
+            "side": "yes"
+        }
+    })";
+
+    const trading::parsers::exchanges::kalshi::Parser parser;
+    const trading::internal::RouterFrame frame{
+        .exchange = trading::internal::ExchangeId::kKalshi,
+        .market_ticker = std::string{kTicker},
+        .sequence_id = std::nullopt,
+        .recv_ns = 37U,
+        .raw_payload_view = kPayload,
+    };
+    const auto parsed_result = parser.parse(frame);
+    const auto& event = require_parsed(parsed_result);
+
+    EXPECT_EQ(event.type, trading::internal::EventType::kDelta);
+    const auto* delta = std::get_if<trading::internal::DeltaData>(&event.data);
+    ASSERT_NE(delta, nullptr);
+    EXPECT_EQ(delta->price_ticks, 9600);
+    EXPECT_EQ(delta->delta_qty_lots, -54);
+    EXPECT_EQ(delta->side, trading::internal::Side::kBid);
+}
+
+TEST(KalshiParserTest, ParsesOrderbookDeltaYesFieldsWithoutExplicitSide) {
+    constexpr std::string_view kTicker = "KXBTC-YES";
+    constexpr std::string_view kPayload = R"({
+        "type": "orderbook_delta",
+        "sid": 1528,
+        "seq": 346983,
+        "msg": {
+            "market_ticker": "KXBTC-YES",
+            "yes_price_dollars": "0.960",
+            "yes_delta_fp": "-54.00"
+        }
+    })";
+
+    const trading::parsers::exchanges::kalshi::Parser parser;
+    const trading::internal::RouterFrame frame{
+        .exchange = trading::internal::ExchangeId::kKalshi,
+        .market_ticker = std::string{kTicker},
+        .sequence_id = std::nullopt,
+        .recv_ns = 39U,
+        .raw_payload_view = kPayload,
+    };
+    const auto parsed_result = parser.parse(frame);
+    const auto& event = require_parsed(parsed_result);
+
+    EXPECT_EQ(event.type, trading::internal::EventType::kDelta);
+    const auto* delta = std::get_if<trading::internal::DeltaData>(&event.data);
+    ASSERT_NE(delta, nullptr);
+    EXPECT_EQ(delta->price_ticks, 9600);
+    EXPECT_EQ(delta->delta_qty_lots, -54);
+    EXPECT_EQ(delta->side, trading::internal::Side::kBid);
 }
 
 TEST(KalshiParserTest, ParsesTradeDocsExample) {
@@ -3231,8 +3379,73 @@ TEST(KalshiParserTest, ParsesTradeDocsExample) {
 
     const auto* trade = std::get_if<trading::internal::TradeData>(&event.data);
     ASSERT_NE(trade, nullptr);
-    EXPECT_EQ(trade->price_ticks, 17);
+    EXPECT_EQ(trade->price_ticks, 1700);
     EXPECT_EQ(trade->qty_lots, 17);
+    EXPECT_EQ(trade->aggressor, trading::internal::Side::kBuy);
+}
+
+TEST(KalshiParserTest, ParsesTradeDollarFpFields) {
+    constexpr std::string_view kTicker = "KXBTC-YES";
+    constexpr std::string_view kPayload = R"({
+        "type": "trade",
+        "msg": {
+            "market_ticker": "KXBTC-YES",
+            "yes_price_dollars": "0.4400",
+            "no_price_dollars": "0.5700",
+            "count_fp": "17.00",
+            "taker_side": "yes",
+            "ts": 1741098958832
+        }
+    })";
+
+    const trading::parsers::exchanges::kalshi::Parser parser;
+    const trading::internal::RouterFrame frame{
+        .exchange = trading::internal::ExchangeId::kKalshi,
+        .market_ticker = std::string{kTicker},
+        .sequence_id = std::nullopt,
+        .recv_ns = 41U,
+        .raw_payload_view = kPayload,
+    };
+    const auto parsed_result = parser.parse(frame);
+    const auto& event = require_parsed(parsed_result);
+
+    EXPECT_EQ(event.type, trading::internal::EventType::kTrade);
+    const auto* trade = std::get_if<trading::internal::TradeData>(&event.data);
+    ASSERT_NE(trade, nullptr);
+    EXPECT_EQ(trade->price_ticks, 4400);
+    EXPECT_EQ(trade->qty_lots, 17);
+    EXPECT_EQ(trade->aggressor, trading::internal::Side::kBuy);
+}
+
+TEST(KalshiParserTest, ParsesTradeDollarFpWithSubCentPrecision) {
+    constexpr std::string_view kTicker = "KXBTC-YES";
+    constexpr std::string_view kPayload = R"({
+        "type": "trade",
+        "msg": {
+            "market_ticker": "KXBTC-YES",
+            "yes_price_dollars": "0.5790",
+            "count_fp": "1.00",
+            "taker_side": "yes",
+            "ts": 1741098958832
+        }
+    })";
+
+    const trading::parsers::exchanges::kalshi::Parser parser;
+    const trading::internal::RouterFrame frame{
+        .exchange = trading::internal::ExchangeId::kKalshi,
+        .market_ticker = std::string{kTicker},
+        .sequence_id = std::nullopt,
+        .recv_ns = 43U,
+        .raw_payload_view = kPayload,
+    };
+    const auto parsed_result = parser.parse(frame);
+    const auto& event = require_parsed(parsed_result);
+
+    EXPECT_EQ(event.type, trading::internal::EventType::kTrade);
+    const auto* trade = std::get_if<trading::internal::TradeData>(&event.data);
+    ASSERT_NE(trade, nullptr);
+    EXPECT_EQ(trade->price_ticks, 5790);
+    EXPECT_EQ(trade->qty_lots, 1);
     EXPECT_EQ(trade->aggressor, trading::internal::Side::kBuy);
 }
 

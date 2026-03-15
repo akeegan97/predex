@@ -117,9 +117,16 @@ bool replay_pending_deltas(BookState& book) {
 
 } // namespace
 
-bool BookStore::apply(const internal::NormalizedEvent& event) {
+BookApplyResult BookStore::apply_with_result(const internal::NormalizedEvent& event) {
+    auto reject = [](BookApplyRejectReason reason) {
+        return BookApplyResult{
+            .applied = false,
+            .reason = reason,
+        };
+    };
+
     if (event.market_ticker.empty() || event.type == internal::EventType::kUnknown) {
-        return false;
+        return reject(BookApplyRejectReason::kMissingMarketOrUnknownEvent);
     }
 
     auto [it, inserted] = books_.try_emplace(event.market_ticker);
@@ -133,7 +140,7 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
         const auto* snapshot = std::get_if<internal::SnapshotData>(&event.data);
         if (snapshot == nullptr || !apply_snapshot_data(book, *snapshot)) {
             ++book.apply_reject_count;
-            return false;
+            return reject(BookApplyRejectReason::kInvalidSnapshotData);
         }
         book.has_snapshot = true;
         book.desynced = false;
@@ -141,7 +148,7 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
         ++book.snapshot_count;
         if (!replay_pending_deltas(book)) {
             ++book.apply_reject_count;
-            return false;
+            return reject(BookApplyRejectReason::kReplayPendingDeltaFailure);
         }
         break;
     }
@@ -149,12 +156,12 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
         const auto* delta = std::get_if<internal::DeltaData>(&event.data);
         if (delta == nullptr) {
             ++book.apply_reject_count;
-            return false;
+            return reject(BookApplyRejectReason::kMissingDeltaData);
         }
 
         if (book.desynced) {
             ++book.apply_reject_count;
-            return false;
+            return reject(BookApplyRejectReason::kDeltaWhileDesynced);
         }
         if (!book.has_snapshot) {
             if (book.pending_deltas.size() >= BookStore::kMaxPendingDeltas) {
@@ -162,7 +169,7 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
                     static_cast<std::uint64_t>(book.pending_deltas.size()) + 1U;
                 mark_desynced(book, dropped_pending);
                 ++book.apply_reject_count;
-                return false;
+                return reject(BookApplyRejectReason::kPendingDeltaOverflowDesync);
             }
 
             book.pending_deltas.push_back(BookState::PendingDelta{
@@ -170,12 +177,15 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
                 .delta = *delta,
             });
             ++book.buffered_delta_count;
-            return true;
+            return BookApplyResult{
+                .applied = true,
+                .reason = BookApplyRejectReason::kNone,
+            };
         }
         if (!advance_sequence_if_present(book, event.effective_sequence_id()) ||
             !apply_delta_data(book, *delta)) {
             ++book.apply_reject_count;
-            return false;
+            return reject(BookApplyRejectReason::kDeltaSequenceOrLevelInvalid);
         }
 
         ++book.delta_count;
@@ -183,10 +193,9 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
     }
     case internal::EventType::kTrade: {
         const auto* trade = std::get_if<internal::TradeData>(&event.data);
-        if (trade == nullptr || book.desynced ||
-            !advance_sequence_if_present(book, event.effective_sequence_id())) {
+        if (trade == nullptr || book.desynced) {
             ++book.apply_reject_count;
-            return false;
+            return reject(BookApplyRejectReason::kTradeInvalidOrDesynced);
         }
         book.last_trade = *trade;
         ++book.trade_count;
@@ -196,9 +205,16 @@ bool BookStore::apply(const internal::NormalizedEvent& event) {
     case internal::EventType::kStatus:
     case internal::EventType::kUnknown:
         ++book.apply_reject_count;
-        return false;
+        return reject(BookApplyRejectReason::kUnsupportedEventType);
     }
-    return true;
+    return BookApplyResult{
+        .applied = true,
+        .reason = BookApplyRejectReason::kNone,
+    };
+}
+
+bool BookStore::apply(const internal::NormalizedEvent& event) {
+    return apply_with_result(event).applied;
 }
 
 const BookState* BookStore::find(std::string_view market_ticker) const {

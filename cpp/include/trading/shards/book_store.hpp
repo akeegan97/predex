@@ -42,10 +42,29 @@ struct BookState {
     std::uint64_t apply_reject_count{0};
 };
 
+enum class BookApplyRejectReason : unsigned char {
+    kNone = 0,
+    kMissingMarketOrUnknownEvent,
+    kInvalidSnapshotData,
+    kReplayPendingDeltaFailure,
+    kMissingDeltaData,
+    kDeltaWhileDesynced,
+    kPendingDeltaOverflowDesync,
+    kDeltaSequenceOrLevelInvalid,
+    kTradeInvalidOrDesynced,
+    kUnsupportedEventType,
+};
+
+struct BookApplyResult {
+    bool applied{false};
+    BookApplyRejectReason reason{BookApplyRejectReason::kNone};
+};
+
 class BookStore {
   public:
     static constexpr std::size_t kMaxPendingDeltas = 512;
 
+    [[nodiscard]] BookApplyResult apply_with_result(const internal::NormalizedEvent& event);
     [[nodiscard]] bool apply(const internal::NormalizedEvent& event);
     [[nodiscard]] const BookState* find(std::string_view market_ticker) const;
     [[nodiscard]] std::size_t size() const;

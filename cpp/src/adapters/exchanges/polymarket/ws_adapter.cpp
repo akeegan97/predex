@@ -16,7 +16,9 @@ exchanges::ConnectRequest WsAdapter::build_connect_request() const {
     };
 }
 
-std::string WsAdapter::build_subscribe_message(std::string_view channel) const {
+std::string WsAdapter::build_subscribe_message(
+    std::string_view channel, const std::vector<std::string>& market_tickers) const {
+    (void)market_tickers;
     const nlohmann::json payload{
         {"type", "subscribe"},
         {"channel", channel},

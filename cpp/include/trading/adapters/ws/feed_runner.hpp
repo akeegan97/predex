@@ -22,6 +22,7 @@ struct WsFeedRunnerConfig {
     static constexpr auto kDefaultReconnectBackoff = std::chrono::milliseconds{1000};
 
     std::vector<std::string> channels;
+    std::vector<std::string> market_tickers;
     std::chrono::milliseconds reconnect_backoff{kDefaultReconnectBackoff};
 };
 

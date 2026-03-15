@@ -87,6 +87,11 @@ Producer:
 Consumer:
 - `BookStore::apply`.
 
+Price unit note:
+- For Kalshi parser output, `PriceTicks` is normalized to `1e-4` dollars (sub-cent safe).
+- Legacy integer cent fields are upscaled (`95` cents -> `9500`).
+- Dollar fixed-point fields are preserved at up to 4 decimals (`0.5790` -> `5790`).
+
 ## 6) Book Apply (`BookStore`)
 
 Type: `trading::shards::BookStore` / `BookState`

@@ -15,6 +15,7 @@
 #include "trading/ingest/spsc_frame_queue.hpp"
 #include "trading/ingest/ws_message_sink.hpp"
 #include "trading/internal/market_types.hpp"
+#include "trading/metrics/latency_histogram.hpp"
 #include "trading/router/router.hpp"
 #include "trading/router/shard_dispatch.hpp"
 #include "trading/shards/book_store.hpp"
@@ -66,6 +67,12 @@ struct LivePipelineStats {
     std::uint64_t parse_error_missing_field{0};
     std::uint64_t parse_error_invalid_field{0};
     std::uint64_t parse_error_unsupported_type{0};
+    std::size_t ingest_queue_depth{0};
+    std::size_t ingest_queue_high_watermark{0};
+    std::size_t shard_queue_depth{0};
+    std::size_t shard_queue_high_watermark_total{0};
+    std::size_t shard_queue_high_watermark_max{0};
+    metrics::LatencyPercentiles recv_to_parse_latency{};
 };
 
 class LivePipeline final {

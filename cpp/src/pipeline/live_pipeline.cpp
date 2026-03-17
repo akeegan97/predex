@@ -1,5 +1,6 @@
 #include "trading/pipeline/live_pipeline.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace trading::pipeline {
@@ -131,6 +132,7 @@ LivePipelineStats LivePipeline::stats() const {
     std::uint64_t parse_error_missing_field = 0;
     std::uint64_t parse_error_invalid_field = 0;
     std::uint64_t parse_error_unsupported_type = 0;
+    metrics::LatencyPercentiles recv_to_parse_latency{};
     for (const auto& shard : shards_) {
         if (shard == nullptr) {
             continue;
@@ -150,7 +152,18 @@ LivePipelineStats LivePipeline::stats() const {
         parse_error_missing_field += shard_stats.parse_error_missing_field;
         parse_error_invalid_field += shard_stats.parse_error_invalid_field;
         parse_error_unsupported_type += shard_stats.parse_error_unsupported_type;
+        recv_to_parse_latency.count += shard_stats.recv_to_parse_latency.count;
+        recv_to_parse_latency.p50_ns =
+            std::max(recv_to_parse_latency.p50_ns, shard_stats.recv_to_parse_latency.p50_ns);
+        recv_to_parse_latency.p95_ns =
+            std::max(recv_to_parse_latency.p95_ns, shard_stats.recv_to_parse_latency.p95_ns);
+        recv_to_parse_latency.p99_ns =
+            std::max(recv_to_parse_latency.p99_ns, shard_stats.recv_to_parse_latency.p99_ns);
+        recv_to_parse_latency.max_ns =
+            std::max(recv_to_parse_latency.max_ns, shard_stats.recv_to_parse_latency.max_ns);
     }
+
+    const auto shard_queue_stats = shard_dispatch_.queue_stats();
 
     return LivePipelineStats{
         .ingest_frames_pumped = ingest_frames_pumped_.load(std::memory_order_relaxed),
@@ -173,6 +186,12 @@ LivePipelineStats LivePipeline::stats() const {
         .parse_error_missing_field = parse_error_missing_field,
         .parse_error_invalid_field = parse_error_invalid_field,
         .parse_error_unsupported_type = parse_error_unsupported_type,
+        .ingest_queue_depth = frame_queue_.size_approx(),
+        .ingest_queue_high_watermark = frame_queue_.high_watermark(),
+        .shard_queue_depth = shard_queue_stats.pending_count_total,
+        .shard_queue_high_watermark_total = shard_queue_stats.high_watermark_total,
+        .shard_queue_high_watermark_max = shard_queue_stats.high_watermark_max,
+        .recv_to_parse_latency = recv_to_parse_latency,
     };
 }
 

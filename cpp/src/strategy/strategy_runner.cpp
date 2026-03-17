@@ -1,9 +1,20 @@
 #include "trading/strategy/strategy_runner.hpp"
 
+#include <chrono>
 #include <exception>
 #include <utility>
 
 namespace trading::strategy {
+namespace {
+
+internal::TimestampNs monotonic_now_ns() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch());
+    return elapsed.count() > 0 ? static_cast<internal::TimestampNs>(elapsed.count()) : 0U;
+}
+
+} // namespace
 
 StrategyRunner::StrategyRunner(IStrategy& strategy, IOrderIntentSink& intent_sink,
                                StrategyRunnerConfig config)
@@ -56,12 +67,22 @@ bool StrategyRunner::on_event(const internal::NormalizedEvent& event) {
             continue;
         }
         ++stats_.intents_submitted_count;
+        if (event.meta.recv_ns > 0) {
+            const auto now_ns = monotonic_now_ns();
+            if (now_ns > event.meta.recv_ns) {
+                event_to_submit_latency_hist_.observe(now_ns - event.meta.recv_ns);
+            }
+        }
     }
 
     return true;
 }
 
-StrategyRunnerStats StrategyRunner::stats() const { return stats_; }
+StrategyRunnerStats StrategyRunner::stats() const {
+    auto stats = stats_;
+    stats.event_to_submit_latency = event_to_submit_latency_hist_.snapshot();
+    return stats;
+}
 
 std::string StrategyRunner::last_error() const { return last_error_; }
 

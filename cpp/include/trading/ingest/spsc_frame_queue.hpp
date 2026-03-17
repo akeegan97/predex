@@ -30,6 +30,7 @@ class SpscFrameQueue {
         buffer_[head] = ref;
         // Publish slot contents before making the new head visible.
         head_.store(next_head, std::memory_order_release);
+        update_high_watermark(used_slots(head, tail_.load(std::memory_order_relaxed)) + 1U);
         return true;
     }
 
@@ -47,6 +48,12 @@ class SpscFrameQueue {
     }
 
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
+    [[nodiscard]] std::size_t size_approx() const noexcept {
+        return used_slots(head_.load(std::memory_order_relaxed), tail_.load(std::memory_order_relaxed));
+    }
+    [[nodiscard]] std::size_t high_watermark() const noexcept {
+        return high_watermark_.load(std::memory_order_relaxed);
+    }
 
   private:
     static constexpr std::size_t kMinCapacity = 2;
@@ -55,10 +62,26 @@ class SpscFrameQueue {
         return (index + 1) % capacity_;
     }
 
+    [[nodiscard]] std::size_t used_slots(std::size_t head, std::size_t tail) const noexcept {
+        if (head >= tail) {
+            return head - tail;
+        }
+        return capacity_ - (tail - head);
+    }
+
+    void update_high_watermark(std::size_t size) noexcept {
+        std::size_t previous = high_watermark_.load(std::memory_order_relaxed);
+        while (size > previous &&
+               !high_watermark_.compare_exchange_weak(previous, size, std::memory_order_relaxed,
+                                                      std::memory_order_relaxed)) {
+        }
+    }
+
     alignas(kCacheLine) std::atomic<std::size_t> head_{0};
     std::size_t capacity_;
     std::vector<FrameRef> buffer_;
     alignas(kCacheLine) std::atomic<std::size_t> tail_{0};
+    std::atomic<std::size_t> high_watermark_{0};
 };
 
 } // namespace trading::ingest

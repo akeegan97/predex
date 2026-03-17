@@ -25,6 +25,7 @@ bool SpscRoutedEventQueue::try_push(const RoutedEvent& event) noexcept {
     buffer_[head] = event;
     // Publish event payload before publishing updated head.
     head_.store(next_head, std::memory_order_release);
+    update_high_watermark(used_slots(head, tail_.load(std::memory_order_relaxed)) + 1U);
     return true;
 }
 
@@ -43,8 +44,31 @@ bool SpscRoutedEventQueue::try_pop(RoutedEvent& event_out) noexcept {
 
 std::size_t SpscRoutedEventQueue::capacity() const noexcept { return capacity_; }
 
+std::size_t SpscRoutedEventQueue::size_approx() const noexcept {
+    return used_slots(head_.load(std::memory_order_relaxed), tail_.load(std::memory_order_relaxed));
+}
+
+std::size_t SpscRoutedEventQueue::high_watermark() const noexcept {
+    return high_watermark_.load(std::memory_order_relaxed);
+}
+
 std::size_t SpscRoutedEventQueue::increment(std::size_t index) const noexcept {
     return (index + 1) % capacity_;
+}
+
+std::size_t SpscRoutedEventQueue::used_slots(std::size_t head, std::size_t tail) const noexcept {
+    if (head >= tail) {
+        return head - tail;
+    }
+    return capacity_ - (tail - head);
+}
+
+void SpscRoutedEventQueue::update_high_watermark(std::size_t size) noexcept {
+    std::size_t previous = high_watermark_.load(std::memory_order_relaxed);
+    while (size > previous &&
+           !high_watermark_.compare_exchange_weak(previous, size, std::memory_order_relaxed,
+                                                  std::memory_order_relaxed)) {
+    }
 }
 
 ShardedEventDispatch::ShardedEventDispatch(ShardedEventDispatchConfig config) {
@@ -85,6 +109,23 @@ std::size_t ShardedEventDispatch::shard_count() const { return shard_queues_.siz
 
 std::size_t ShardedEventDispatch::dropped_count() const {
     return dropped_count_.load(std::memory_order_relaxed);
+}
+
+ShardDispatchQueueStats ShardedEventDispatch::queue_stats() const {
+    ShardDispatchQueueStats stats{};
+    for (const auto& queue : shard_queues_) {
+        if (queue == nullptr) {
+            continue;
+        }
+        const std::size_t pending = queue->size_approx();
+        const std::size_t high_watermark = queue->high_watermark();
+        stats.pending_count_total += pending;
+        stats.high_watermark_total += high_watermark;
+        if (high_watermark > stats.high_watermark_max) {
+            stats.high_watermark_max = high_watermark;
+        }
+    }
+    return stats;
 }
 
 bool NoopShardDispatch::dispatch(const RouteKey& route_key, const RoutedFrame& frame) {

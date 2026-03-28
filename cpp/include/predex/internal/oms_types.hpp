@@ -5,9 +5,9 @@
 #include <string>
 #include <variant>
 
-#include "trading/internal/market_types.hpp"
+#include "predex/internal/market_types.hpp"
 
-namespace trading::internal {
+namespace predex::internal {
 
 using OrderRequestId = std::uint64_t;
 using ClientOrderId = std::string;
@@ -94,4 +94,4 @@ struct OrderStateUpdate {
     std::string raw_payload;
 };
 
-} // namespace trading::internal
+} // namespace predex::internal

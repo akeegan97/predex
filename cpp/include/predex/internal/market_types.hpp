@@ -2,13 +2,14 @@
 
 #include <cstdint>
 
-namespace trading::internal {
+namespace predex::internal {
 
 using MarketId = std::uint32_t;
 using SequenceId = std::uint64_t;
 using PriceTicks = std::int64_t;
 using QtyLots = std::int64_t;
 using TimestampNs = std::uint64_t;
+using AffinityKey = std::uint64_t;
 
 enum class ExchangeId : std::uint8_t {
     kUnknown = 0,
@@ -33,4 +34,4 @@ enum class Side : std::uint8_t {
     kSell = 4,
 };
 
-} // namespace trading::internal
+} // namespace predex::internal

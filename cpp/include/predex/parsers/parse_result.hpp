@@ -3,7 +3,7 @@
 #include <optional>
 #include <utility>
 
-namespace trading::parsers {
+namespace predex::parsers {
 
 enum class ParseError : unsigned char {
     kNone = 0,
@@ -38,4 +38,4 @@ class ParseResult {
     ParseError error_{ParseError::kNone};
 };
 
-} // namespace trading::parsers
+} // namespace predex::parsers

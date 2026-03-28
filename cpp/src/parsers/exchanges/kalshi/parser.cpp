@@ -1,4 +1,5 @@
-#include "trading/parsers/exchanges/kalshi/parser.hpp"
+#include "predex/parsers/exchanges/kalshi/parser.hpp"
+#include "predex/internal/normalized_event.hpp"
 
 #include <charconv>
 #include <cmath>
@@ -7,7 +8,7 @@
 
 #include <simdjson.h>
 
-namespace trading::parsers::exchanges::kalshi {
+namespace predex::parsers::exchanges::kalshi {
 
 namespace {
 
@@ -560,16 +561,30 @@ parse_trade(simdjson::ondemand::object& msg,
 
 } // namespace
 
-ParseResult<internal::NormalizedEvent> Parser::parse(const internal::RouterFrame& frame) const {
-    simdjson::padded_string padded{frame.raw_payload_view};
-    simdjson::ondemand::parser json_parser;
-    auto doc = json_parser.iterate(padded);
-    if (doc.error() != simdjson::SUCCESS) {
+predex::parsers::ParseResult<predex::internal::NormalizedEvent>Parser::parse(const predex::core::ingest::kalshi::FrameHandle& handle,
+    const predex::core::ingest::kalshi::KalshiFrame& frame) const{
+
+    predex::internal::NormalizedEvent event{};
+    event.raw_sequence_id = handle.seq_;
+    event.type = internal::EventType::kUnknown;
+    event.meta.exchange = internal::ExchangeId::kKalshi;
+    event.meta.affinity_key = handle.affinity_key_;
+    event.meta.market_id = handle.market_id_;
+    event.meta.recv_ns = frame.recv_ts_ns_;
+    // Kalshi does not provide exchange timestamps, so we leave event.meta.exchange_ts_ns as 0.
+    //all other data needs to be parsed out of the payload, which is a JSON blob.
+
+    const auto* payload = reinterpret_cast<const char*>(frame.payload);
+
+    simdjson::padded_string padded{payload, frame.len_};
+    
+    simdjson::ondemand::parser parser;
+    auto doc = parser.iterate(padded);
+    if(doc.error() != simdjson::SUCCESS) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson);
     }
-
     auto root = doc.get_object();
-    if (root.error() != simdjson::SUCCESS) {
+    if(root.error() != simdjson::SUCCESS) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson);
     }
     auto obj = root.value_unsafe();
@@ -579,33 +594,23 @@ ParseResult<internal::NormalizedEvent> Parser::parse(const internal::RouterFrame
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
     }
 
-    internal::NormalizedEvent event{};
-    event.meta.exchange    = internal::ExchangeId::kKalshi;
-    event.meta.recv_ns     = frame.recv_ns;
-    event.market_ticker    = frame.market_ticker;
-    event.raw_sequence_id  = frame.sequence_id;
-    if (frame.sequence_id.has_value()) {
-        event.meta.sequence_id = frame.sequence_id.value();
-    }
-    event.raw_payload      = std::string{frame.raw_payload_view};
-    set_sequence_from_root(obj, event);
-
     simdjson::ondemand::object msg;
-    if ((type_sv == kTypeOrderbook || type_sv == kTypeOrderbookDelta || type_sv == kTypeTrade) &&
+    if ((type_sv == kTypeOrderbook ||
+        type_sv == kTypeOrderbookDelta ||
+        type_sv == kTypeTrade) &&
         !get_object(obj, "msg", msg)) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
     }
 
-    if (type_sv == kTypeOrderbook) {
+    if(type_sv == kTypeOrderbook) {
         return parse_snapshot(msg, std::move(event));
     }
     if (type_sv == kTypeOrderbookDelta) {
-        return parse_delta(msg, std::move(event), strict_field_validation_);
+        return parse_delta(msg, std::move(event), /*strict_field_validation=*/true);
     }
     if (type_sv == kTypeTrade) {
-        return parse_trade(msg, std::move(event), strict_field_validation_);
-    }
+        return parse_trade(msg, std::move(event), /*strict_field_validation=*/true);
+    } 
     return ParseResult<internal::NormalizedEvent>::failure(ParseError::kUnsupportedMessageType);
-}
-
-} // namespace trading::parsers::exchanges::kalshi
+    }
+}// namespace predex::parsers::exchanges::kalshi

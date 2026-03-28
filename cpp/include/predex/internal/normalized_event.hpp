@@ -5,12 +5,13 @@
 #include <variant>
 #include <vector>
 
-#include "trading/internal/market_types.hpp"
+#include "predex/internal/market_types.hpp"
 
-namespace trading::internal {
+namespace predex::internal {
 
 struct EventMeta {
     ExchangeId exchange{ExchangeId::kUnknown};
+    AffinityKey affinity_key{0};
     MarketId market_id{0};
     SequenceId sequence_id{0};
     TimestampNs recv_ns{0};
@@ -45,10 +46,8 @@ using EventData = std::variant<std::monostate, SnapshotData, DeltaData, TradeDat
 struct NormalizedEvent {
     EventType type{EventType::kUnknown};
     EventMeta meta{};
-    std::string market_ticker;
     std::optional<SequenceId> raw_sequence_id;
     EventData data;
-    std::string raw_payload;
 
     [[nodiscard]] std::optional<SequenceId> effective_sequence_id() const {
         if (raw_sequence_id.has_value()) {
@@ -61,4 +60,4 @@ struct NormalizedEvent {
     }
 };
 
-} // namespace trading::internal
+} // namespace predex::internal

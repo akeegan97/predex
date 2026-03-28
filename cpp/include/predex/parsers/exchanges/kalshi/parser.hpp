@@ -1,20 +1,22 @@
 #pragma once
 
-#include "trading/internal/normalized_event.hpp"
-#include "trading/internal/router_frame.hpp"
-#include "trading/parsers/parse_result.hpp"
+#include "predex/internal/normalized_event.hpp"
+#include "predex/parsers/parse_result.hpp"
+#include "predex/ingest/frame_pool.hpp"
 
-namespace trading::parsers::exchanges::kalshi {
+namespace predex::parsers::exchanges::kalshi {
 
-class Parser final {
+class Parser{
+  //takes a FrameHandle & Frame Ref and returns a ParseResult containing a NormalizedEvent
   public:
-    static constexpr auto kExchangeId = internal::ExchangeId::kKalshi;
-
-    [[nodiscard]] ParseResult<internal::NormalizedEvent> parse(
-        const internal::RouterFrame& frame) const;
+    Parser() = default;
+    ~Parser() = default;
+      [[nodiscard]] predex::parsers::ParseResult<predex::internal::NormalizedEvent> parse(const predex::core::ingest::kalshi::FrameHandle& handle, 
+      const predex::core::ingest::kalshi::KalshiFrame& frame) const;
 
   private:
-    bool strict_field_validation_{true};
+
+
 };
 
-} // namespace trading::parsers::exchanges::kalshi
+} // namespace predex::parsers::exchanges::kalshi

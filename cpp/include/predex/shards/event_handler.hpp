@@ -1,8 +1,7 @@
 #pragma once
 
-#include "trading/internal/normalized_event.hpp"
-
-namespace trading::shards {
+#include "predex/internal/normalized_event.hpp"
+namespace predex::core::kalshi::shard {
 
 class IShardEventHandler {
   public:
@@ -11,4 +10,4 @@ class IShardEventHandler {
     [[nodiscard]] virtual bool on_event(const internal::NormalizedEvent& event) = 0;
 };
 
-} // namespace trading::shards
+} // namespace predex::core::kalshi::shard

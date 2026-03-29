@@ -340,14 +340,6 @@ internal::Side parse_trade_side(std::string_view side_token) {
     return internal::Side::kUnknown;
 }
 
-void set_sequence_from_root(simdjson::ondemand::object& root, internal::NormalizedEvent& event) {
-    std::uint64_t seq = 0;
-    if (get_uint64(root, "seq", seq) || get_uint64(root, "seq_id", seq)) {
-        event.raw_sequence_id = seq;
-        event.meta.sequence_id = seq;
-    }
-}
-
 void set_sequence_from_msg(simdjson::ondemand::object& msg, internal::NormalizedEvent& event) {
     std::uint64_t seq = 0;
     if (get_uint64(msg, "seq", seq) || get_uint64(msg, "seq_id", seq)) {
@@ -444,6 +436,7 @@ parse_snapshot(simdjson::ondemand::object& msg, internal::NormalizedEvent event)
     }
 
     event.data = std::move(snapshot);
+    set_sequence_from_msg(msg, event);
     return ParseResult<internal::NormalizedEvent>::success(std::move(event));
 }
 
@@ -459,6 +452,7 @@ parse_delta(simdjson::ondemand::object& msg,
     internal::Side resolved_side = internal::Side::kUnknown;
     bool has_price = false;
     bool has_delta = false;
+    set_sequence_from_msg(msg, event);
 
     if (get_string(msg, "side", side_token)) {
         resolved_side = parse_book_side(side_token);
@@ -571,6 +565,7 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent>Parser::parse(con
     event.meta.affinity_key = handle.affinity_key_;
     event.meta.market_id = handle.market_id_;
     event.meta.recv_ns = frame.recv_ts_ns_;
+    event.meta.sequence_id = handle.seq_; // Default sequence ID to the frame handle's sequence. This may be overwritten by the message's own sequence if present.
     // Kalshi does not provide exchange timestamps, so we leave event.meta.exchange_ts_ns as 0.
     //all other data needs to be parsed out of the payload, which is a JSON blob.
 

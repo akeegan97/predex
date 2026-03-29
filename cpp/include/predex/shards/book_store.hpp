@@ -6,30 +6,24 @@
 #include <functional>
 #include <map>
 #include <optional>
-#include <string>
-#include <string_view>
 #include <unordered_map>
 
-#include "trading/internal/normalized_event.hpp"
+#include "predex/internal/market_types.hpp"
+#include "predex/internal/normalized_event.hpp"
 
-namespace trading::shards {
+namespace predex::core::kalshi::shard {
 
 struct BookState {
-    struct PendingDelta {
-        std::optional<internal::SequenceId> sequence_id;
-        internal::DeltaData delta;
-    };
-
     using BidLevels = std::map<internal::PriceTicks, internal::QtyLots, std::greater<>>;
     using AskLevels = std::map<internal::PriceTicks, internal::QtyLots, std::less<>>;
 
-    std::string market_ticker;
+    internal::MarketId market_id{0};
     std::optional<internal::SequenceId> last_seq_id;
     bool has_snapshot{false};
     bool desynced{false};
     BidLevels bids;
     AskLevels asks;
-    std::deque<PendingDelta> pending_deltas;
+    std::deque<internal::NormalizedEvent> pending_deltas;
     std::optional<internal::TradeData> last_trade;
     std::uint64_t snapshot_count{0};
     std::uint64_t delta_count{0};
@@ -40,6 +34,9 @@ struct BookState {
     std::uint64_t desync_count{0};
     std::uint64_t stale_sequence_count{0};
     std::uint64_t apply_reject_count{0};
+    std::uint64_t invalid_negative_level_count{0};
+    std::uint64_t invalid_side_count{0};
+    std::uint64_t invalid_seq_count{0};
 };
 
 enum class BookApplyRejectReason : unsigned char {
@@ -50,9 +47,22 @@ enum class BookApplyRejectReason : unsigned char {
     kMissingDeltaData,
     kDeltaWhileDesynced,
     kPendingDeltaOverflowDesync,
-    kDeltaSequenceOrLevelInvalid,
+    kDeltaSequence,
+    kInvalidSide,
     kTradeInvalidOrDesynced,
     kUnsupportedEventType,
+    kNegativeQuantity,
+    kBufferedDelta,
+    kTradeBeforeSnap,
+    kInvalidSeq,
+    kUnexpectedSnapshotAfterInit,
+};
+enum class DeltaApplyResult: unsigned int{
+    kSuccess = 0,
+    kStaleSequence,
+    kInvalidSide,
+    kNegativeQuantityDesync,
+    kInvalidSeq,
 };
 
 struct BookApplyResult {
@@ -65,12 +75,11 @@ class BookStore {
     static constexpr std::size_t kMaxPendingDeltas = 512;
 
     [[nodiscard]] BookApplyResult apply_with_result(const internal::NormalizedEvent& event);
-    [[nodiscard]] bool apply(const internal::NormalizedEvent& event);
-    [[nodiscard]] const BookState* find(std::string_view market_ticker) const;
+    [[nodiscard]] const BookState* find(internal::MarketId market_id) const;
     [[nodiscard]] std::size_t size() const;
 
   private:
-    std::unordered_map<std::string, BookState> books_;
+    std::unordered_map<internal::MarketId, BookState> books_;
 };
 
-} // namespace trading::shards
+} // namespace predex::core::kalshi::shard

@@ -73,6 +73,9 @@ namespace predex::core::kalshi::shard{
      bool Shard::forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept{
         return logger_queue_.try_push(handle);
     }
+    const predex::core::ingest::kalshi::KalshiFrame* Shard::get_frame(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept{
+        return frame_pool_.frame(handle);
+    }
 
 
 }

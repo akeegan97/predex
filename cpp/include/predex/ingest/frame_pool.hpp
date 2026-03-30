@@ -7,11 +7,12 @@
 
 namespace predex::core::ingest::kalshi{
   constexpr std::size_t kMaxFrameBytes = 4096; 
+  constexpr std::size_t kSimdJsonPadding  = 0;//currently not utilized but leaving room for it so we can avoid copy into simdjson padded buffers for parsing
   struct KalshiFrame{
     std::uint64_t recv_ts_ns_;
     std::uint32_t len_;
     std::uint32_t flags_;
-    std::byte payload[kMaxFrameBytes];
+    std::byte payload[kMaxFrameBytes + kSimdJsonPadding];
   };
 
   enum class KalshiEventType : std::uint8_t{

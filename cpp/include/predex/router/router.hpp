@@ -50,8 +50,5 @@ namespace predex::core::routing{
             [[nodiscard]] bool forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept;
             [[nodiscard]] static std::size_t compute_shard_id(std::uint16_t affinity_key, std::size_t shard_count) noexcept;
             [[nodiscard]] static std::uint64_t monotonic_now_ns() noexcept;
-
-
-
     };
 }

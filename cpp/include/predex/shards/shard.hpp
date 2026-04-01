@@ -8,6 +8,13 @@
 #include "predex/shards/event_handler.hpp"
 
 namespace predex::core::kalshi::shard{
+  enum class ApplyResult:std::uint8_t{
+    kApplied = 1,
+    kRejected = 2,
+    kParseFail=3,
+    kHandlerReject = 4,
+    kHandlerAccept = 5
+  };
   class Shard{
     //drains spsc queue of frame handles (router owned), processes frames -> decodes actual raw json-> updates internal book state 
     //enqueues 2 things to logger -> framehandle once done with decoding, and book states 
@@ -38,7 +45,7 @@ namespace predex::core::kalshi::shard{
       [[nodiscard]] bool process_one() noexcept; //processes one frame from input_queue_, returns false if no more frames to process or if processing failed {might convert this to enum code instead of bool}
       [[nodiscard]] bool forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept; //forwards the frame to logger for persistence, returns false
       [[nodiscard]] const predex::core::ingest::kalshi::KalshiFrame* get_frame(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept; //helper to get frame ptr from frame handle
-      [[nodiscard]] bool apply_event(const predex::core::ingest::kalshi::FrameHandle& handle, 
+      [[nodiscard]] ApplyResult apply_event(const predex::core::ingest::kalshi::FrameHandle& handle, 
       const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept;
 
   };

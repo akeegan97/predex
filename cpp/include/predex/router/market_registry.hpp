@@ -21,7 +21,7 @@ namespace predex::core::routing{
     class MarketRegistry{
         public:
             MarketRegistry() = default;
-            explicit MarketRegistry(std::vector<MarketRegistryEntry> entries);
+            explicit MarketRegistry(const std::vector<MarketRegistryEntry>& entries);
 
             MarketRegistry(const MarketRegistry&) = delete;
             MarketRegistry& operator=(const MarketRegistry&) = delete;

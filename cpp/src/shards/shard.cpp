@@ -37,37 +37,47 @@ namespace predex::core::kalshi::shard{
             ++failed_count_;
             return false; // failed to get frame from handle
         }
-        bool success = apply_event(handle, *frame);
+        ApplyResult result = apply_event(handle, *frame);
         if(!forward_to_logger(handle)){
             ++logger_fail_count_;
-            return false; // failed to forward to logger
+            return false; // failed to forward to logger, could extend this to have a retry mechanism if Logger SPSC queue is temporarily full,
         }
-        if(success){
-            ++processed_count_;
-        } else {
-            ++failed_count_;
+        switch(result){
+            case ApplyResult::kApplied:
+                ++processed_count_;
+                return true;
+            case ApplyResult::kHandlerAccept:
+                ++processed_count_;
+                return true;
+            case ApplyResult::kRejected:
+                return false; //book state is malformed or couldn't be applied, halt processing already incremented failed_count_ in apply_event
+            case ApplyResult::kHandlerReject:
+                ++processed_count_;
+                return true; //book state is fine, handler rejected/couldn't proceed but book state should be fine to continue processing
+            case ApplyResult::kParseFail:
+                return false; //malformed frame/payload that couldn't be parsed, halt processing already incremented failed_count_ in apply_event
         }
         return true;
     }
 
-    bool Shard::apply_event(const predex::core::ingest::kalshi::FrameHandle& handle, 
+    ApplyResult Shard::apply_event(const predex::core::ingest::kalshi::FrameHandle& handle, 
       const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept{
         auto parse_result = parser_.parse(handle,frame);
         if(!parse_result.ok()){
             ++parse_fail_count_;
-            return false;
+            return ApplyResult::kParseFail; // failed to parse frame
         }
         const auto& event = *parse_result.value();
         auto apply_result = book_store_.apply_with_result(event);
         if(!apply_result.applied){
             ++apply_fail_count_;
-            return false;
+            return ApplyResult::kRejected; // failed to apply event to book store
         }
         if(event_handler_!= nullptr){
-            return event_handler_->on_event(event);
+            return event_handler_->on_event(event) ? ApplyResult::kHandlerAccept : ApplyResult::kHandlerReject; 
 
         }
-        return true;
+        return ApplyResult::kApplied;
     }
     
      bool Shard::forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept{

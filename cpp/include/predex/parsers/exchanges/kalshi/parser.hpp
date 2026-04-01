@@ -16,7 +16,6 @@ class Parser{
 
   private:
 
-
 };
 
 } // namespace predex::parsers::exchanges::kalshi

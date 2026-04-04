@@ -16,7 +16,7 @@ namespace predex::core::tape{
                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle> &recycle_queue,
                     std::string_view output_file_path);
 
-            [[nodiscard]] std::size_t pump(size_t max_batch_size) noexcept;
+            [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
             
             Logger(const Logger&) = delete;
             Logger& operator=(const Logger&) = delete;

@@ -10,6 +10,10 @@
 
 namespace predex::core::parsers::kalshi {
 
+using predex::parsers::ParseError;
+template <typename T>
+using ParseResult = predex::parsers::ParseResult<T>;
+
 namespace {
 
 // Kalshi on-demand message type strings.

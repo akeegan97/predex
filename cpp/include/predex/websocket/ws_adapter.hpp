@@ -5,7 +5,7 @@
 #include <string_view>
 #include <vector>
 
-namespace trading::adapters::exchanges {
+namespace predex::websocket::adapter {
 
 struct ConnectRequest {
     std::string endpoint;
@@ -25,4 +25,4 @@ class IExchangeWsAdapter {
                             const std::vector<std::string>& market_tickers) const = 0;
 };
 
-} // namespace trading::adapters::exchanges
+} // namespace predex::websocket::adapter

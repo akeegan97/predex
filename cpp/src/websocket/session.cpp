@@ -1,10 +1,9 @@
-#include "trading/adapters/ws/session.hpp"
+#include "predex/websocket/session.hpp"
 
 #include <exception>
 
-namespace trading::adapters::ws {
-
-WsSession::WsSession(IWsTransport& transport, const exchanges::IExchangeWsAdapter& adapter)
+namespace predex::websocket {
+WsSession::WsSession(IWsTransport& transport, const adapter::IExchangeWsAdapter& adapter)
     : transport_(transport), adapter_(adapter) {}
 
 bool WsSession::connect() {
@@ -77,10 +76,10 @@ std::optional<std::string> WsSession::recv_text() {
 
 void WsSession::close() { transport_.close(); }
 
-const exchanges::ConnectRequest& WsSession::connect_request() const { return connect_request_; }
+const adapter::ConnectRequest& WsSession::connect_request() const { return connect_request_; }
 
 const std::string& WsSession::last_subscribe_payload() const { return last_subscribe_payload_; }
 
 const std::string& WsSession::last_error() const { return last_error_; }
 
-} // namespace trading::adapters::ws
+} // namespace predex::websocket

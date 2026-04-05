@@ -1,7 +1,9 @@
 #include "predex/tape/logger.hpp"
 
+#include <stdexcept>
+#include <string>
 
-namespace predex::core::tape{
+namespace predex::core::tape::kalshi {
     Logger::Logger(std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*> input_queues,
                     predex::core::ingest::kalshi::FramePool& frame_pool,
                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle> &recycle_queue,
@@ -51,4 +53,4 @@ namespace predex::core::tape{
         }
         return logged;
     }
-}
+} // namespace predex::core::tape::kalshi

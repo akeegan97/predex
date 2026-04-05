@@ -1,4 +1,4 @@
-#include "trading/adapters/exchanges/kalshi/auth_signer.hpp"
+#include "predex/websocket/kalshi/auth_signer.hpp"
 
 #include <array>
 #include <chrono>
@@ -15,7 +15,7 @@
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 
-namespace trading::adapters::exchanges::kalshi {
+namespace predex::websocket::kalshi {
 namespace {
 
 std::string openssl_error_message(const std::string& context) {
@@ -159,4 +159,4 @@ std::string AuthSigner::sign_payload_base64(std::string_view payload) const {
         SignatureInput{.private_key_pem = private_key_pem, .payload_message = payload});
 }
 
-} // namespace trading::adapters::exchanges::kalshi
+} // namespace predex::websocket::kalshi

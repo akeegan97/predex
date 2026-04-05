@@ -1,10 +1,10 @@
-#include "trading/adapters/exchanges/kalshi/ws_adapter.hpp"
+#include "predex/websocket/kalshi/ws_adapter.hpp"
 
 #include <nlohmann/json.hpp>
 #include <string_view>
 #include <utility>
 
-namespace trading::adapters::exchanges::kalshi {
+namespace predex::websocket::kalshi {
 namespace {
 
 std::string extract_path_from_endpoint(std::string_view endpoint) {
@@ -24,9 +24,9 @@ WsAdapter::WsAdapter(AuthSigner signer, std::string endpoint)
 
 std::string WsAdapter::name() const { return "kalshi"; }
 
-exchanges::ConnectRequest WsAdapter::build_connect_request() const {
+predex::websocket::adapter::ConnectRequest WsAdapter::build_connect_request() const {
     const auto auth_headers = signer_.make_ws_headers(extract_path_from_endpoint(endpoint_));
-    return exchanges::ConnectRequest{
+    return predex::websocket::adapter::ConnectRequest{
         .endpoint = endpoint_,
         .headers =
             {
@@ -52,4 +52,4 @@ std::string WsAdapter::build_subscribe_message(
     return payload.dump();
 }
 
-} // namespace trading::adapters::exchanges::kalshi
+} // namespace predex::websocket::kalshi

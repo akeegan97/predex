@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-namespace trading::adapters::ws {
+namespace predex::websocket {
 
 struct TransportConfig {
     std::string endpoint;
@@ -41,4 +41,4 @@ class BoostBeastWsTransport final : public IWsTransport {
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace trading::adapters::ws
+} // namespace predex::websocket

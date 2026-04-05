@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-namespace trading::adapters::exchanges::kalshi {
+namespace predex::websocket::kalshi {
 
 struct Credentials {
     std::string key_id;
@@ -34,4 +34,4 @@ class AuthSigner {
     Credentials credentials_;
 };
 
-} // namespace trading::adapters::exchanges::kalshi
+} // namespace predex::websocket::kalshi

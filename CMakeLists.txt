@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(trading LANGUAGES C CXX)
+project(predex LANGUAGES CXX)
 
 include(CTest)
 

@@ -1,4 +1,4 @@
-#include "trading/adapters/ws/client.hpp"
+#include "predex/websocket/client.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,7 +19,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
-namespace trading::adapters::ws {
+namespace predex::websocket {
 namespace net = boost::asio;
 namespace ssl = net::ssl;
 namespace beast = boost::beast;
@@ -285,4 +285,4 @@ void BoostBeastWsTransport::close() {
 
 std::string_view BoostBeastWsTransport::last_error() const { return impl_->last_error; }
 
-} // namespace trading::adapters::ws
+} // namespace predex::websocket

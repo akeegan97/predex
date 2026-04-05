@@ -1,120 +1,188 @@
-# Trading Infrastructure Engine (C++)
+# Predex
 
-This repository is a systems-engineering project for building market-data and order-management plumbing used by automated trading systems.
+Predex is a low-latency market data pipeline for capturing live Kalshi websocket traffic, routing it through shard-local book processing, and persisting the raw feed to a binary tape.
 
-The focus is infrastructure quality:
-- deterministic ingest -> decode -> route -> shard execution flow
-- explicit data contracts between stages
-- testable exchange adapters (Kalshi + Polymarket decode paths)
-- runtime safety surfaces (drop counters, parse failures, startup error paths)
-- CI-enforced build, formatting, linting, and tests
+The current C++ codebase is intentionally narrow:
+- live Kalshi websocket ingest
+- bounded frame-pool based message handoff
+- single router thread plus N shard threads
+- shard-local parsing and book maintenance
+- terminal tape logging with recycle back to ingest
 
-## What Exists Today
+Strategy, risk, OMS, replay, and Python research tooling are planned next steps, but they are not the primary supported surface of this repository today.
 
-- `trader_app`: live websocket ingest (Kalshi), message pipeline, shard-local order book state.
-- `logger_app`: minimal runtime bootstrap binary.
-- Pipeline stack:
-  - frame pool + SPSC ingest queue
-  - extract/normalize dispatch
-  - keyed router and shard fanout
-  - shard parser + `BookStore` apply
-- OMS stack (scaffolded and tested):
-  - canonical order intent/update contract
-  - exchange OMS adapter interface + Kalshi implementation
-  - runtime `OrderManager` with outbound/inbound loops
-- Tests: parser, routing, pipeline, config loading, auth signing, OMS adapter/runtime.
+## Current Status
+
+What works today:
+- `trader_app` can connect to Kalshi, subscribe to channels, and record inbound payloads to a tape file.
+- The core runtime is split into focused libraries: `predex_websocket`, `predex_core_pipeline`, and `predex_app`.
+- The tape format is stable enough for downstream replay tooling: 4-byte little-endian payload length followed by raw websocket payload bytes.
+
+What is still intentionally incomplete:
+- strategy and per-shard event handling beyond the interface seam
+- local/global risk checks
+- OMS and order transport
+- replay executable
+- Python tooling for tape decode, discovery, config generation, and backtesting
 
 ## Architecture
 
 ```text
-Kalshi WS -> FramePoolMessageSink -> SPSC Frame Queue -> Router -> Shard Queues
-                                                            |
-                                                            v
-                                                  Shard Parser -> NormalizedEvent -> BookStore
+                    +----------------------------------------------+
+                    |              predex::App::Runtime            |
+                    +----------------------------------------------+
 
-Strategy -> OrderIntent -> OrderManager -> ExchangeOmsAdapter -> OrderTransport
-                                                     ^                |
-                                                     |                v
-                                              IOrderEventSink <- parse_update
+Kalshi WS
+    |
+    v
++-------------------------+      +---------------------------+
+| websocket::WsSession    | ---> | ingest::IOWriter         |
+| single owner: IO thread |      | acquire frame + copy     |
++-------------------------+      +-------------+-------------+
+                                              |
+                                              v
+                                   +---------------------------+
+                                   | io_to_router SPSC queue   |
+                                   +-------------+-------------+
+                                                 |
+                                                 v
+                                   +---------------------------+
+                                   | routing::Router           |
+                                   | single owner: router thread|
+                                   +------+--------------------+
+                                          |
+                     +--------------------+--------------------+
+                     |                                         |
+                     v                                         v
+        +---------------------------+             +---------------------------+
+        | shard_input[i] SPSC queue |             | router_to_logger queue    |
+        +-------------+-------------+             +-------------+-------------+
+                      |                                           |
+                      v                                           |
+        +---------------------------+                             |
+        | shards::Shard             |                             |
+        | single owner: shard i     |                             |
+        +-------------+-------------+                             |
+                      |                                           |
+                      v                                           v
+        +---------------------------+             +---------------------------+
+        | shard_to_logger[i] queue  | ----------> | tape::Logger             |
+        +---------------------------+             | single owner: logger      |
+                                                  +-------------+-------------+
+                                                                |
+                                                                v
+                                                  +---------------------------+
+                                                  | recycle queue             |
+                                                  +-------------+-------------+
+                                                                |
+                                                                v
+                                                  +---------------------------+
+                                                  | ingest::IOWriter          |
+                                                  | recycle handles           |
+                                                  +---------------------------+
 ```
 
-Pipeline contract details: [`docs/data_contract.md`](docs/data_contract.md)  
-Performance roadmap: [`docs/perf_backlog.md`](docs/perf_backlog.md)
+Supporting docs:
+- [Architecture](docs/architecture.md)
+- [Ownership And Invariants](docs/ownership_invariants.md)
+- [Data Contract](docs/data_contract.md)
+- [Performance Backlog](docs/perf_backlog.md)
+- [Replay Roadmap](docs/replay_matrix.md)
 
-## Tech Stack
+## Build Targets
 
-- Language: C++20
-- Build: CMake + Ninja
-- Dependencies: `boost`, `openssl`, `nlohmann_json`, `simdjson`, `spdlog`, `gtest` (via `vcpkg`)
-- Quality gates: `clang-format`, `clang-tidy`, `ctest`, GitHub Actions CI
+Current CMake targets in [`cpp/CMakeLists.txt`](cpp/CMakeLists.txt):
+- `predex_websocket`
+- `predex_core_pipeline`
+- `predex_app`
+- `trader_app`
+
+The repository still contains a few placeholder or legacy-adjacent files, but the targets above are the supported C++ surface right now.
 
 ## Quickstart
 
-### 1) Prerequisites
+### Prerequisites
 
-- `clang`, `clang++`, `clang-tidy`
-- `cmake` (>= 3.24), `ninja`
-- `git`
-- `vcpkg` (recommended; CI uses manifest mode)
+- CMake 3.24+
+- Ninja
+- a C++20 compiler
+- `vcpkg` or equivalent system packages for Boost.System, OpenSSL, `nlohmann_json`, and `simdjson`
 
-### 2) Configure + Build
+### Configure And Build
 
 ```bash
-# if using vcpkg presets
-export VCPKG_ROOT=/path/to/vcpkg
 cmake --preset dev-vcpkg
-cmake --build --preset build-dev-vcpkg --parallel
+cmake --build --preset build-dev-vcpkg
 ```
 
-If you have all dependencies installed system-wide, you can use non-vcpkg presets:
+### Configure Credentials
+
+The example config uses environment-backed credentials:
 
 ```bash
-cmake --preset dev
-cmake --build --preset build-dev --parallel
-```
-
-### 3) Run Tests
-
-```bash
-ctest --preset test-dev-vcpkg
-# or: ctest --preset test-dev
-```
-
-### 4) Run Trader App
-
-```bash
-# credentials required (or set inline in config)
 export KALSHI_KEY_ID=...
 export KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----...'
+```
 
+### Run The Live Trader Bootstrap
+
+```bash
 ./build/dev/cpp/trader_app --config docs/trader_config.example.json
 ```
 
-You can also pass config path positionally or via `TRADING_CONFIG_PATH`.
+The current runtime is intentionally quiet on success. The main observable artifact is the configured tape file, typically `predex_tape.bin`.
 
-## Runtime Config
+## Tape Format
 
-Example drop-file: [`docs/trader_config.example.json`](docs/trader_config.example.json)
+The tape is a binary stream of repeated records:
 
-Key knobs:
-- mode (`paper`, `dev`, etc.)
-- websocket endpoint and channel list
-- frame pool/queue capacities
-- shard count and queue sizing
-- pump batch size and idle sleep
+```text
+[u32 payload_len_le][payload bytes][u32 payload_len_le][payload bytes]...
+```
+
+Each payload is the raw websocket text frame received from Kalshi.
+
+## Runtime Config Shape
+
+The live bootstrap consumes a small JSON config with these top-level sections:
+- `kalshi`
+- `market_routes`
+- `pipeline`
+- `tape`
+
+Example file:
+- [docs/trader_config.example.json](docs/trader_config.example.json)
+
+Important fields:
+- `kalshi.endpoint`
+- `kalshi.channels`
+- `kalshi.market_tickers`
+- `kalshi.credentials.key_id` or `key_id_env`
+- `kalshi.credentials.private_key_pem` or `private_key_pem_env`
+- `pipeline.frame_pool_capacity`
+- `pipeline.shard_count`
+- `pipeline.frame_queue_capacity` or explicit queue capacities
+- `tape.output_path`
+
+If `market_routes` is omitted, `trader_app` can derive simple routes from the configured market ticker list.
 
 ## Repository Layout
 
-- `cpp/apps` executable entrypoints
-- `cpp/include/trading` public interfaces and contracts
-- `cpp/src` implementations
-- `cpp/tests` integration and unit tests
-- `docs` data contracts, config example, perf backlog
+- `cpp/apps`: executable entrypoints
+- `cpp/include/predex`: public headers for websocket, pipeline, and app wiring
+- `cpp/src`: implementations
+- `cpp/tests`: older tests and scaffolding, not yet fully migrated to the current `predex` namespace layout
+- `docs`: architecture, contracts, config examples, and planning notes
+- `scripts`: helper scripts and future tooling entrypoints
 
-## Engineering Workflow
+## Near-Term Roadmap
 
-- Work from short-lived branches (`feat/*`, `fix/*`, `chore/*`)
-- Open PRs early, keep scope focused
-- Merge via squash after CI passes
+- Python tape reader and replay tooling
+- market discovery and config generation tooling
+- shard-local strategy and risk hooks
+- OMS and paper/live execution plumbing
+- backtesting framework on top of tape replay
 
-Contribution details: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+## Contributing
+
+Contribution guidelines live in [CONTRIBUTING.md](CONTRIBUTING.md).

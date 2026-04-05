@@ -69,3 +69,14 @@ target_link_libraries(
          predex::core_pipeline
          Threads::Threads
 )
+
+add_executable(
+  trader_app
+  apps/trader/main.cpp
+)
+
+target_link_libraries(
+  trader_app
+  PRIVATE predex::app
+          nlohmann_json::nlohmann_json
+)

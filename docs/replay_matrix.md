@@ -1,61 +1,36 @@
-# Replay Matrix Workflow
+# Replay Roadmap
 
-This repo now includes a deterministic replay path to compare paper OMS behavior across three profiles:
+Replay tooling is planned, but it is not part of the supported runtime today.
 
-- `baseline`
-- `latency`
-- `stress`
+## What Exists Today
 
-## Inputs
+- live `trader_app` can write raw inbound websocket payloads to a binary tape
+- the tape format is simple and stable enough to build tooling around:
 
-- Base runtime config: `docs/trader_config.example.json`
-- Profile overrides:
-  - `docs/profiles/paper_oms.baseline.override.json`
-  - `docs/profiles/paper_oms.latency.override.json`
-  - `docs/profiles/paper_oms.stress.override.json`
-- Fixed replay payload set: `docs/replay/top3_markets_fixed.jsonl`
-
-## Record Live Tape (Optional)
-
-You can record real inbound WS payloads from `trader_app` into JSONL:
-
-```bash
-timeout --signal=INT 900s ./build/dev/cpp/trader_app \
-  --config docs/trader_config.example.json \
-  --record-jsonl /tmp/kalshi_tape.jsonl
+```text
+[u32 payload_len_le][payload bytes]...
 ```
 
-Each inbound WS payload is written as one JSON line.
+- sample replay-oriented payload files live under [`docs/replay`](replay)
 
-Then replay that tape:
+## What Does Not Exist Yet
 
-```bash
-REPEAT=1 PUSH_BATCH=16 MAX_DRAIN=50000 \
-  scripts/run_replay_matrix.sh \
-  docs/trader_config.example.json \
-  /tmp/kalshi_tape.jsonl
-```
+- a first-party `replay_app`
+- a maintained replay matrix runner
+- a paper OMS evaluation harness
+- config-profile override tooling
 
-## Run Matrix
+Older notes in this repository may refer to those workflows, but they should be treated as planned work, not current capability.
 
-```bash
-REPEAT=300 PUSH_BATCH=16 MAX_DRAIN=50000 \
-  scripts/run_replay_matrix.sh \
-  docs/trader_config.example.json \
-  docs/replay/top3_markets_fixed.jsonl
-```
+## Intended Next Steps
 
-Each profile run emits one `replay.summary` line with comparable counters/latencies.
+1. Build a Python tape decoder.
+2. Add a Python replay driver that can emit JSONL or feed synthetic consumers.
+3. Add market discovery and config generation on top of recorded tape.
+4. Later, introduce a dedicated replay executable if the C++ side needs one.
 
-To push faster than receive-time, increase:
+## Recommended Direction
 
-- `REPEAT` (replay tape multiple times)
-- `PUSH_BATCH` (inject larger bursts per pump step)
-
-## Useful Fields
-
-- `parser_rejects`, `book_apply_rejects`, `parse_errors_total`
-- `ingest_q_hwm`, `shard_q_hwm_total`, `shard_q_hwm_max`
-- `strategy_intents_emitted`, `strategy_intents_submitted`, `strategy_risk_rejects`
-- `oms_submitted`, `oms_sent`, `oms_rejects`, `oms_pending_q_hwm`
-- `oms_latency_p95_ns`, `oms_latency_p99_ns`
+The current division of labor should likely be:
+- C++ for live ingest and low-latency runtime components
+- Python for tape decode, replay, discovery, research, and backtesting

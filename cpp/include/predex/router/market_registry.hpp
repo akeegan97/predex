@@ -7,7 +7,7 @@
 #include <vector>
 
 
-namespace predex::core::routing{
+namespace predex::core::routing::kalshi{
     struct MarketRoute{
         std::uint32_t market_id_{0};
         std::uint16_t affinity_key_{0};

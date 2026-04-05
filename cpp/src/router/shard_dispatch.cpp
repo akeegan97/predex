@@ -1,7 +1,7 @@
 #include "predex/router/shard_dispatch.hpp"
 #include <atomic>
 
-namespace predex::core::routing{
+namespace predex::core::routing::kalshi{
     ShardDispatch::ShardDispatch(std::vector<Queue*> shard_queues) : shard_queues_(std::move(shard_queues)) {}
 
     bool ShardDispatch::try_dispatch(std::size_t shard_id, const predex::core::ingest::kalshi::FrameHandle& handle) noexcept{

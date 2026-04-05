@@ -2,7 +2,7 @@
 #include "predex/internal/market_types.hpp"
 #include "predex/internal/normalized_event.hpp"
 
-namespace predex::core::kalshi::shard {
+namespace predex::core::shards::kalshi {
 namespace{
     DeltaApplyResult apply_delta(const internal::NormalizedEvent& event, BookState& book_state){
         if(event.effective_sequence_id().has_value() && book_state.last_seq_id.has_value()){

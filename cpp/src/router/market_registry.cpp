@@ -1,6 +1,6 @@
 #include "predex/router/market_registry.hpp"
 
-namespace predex::core::routing{
+namespace predex::core::routing::kalshi{
     MarketRegistry::MarketRegistry(const std::vector<MarketRegistryEntry>& entries){
         routes_.reserve(entries.size());
         for(const auto& entry: entries){

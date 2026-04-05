@@ -12,7 +12,7 @@
 
 
 
-namespace predex::core::routing{
+namespace predex::core::routing::kalshi{
     struct RouterTelemetry{
         std::size_t processed_frames_{0};
         std::size_t dropped_frames_{0};
@@ -27,18 +27,18 @@ namespace predex::core::routing{
         public:
             explicit Router(predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& ingress_queue,
                 predex::core::ingest::kalshi::FramePool& frame_pool,
-                const predex::core::routing::MarketRegistry &market_registry,
-                predex::core::routing::ShardDispatch &shard_dispatch,
+                const predex::core::routing::kalshi::MarketRegistry &market_registry,
+                predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
                 predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue) noexcept;
 
-            [[nodiscard]] std::size_t pump(size_t max_batch_size) noexcept;
+            [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
 
         private:
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& ingress_queue_; // IOWriter producer, Router consumer
             predex::core::ingest::kalshi::FramePool& frame_pool_;
             RouterTelemetry telemetry_;
-            const predex::core::routing::MarketRegistry& market_registry_;
-            predex::core::routing::ShardDispatch &shard_dispatch_;
+            const predex::core::routing::kalshi::MarketRegistry& market_registry_;
+            predex::core::routing::kalshi::ShardDispatch &shard_dispatch_;
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue_; // Router producer, logger consumer
 
             std::unordered_map<std::uint32_t, std::uint64_t> last_seq_by_sid_; //global checker for messages
@@ -51,4 +51,4 @@ namespace predex::core::routing{
             [[nodiscard]] static std::size_t compute_shard_id(std::uint16_t affinity_key, std::size_t shard_count) noexcept;
             [[nodiscard]] static std::uint64_t monotonic_now_ns() noexcept;
     };
-}
+}// namespace predex::core::routing::kalshi

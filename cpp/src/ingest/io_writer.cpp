@@ -2,10 +2,10 @@
 #include "predex/ingest/frame_pool.hpp"
 #include <cstring>
 #include <chrono>
-namespace predex::core::ingest::io{
+namespace predex::core::ingest::kalshi{
   IOWriter::IOWriter(predex::core::ingest::kalshi::FramePool& frame_pool, 
-                     predex::utils::SPSCQueue<kalshi::FrameHandle>& router_queue,
-                     predex::utils::SPSCQueue<kalshi::FrameHandle>& recycle_queue) noexcept
+                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& router_queue,
+                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
     : frame_pool_(frame_pool), router_queue_(router_queue), recycle_queue_(recycle_queue) {}
 
     bool IOWriter::on_wire_message(std::string_view payload) noexcept{
@@ -15,7 +15,7 @@ namespace predex::core::ingest::io{
             return false; // drop frame if payload is too large to fit in a frame, could extend this to have a separate queue for oversized frames if we want to keep them for analysis
         }
         //try and acquire handle from pool 
-        kalshi::FrameHandle handle{};
+        predex::core::ingest::kalshi::FrameHandle handle{};
         if(!frame_pool_.try_acquire(handle)){
             //try and drain recycle pool to free up handles
             drain_recycled(max_batch_size_);
@@ -52,7 +52,7 @@ namespace predex::core::ingest::io{
 
     std::size_t IOWriter::drain_recycled(std::size_t max_batch_size) noexcept{
         std::size_t recycled_count = 0;
-        kalshi::FrameHandle handle{};
+        predex::core::ingest::kalshi::FrameHandle handle{};
         while(recycled_count < max_batch_size && recycle_queue_.try_pop(handle)){
             if(frame_pool_.recycle(handle)){
                 ++recycled_count;

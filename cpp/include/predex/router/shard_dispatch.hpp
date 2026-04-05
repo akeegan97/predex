@@ -9,7 +9,7 @@
 #include "predex/utils/spsc_queue.hpp"
 
 
-namespace predex::core::routing{
+namespace predex::core::routing::kalshi{
     struct ShardDispatchStats{
         std::uint64_t dispatched_{0};
         std::uint64_t dropped_{0};

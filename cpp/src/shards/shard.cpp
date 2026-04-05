@@ -1,14 +1,14 @@
 #include "predex/shards/shard.hpp"
 
 
-namespace predex::core::kalshi::shard{
+namespace predex::core::shards::kalshi{
 
     Shard::Shard(predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& input_queue, 
         predex::core::ingest::kalshi::FramePool& frame_pool, 
         predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
-        predex::parsers::exchanges::kalshi::Parser parser,
-        predex::core::kalshi::shard::BookStore& book_store,
-        predex::core::kalshi::shard::IShardEventHandler* event_handler) :
+        predex::core::parsers::kalshi::Parser parser,
+        predex::core::shards::kalshi::BookStore& book_store,
+        predex::core::shards::kalshi::IShardEventHandler* event_handler) :
         input_queue_(input_queue),
         frame_pool_(frame_pool),
         logger_queue_(logger_queue),
@@ -44,18 +44,20 @@ namespace predex::core::kalshi::shard{
         }
         switch(result){
             case ApplyResult::kApplied:
-                ++processed_count_;
-                return true;
             case ApplyResult::kHandlerAccept:
                 ++processed_count_;
                 return true;
             case ApplyResult::kRejected:
-                return false; //book state is malformed or couldn't be applied, halt processing already incremented failed_count_ in apply_event
+                return false;
             case ApplyResult::kHandlerReject:
                 ++processed_count_;
-                return true; //book state is fine, handler rejected/couldn't proceed but book state should be fine to continue processing
+                return true;
             case ApplyResult::kParseFail:
-                return false; //malformed frame/payload that couldn't be parsed, halt processing already incremented failed_count_ in apply_event
+                return false;
+            default:
+                // Handle unexpected enum values
+                ++failed_count_;
+                return false;
         }
         return true;
     }

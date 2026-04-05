@@ -1,7 +1,7 @@
 #pragma once
 
 #include "predex/internal/normalized_event.hpp"
-namespace predex::core::kalshi::shard {
+namespace predex::core::shards::kalshi {
 
 class IShardEventHandler {
   public:
@@ -10,4 +10,4 @@ class IShardEventHandler {
     [[nodiscard]] virtual bool on_event(const internal::NormalizedEvent& event) = 0;
 };
 
-} // namespace predex::core::kalshi::shard
+} // namespace predex::core::shards::kalshi

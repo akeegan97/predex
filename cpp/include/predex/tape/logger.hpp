@@ -3,12 +3,12 @@
 #include <string_view>
 #include <vector>
 #include <fstream>
-#include <predex/utils/spsc_queue.hpp>
-#include <predex/ingest/frame_pool.hpp>
+#include "predex/utils/spsc_queue.hpp"
+#include "predex/ingest/frame_pool.hpp"
 
 
 
-namespace predex::core::tape{
+namespace predex::core::tape::kalshi{
     class Logger{
         public:
             explicit Logger(std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*> input_queues,
@@ -34,5 +34,5 @@ namespace predex::core::tape{
             std::size_t next_input_queue_{0}; // for round robin polling of input queues
 
     };
-}
+}// namespace predex::core::tape::kalshi
  

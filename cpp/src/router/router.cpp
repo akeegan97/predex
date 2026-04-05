@@ -6,7 +6,7 @@
 
 
 
-namespace predex::core::routing{
+namespace predex::core::routing::kalshi{
     namespace{
         bool get_uint64(simdjson::ondemand::object& obj, std::string_view key, std::uint64_t& out) noexcept{
             auto result = obj.find_field_unordered(key).get_uint64();
@@ -35,8 +35,8 @@ namespace predex::core::routing{
     }
     Router::Router(predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& ingress_queue,
         predex::core::ingest::kalshi::FramePool& frame_pool,
-        const predex::core::routing::MarketRegistry &market_registry,
-        predex::core::routing::ShardDispatch &shard_dispatch,
+        const predex::core::routing::kalshi::MarketRegistry &market_registry,
+        predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
         predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue) noexcept
         : ingress_queue_(ingress_queue),
           frame_pool_(frame_pool),

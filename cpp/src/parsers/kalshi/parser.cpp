@@ -1,4 +1,4 @@
-#include "predex/parsers/exchanges/kalshi/parser.hpp"
+#include "predex/parsers/kalshi/parser.hpp"
 #include "predex/internal/normalized_event.hpp"
 
 #include <charconv>
@@ -8,7 +8,7 @@
 
 #include <simdjson.h>
 
-namespace predex::parsers::exchanges::kalshi {
+namespace predex::core::parsers::kalshi {
 
 namespace {
 
@@ -555,7 +555,7 @@ parse_trade(simdjson::ondemand::object& msg,
 
 } // namespace
 
-predex::parsers::ParseResult<predex::internal::NormalizedEvent>Parser::parse(const predex::core::ingest::kalshi::FrameHandle& handle,
+predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::parsers::kalshi::Parser::parse(const predex::core::ingest::kalshi::FrameHandle& handle,
     const predex::core::ingest::kalshi::KalshiFrame& frame) const{
 
     predex::internal::NormalizedEvent event{};
@@ -608,4 +608,4 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent>Parser::parse(con
     } 
     return ParseResult<internal::NormalizedEvent>::failure(ParseError::kUnsupportedMessageType);
     }
-}// namespace predex::parsers::exchanges::kalshi
+}// namespace predex::core::parsers::kalshi

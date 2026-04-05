@@ -4,7 +4,7 @@
 #include "predex/parsers/parse_result.hpp"
 #include "predex/ingest/frame_pool.hpp"
 
-namespace predex::parsers::exchanges::kalshi {
+namespace predex::core::parsers::kalshi {
 
 class Parser{
   //takes a FrameHandle & Frame Ref and returns a ParseResult containing a NormalizedEvent
@@ -18,4 +18,4 @@ class Parser{
 
 };
 
-} // namespace predex::parsers::exchanges::kalshi
+} // namespace predex::core::parsers::kalshi

@@ -11,7 +11,7 @@
 #include "predex/internal/market_types.hpp"
 #include "predex/internal/normalized_event.hpp"
 
-namespace predex::core::kalshi::shard {
+namespace predex::core::shards::kalshi {
 
 struct BookState {
     using BidLevels = std::map<internal::PriceTicks, internal::QtyLots, std::greater<>>;
@@ -82,4 +82,4 @@ class BookStore {
     std::unordered_map<internal::MarketId, BookState> books_;
 };
 
-} // namespace predex::core::kalshi::shard
+} // namespace predex::core::shards::kalshi

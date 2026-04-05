@@ -278,7 +278,7 @@ namespace predex {
         while(running.load(std::memory_order_acquire)){
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        stop();
+        // stop();
     }
 
     void App::Runtime::stop(){

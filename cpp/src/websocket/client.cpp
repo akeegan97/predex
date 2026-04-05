@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <optional>
 #include <string>
 #include <string_view>
 
@@ -250,21 +249,37 @@ bool BoostBeastWsTransport::send_text(std::string_view payload) {
     return true;
 }
 
-std::optional<std::string> BoostBeastWsTransport::recv_text() {
+RecvResult BoostBeastWsTransport::recv_text(std::chrono::milliseconds timeout) {
     if (!impl_->connected) {
         impl_->last_error = "Cannot receive: websocket is not connected";
-        return std::nullopt;
+        return {.status = RecvStatus::kClosed};
     }
 
     impl_->read_buffer.consume(impl_->read_buffer.size());
+    auto& stream = beast::get_lowest_layer(*impl_->ws_stream);
+    stream.expires_after(timeout);
     boost::system::error_code error_code;
     impl_->ws_stream->read(impl_->read_buffer, error_code);
+    stream.expires_never();
+
     if (error_code) {
+        if (error_code == beast::error::timeout || error_code == net::error::timed_out) {
+            return {.status = RecvStatus::kTimeout};
+        }
+        if (error_code == websocket::error::closed || error_code == net::error::operation_aborted ||
+            error_code == net::error::not_connected) {
+            impl_->connected = false;
+            return {.status = RecvStatus::kClosed};
+        }
         impl_->last_error = "Websocket read failed: " + error_code.message();
-        return std::nullopt;
+        impl_->connected = false;
+        return {.status = RecvStatus::kError};
     }
 
-    return beast::buffers_to_string(impl_->read_buffer.data());
+    return {
+        .status = RecvStatus::kMessage,
+        .payload = beast::buffers_to_string(impl_->read_buffer.data()),
+    };
 }
 
 void BoostBeastWsTransport::close() {

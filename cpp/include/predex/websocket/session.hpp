@@ -1,12 +1,12 @@
 #pragma once
 
-#include <optional>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "predex/websocket/ws_adapter.hpp"
 #include "predex/websocket/client.hpp"
+#include "predex/websocket/ws_adapter.hpp"
 
 namespace predex::websocket {
 
@@ -17,7 +17,7 @@ class WsSession {
     [[nodiscard]] bool connect();
     [[nodiscard]] bool subscribe(std::string_view channel,
                                  const std::vector<std::string>& market_tickers = {});
-    [[nodiscard]] std::optional<std::string> recv_text();
+    [[nodiscard]] RecvResult recv_text(std::chrono::milliseconds timeout);
     void close();
 
     [[nodiscard]] const adapter::ConnectRequest& connect_request() const;

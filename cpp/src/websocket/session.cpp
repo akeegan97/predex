@@ -1,5 +1,6 @@
 #include "predex/websocket/session.hpp"
 
+#include <chrono>
 #include <exception>
 
 namespace predex::websocket {
@@ -59,19 +60,21 @@ bool WsSession::subscribe(std::string_view channel,
     return true;
 }
 
-std::optional<std::string> WsSession::recv_text() {
-    auto message = transport_.recv_text();
-    if (!message) {
+RecvResult WsSession::recv_text(std::chrono::milliseconds timeout) {
+    auto recv_result = transport_.recv_text(timeout);
+    if (recv_result.status == RecvStatus::kError) {
         if (const auto transport_error = transport_.last_error(); !transport_error.empty()) {
             last_error_.assign(transport_error);
         } else {
             last_error_ = "Websocket transport receive failed";
         }
-        return std::nullopt;
+        return recv_result;
     }
 
-    last_error_.clear();
-    return message;
+    if (recv_result.status == RecvStatus::kMessage) {
+        last_error_.clear();
+    }
+    return recv_result;
 }
 
 void WsSession::close() { transport_.close(); }

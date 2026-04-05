@@ -10,6 +10,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(
   predex_websocket
@@ -51,4 +52,20 @@ target_include_directories(predex_core_pipeline PUBLIC include)
 target_link_libraries(
   predex_core_pipeline
   PUBLIC simdjson::simdjson
+)
+
+add_library(
+  predex_app
+  src/app.cpp
+)
+
+add_library(predex::app ALIAS predex_app)
+
+target_include_directories(predex_app PUBLIC include)
+
+target_link_libraries(
+  predex_app
+  PUBLIC predex::websocket
+         predex::core_pipeline
+         Threads::Threads
 )

@@ -25,7 +25,7 @@ jobs:
       - name: Repository sanity check
         run: |
           set -euo pipefail
-          echo "CI is configured for C++ (CMake/clang) and Python."
+          echo "CI is configured for the current C++ build graph and optional future Python tooling."
           if [ ! -f cpp/CMakeLists.txt ] && [ ! -f pyproject.toml ] && [ ! -f requirements.txt ]; then
             echo "::warning::No CMake or Python project files found yet."
           fi
@@ -153,7 +153,14 @@ jobs:
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
         run: |
           set -euo pipefail
-          mapfile -t cpp_files < <(find cpp -type f \( -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \) ! -path 'cpp/third_party/*' ! -path 'cpp/vendor/*')
+          mapfile -t cpp_files < <(
+            {
+              find cpp/src -type f \( -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \);
+              if [ -f cpp/apps/trader/main.cpp ]; then
+                printf '%s\n' cpp/apps/trader/main.cpp;
+              fi
+            } | sort -u
+          )
           if [ "${#cpp_files[@]}" -eq 0 ]; then
             echo "No C++ implementation files found for clang-tidy."
             exit 0

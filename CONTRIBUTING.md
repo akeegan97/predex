@@ -1,5 +1,26 @@
 # Contributing
 
+## Repository Notes
+
+This repository is in an active architecture cleanup phase.
+
+The current supported C++ surface is:
+- `predex_websocket`
+- `predex_core_pipeline`
+- `predex_app`
+- `trader_app`
+
+A few areas still contain placeholder or older scaffolding:
+- `cpp/tests`
+- `cpp/apps/replay`
+- `cpp/apps/logger`
+
+If you touch runtime architecture, queue topology, or ownership semantics, update the docs alongside the code:
+- `README.md`
+- `docs/architecture.md`
+- `docs/ownership_invariants.md`
+- `docs/data_contract.md`
+
 ## Branch Strategy
 
 1. Never commit directly to `main`.
@@ -40,7 +61,8 @@ Use clear commit prefixes when possible:
 1. C++:
    - Build with CMake
    - Keep code formatted via `.clang-format`
-   - Keep static analysis clean via `.clang-tidy`
+   - Keep static analysis clean via `.clang-tidy` for the active build graph
+   - Prefer changing currently-supported targets over reviving stale scaffolding opportunistically
 2. Python:
-   - Keep lint clean via `ruff`
-   - Keep tests passing via `pytest`
+   - Python tooling is planned and may be added incrementally
+   - When Python project files are introduced, keep lint and tests green

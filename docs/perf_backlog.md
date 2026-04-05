@@ -1,85 +1,68 @@
 # Performance Backlog
 
-This file tracks deliberate performance work I'm deferring, planning to run targeted perf PRs with before/after metrics.
+This file tracks performance work that still matters, but is deliberately deferred while the runtime shape settles.
 
-## Hot-path candidates (high priority)
+## Principles
 
-1. Remove JSON input copy in parsers.
-   - Current state: `simdjson::padded_string` copies each payload before parse.
-   - Target: parse from frame-pool backed, `SIMDJSON_PADDING`-safe buffers using `padded_string_view`.
-2. Avoid full raw payload copy in `NormalizedEvent`.
-   - Current state: `event.raw_payload = std::string{...}` on every parse.
-   - Target: keep only extracted fields in hot path; gate raw payload capture behind debug/audit mode.
-3. Reuse simdjson parser instance per thread.
-   - Current state: parser object is constructed per message parse call.
-   - Target: parser as thread-owned state in shard/parser runner.
-4. Remove `FramePool` mutex from producer/consumer hot path.
-   - Current state: free-list management still uses a mutex.
-   - Target: SPSC-safe lock-free slot lifecycle (or split ownership model) with generation checks retained.
+- keep the current pipeline correct and observable first
+- optimize one bottleneck family at a time
+- measure before and after each change
+- avoid speculative micro-optimization when the architecture is still moving
 
-## Data model and routing candidates (medium priority)
+## Near-Term Hot Path Work
 
-1. Make raw frame to parser handoff fully zero-copy.
-   - Preserve frame handle/view lifetime through parse + route stage.
-2. Reduce dynamic allocations in parsed events.
-   - Evaluate arena/pmr for vectors/strings used in snapshot/trade decode.
-3. Evaluate control-plane split enforcement.
-   - Ensure non-market messages never hit shard parse path.
-4. Decide trade ID mode.
-   - Keep `std::optional<std::string>` for correctness/audit.
-   - Option: hash-only trade ID in strict low-latency mode.
-5. Replace shard idle polling with blocking wakeup.
-   - Current state: shard run loop uses `std::this_thread::sleep_for()` when queue is empty.
-   - Target: wake on producer signal (condition variable/eventfd/queue semaphore) to reduce idle CPU and wake latency.
+1. Remove or reduce parser-side payload copies.
+   - Current state: inbound payload is copied once into the frame pool, but parser-side work can still allocate or copy more than necessary.
+   - Goal: keep parsing as close to frame-pool-backed memory as possible.
 
-## Connection architecture candidates (medium priority)
+2. Reuse parser state per thread.
+   - Current state: parser construction and transient parse state may still be more expensive than necessary.
+   - Goal: make parser state thread-owned and reusable.
 
-1. Move from single websocket session to partitioned multi-connection ingest.
-   - Current state: one WS connection carries all markets/channels, so reconnect/drop blast radius is global.
-   - Target: multiple WS sessions partitioned by market/channel with dedicated IO workers.
-2. Add per-session recovery and resubscribe control.
-   - Current state: reconnect strategy is effectively whole-feed.
-   - Target: recover only affected partition/session, keep unaffected partitions live.
-3. Align session partitions with router/shard topology.
-   - Current state: single ingest stream fans into shard routing.
-   - Target: map WS partitions to shard ownership boundaries to reduce cross-thread handoff pressure.
+3. Revisit `FramePool` slot lifecycle overhead.
+   - Current state: the pool is correct and centralized around `IOWriter`, but we have not tuned it for maximum throughput yet.
+   - Goal: preserve safety while reducing lifecycle overhead where profiling shows it matters.
 
-## OMS runtime candidates (medium priority)
+4. Make idle behavior configurable.
+   - Current state: router, shard, and logger loops use `yield()` when idle.
+   - Goal: support policy choices like sleep, yield, spin, or spin-then-yield depending on deployment environment.
 
-1. Replace centralized OMS ingress queue with per-shard bounded SPSC queues.
-   - Current state: `submit()` uses one central `std::deque` protected by `std::mutex` in `OrderManager`.
-   - Target: one shard -> OMS SPSC ring per shard, lock-free atomic head/tail, explicit backpressure policy.
-2. Add batched drain/send scheduling across shard ingress queues.
-   - Current state: OMS drains one central queue item-by-item.
-   - Target: fair round-robin (or weighted) queue polling with per-queue batch size to amortize atomic load/store and reduce scheduler overhead.
-3. Replace OMS idle polling with producer-driven wakeup.
-   - Current state: worker loop sleeps when no work (`loop_idle_sleep`), adding idle latency/CPU tradeoff.
-   - Target: wake mechanism (eventfd/condition variable/queue semaphore + non-empty bitset) so OMS blocks when idle and wakes on enqueue.
-4. Split OMS send/receive loops when outbound or inbound rates diverge.
-   - Current state: one worker thread handles both `drain_outbound_intents()` and `pump_incoming_update()`.
-   - Target: dedicated send and receive workers (or event loop) to reduce head-of-line blocking.
-5. Remove avoidable OMS payload copies/allocations.
-   - Current state: request build + update parse paths allocate `std::string` payloads per message.
-   - Target: reuse buffers/allocators and add zero-copy parse path where exchange payload format allows.
-6. Optimize in-flight order state store for high-rate lookup/update.
-   - Current state: in-flight lifecycle state exists, but with mutex-protected hash maps and simple indexing.
-   - Target: pre-sized/sharded table keyed by client/exchange order id with lower contention and predictable allocation behavior.
-7. Add explicit queue pressure metrics and rejection behavior.
-   - Current state: queue depth is observable, but no strict bounded rejection/timeout strategy tied to SLA.
-   - Target: define and measure deterministic behavior under burst load (reject, block, or shed by policy).
+## Routing And Sharding Work
 
-## Potential abstraction overhead checks (medium/low priority)
+1. Validate the classification fast path.
+   - Goal: keep control-plane messages off shard threads as cheaply as possible.
 
-1. Measure virtual/interface overhead in ingest boundaries.
-   - `IWsMessageSink` and other interface calls are likely minor, but validate in profile.
-2. Validate parser dispatch strategy.
-   - Keep compile-time exchange parser selection where possible.
-3. Cacheline tuning and false-sharing checks.
-   - Re-verify `alignas` and atomic placement in SPSC queue structures.
+2. Reduce per-message dynamic allocation in routing and parse output.
+   - Goal: avoid accidental allocator pressure in steady-state market-data flow.
 
-## Benchmark plan for each perf PR
+3. Revisit shard-affinity policy once discovery/config tooling exists.
+   - Goal: make shard assignment intentional and stable under larger market sets.
 
-1. Capture baseline metrics (p50/p99 message latency, throughput, alloc count, CPU).
-2. Land one optimization family per PR.
-3. Re-run same workload and include diff in PR description.
-4. Keep correctness tests and replay/regression tests green.
+## Logging And Tape Work
+
+1. Add rotation and retention policy around tape files.
+   - Current state: one output path, no runtime rotation policy.
+
+2. Add lightweight tape inspection and replay tools.
+   - Current state: tape format is simple, but first-party tooling is still missing.
+
+3. Measure logger throughput under sustained shard fan-in.
+   - Goal: understand when one logger thread remains sufficient and when partitioned logging becomes necessary.
+
+## Future Runtime Work
+
+These are real future items, but they are not implemented today:
+
+1. Strategy and risk hooks colocated with shards
+2. OMS and order transport
+3. replay executable
+4. Python discovery, config synthesis, and backtesting tooling
+
+## Benchmark Discipline
+
+For each serious performance PR:
+
+1. capture baseline throughput and latency
+2. change one subsystem at a time
+3. rerun the same workload
+4. keep correctness checks green

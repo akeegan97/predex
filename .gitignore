@@ -6,3 +6,5 @@ __pycache__/
 .env
 .pr-draft.md
 events.json
+docs/replay/kalshi_tape.jsonl
+predex_tape.bin

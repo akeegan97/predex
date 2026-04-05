@@ -1,230 +1,182 @@
-#include "trading/shards/book_store.hpp"
+#include "predex/shards/book_store.hpp"
+#include "predex/internal/market_types.hpp"
+#include "predex/internal/normalized_event.hpp"
 
-namespace trading::shards {
-namespace {
-
-void mark_desynced(BookState& book, std::uint64_t dropped_pending_count = 0) {
-    if (!book.desynced) {
-        ++book.desync_count;
-    }
-    book.desynced = true;
-    book.has_snapshot = false;
-    book.last_seq_id.reset();
-    book.bids.clear();
-    book.asks.clear();
-    book.pending_deltas.clear();
-    book.dropped_pending_delta_count += dropped_pending_count;
-}
-
-bool advance_sequence_if_present(BookState& book,
-                                 const std::optional<internal::SequenceId>& sequence_id) {
-    if (!sequence_id.has_value()) {
-        return true;
-    }
-
-    if (book.last_seq_id.has_value()) {
-        const auto last_seq = book.last_seq_id.value();
-        const auto next_seq = sequence_id.value();
-        // Per-market books allow sequence gaps because some exchanges emit connection-global
-        // sequence ids, but regressions/stale values are rejected.
-        if (next_seq <= last_seq) {
-            ++book.stale_sequence_count;
-            return false;
-        }
-    }
-
-    book.last_seq_id = sequence_id;
-    return true;
-}
-
-bool apply_snapshot_data(BookState& book, const internal::SnapshotData& snapshot) {
-    book.bids.clear();
-    book.asks.clear();
-
-    for (const auto& level : snapshot.bids) {
-        if (level.price_ticks < 0 || level.qty_lots <= 0) {
-            return false;
-        }
-        book.bids[level.price_ticks] = level.qty_lots;
-    }
-    for (const auto& level : snapshot.asks) {
-        if (level.price_ticks < 0 || level.qty_lots <= 0) {
-            return false;
-        }
-        book.asks[level.price_ticks] = level.qty_lots;
-    }
-    return true;
-}
-
-bool apply_delta_data(BookState& book, const internal::DeltaData& delta) {
-    if (delta.price_ticks < 0) {
-        return false;
-    }
-
-    BookState::BidLevels* bids = &book.bids;
-    BookState::AskLevels* asks = &book.asks;
-    switch (delta.side) {
-    case internal::Side::kBid:
-    case internal::Side::kBuy: {
-        const auto existing_it = bids->find(delta.price_ticks);
-        const internal::QtyLots existing_qty = existing_it == bids->end() ? 0 : existing_it->second;
-        const internal::QtyLots updated_qty = existing_qty + delta.delta_qty_lots;
-        if (updated_qty <= 0) {
-            bids->erase(delta.price_ticks);
-        } else {
-            (*bids)[delta.price_ticks] = updated_qty;
-        }
-        return true;
-    }
-    case internal::Side::kAsk:
-    case internal::Side::kSell: {
-        const auto existing_it = asks->find(delta.price_ticks);
-        const internal::QtyLots existing_qty = existing_it == asks->end() ? 0 : existing_it->second;
-        const internal::QtyLots updated_qty = existing_qty + delta.delta_qty_lots;
-        if (updated_qty <= 0) {
-            asks->erase(delta.price_ticks);
-        } else {
-            (*asks)[delta.price_ticks] = updated_qty;
-        }
-        return true;
-    }
-    case internal::Side::kUnknown:
-        return false;
-    }
-    return false;
-}
-
-bool replay_pending_deltas(BookState& book) {
-    while (!book.pending_deltas.empty()) {
-        BookState::PendingDelta pending = book.pending_deltas.front();
-        book.pending_deltas.pop_front();
-
-        if (!advance_sequence_if_present(book, pending.sequence_id)) {
-            ++book.dropped_pending_delta_count;
-            continue;
-        }
-        if (!apply_delta_data(book, pending.delta)) {
-            const auto remaining = static_cast<std::uint64_t>(book.pending_deltas.size());
-            mark_desynced(book, remaining + 1U);
-            return false;
-        }
-
-        ++book.delta_count;
-        ++book.replayed_delta_count;
-    }
-    return true;
-}
-
-} // namespace
-
-BookApplyResult BookStore::apply_with_result(const internal::NormalizedEvent& event) {
-    auto reject = [](BookApplyRejectReason reason) {
-        return BookApplyResult{
-            .applied = false,
-            .reason = reason,
-        };
-    };
-
-    if (event.market_ticker.empty() || event.type == internal::EventType::kUnknown) {
-        return reject(BookApplyRejectReason::kMissingMarketOrUnknownEvent);
-    }
-
-    auto [it, inserted] = books_.try_emplace(event.market_ticker);
-    if (inserted) {
-        it->second.market_ticker = event.market_ticker;
-    }
-    BookState& book = it->second;
-
-    switch (event.type) {
-    case internal::EventType::kSnapshot: {
-        const auto* snapshot = std::get_if<internal::SnapshotData>(&event.data);
-        if (snapshot == nullptr || !apply_snapshot_data(book, *snapshot)) {
-            ++book.apply_reject_count;
-            return reject(BookApplyRejectReason::kInvalidSnapshotData);
-        }
-        book.has_snapshot = true;
-        book.desynced = false;
-        book.last_seq_id = event.effective_sequence_id();
-        ++book.snapshot_count;
-        if (!replay_pending_deltas(book)) {
-            ++book.apply_reject_count;
-            return reject(BookApplyRejectReason::kReplayPendingDeltaFailure);
-        }
-        break;
-    }
-    case internal::EventType::kDelta: {
-        const auto* delta = std::get_if<internal::DeltaData>(&event.data);
-        if (delta == nullptr) {
-            ++book.apply_reject_count;
-            return reject(BookApplyRejectReason::kMissingDeltaData);
-        }
-
-        if (book.desynced) {
-            ++book.apply_reject_count;
-            return reject(BookApplyRejectReason::kDeltaWhileDesynced);
-        }
-        if (!book.has_snapshot) {
-            if (book.pending_deltas.size() >= BookStore::kMaxPendingDeltas) {
-                const std::uint64_t dropped_pending =
-                    static_cast<std::uint64_t>(book.pending_deltas.size()) + 1U;
-                mark_desynced(book, dropped_pending);
-                ++book.apply_reject_count;
-                return reject(BookApplyRejectReason::kPendingDeltaOverflowDesync);
+namespace predex::core::shards::kalshi {
+namespace{
+    DeltaApplyResult apply_delta(const internal::NormalizedEvent& event, BookState& book_state){
+        if(event.effective_sequence_id().has_value() && book_state.last_seq_id.has_value()){
+            if(event.effective_sequence_id().value() <= book_state.last_seq_id.value()){
+                return DeltaApplyResult::kStaleSequence;
             }
+            const auto& delta_data = std::get<internal::DeltaData>(event.data);
+            //handle both sides
+            if(delta_data.side == internal::Side::kBid){
+                auto bid_iterator = book_state.bids.find(delta_data.price_ticks);
+                const auto existing_qty = (bid_iterator != book_state.bids.end()) ? bid_iterator->second : 0;
+                const auto updated_qty = existing_qty + delta_data.delta_qty_lots;
+                if(updated_qty < 0){
+                    book_state.desynced = true;
+                    return DeltaApplyResult::kNegativeQuantityDesync;//should never happen means we are missing something mark book desynced and return
+                }
+                if(updated_qty == 0){
+                    if(bid_iterator != book_state.bids.end()){
+                        book_state.bids.erase(bid_iterator);//price level qty is 0 remove from book :thought, since Kalshi is dense 1-99 we might want to not explicitly erase?
+                    }
+                } else {
+                    book_state.bids[delta_data.price_ticks] = updated_qty;//add new level 
+                }
+                book_state.last_seq_id = event.effective_sequence_id();
+                return DeltaApplyResult::kSuccess;
+            }
+            if(delta_data.side == internal::Side::kAsk){
+                auto ask_iterator = book_state.asks.find(delta_data.price_ticks);
+                const auto existing_qty = (ask_iterator != book_state.asks.end()) ? ask_iterator->second : 0;
+                const auto updated_qty = existing_qty + delta_data.delta_qty_lots;
+                if(updated_qty < 0){
+                    book_state.desynced = true;
+                    return DeltaApplyResult::kNegativeQuantityDesync;//should never happen means we are missing something mark book desynced and return
+                }
+                if(updated_qty == 0){
+                    if(ask_iterator != book_state.asks.end()){
+                        book_state.asks.erase(ask_iterator);//price level qty is 0 remove from book :thought, since Kalshi is dense 1-99 we might want to not explicitly erase?
+                    }
+                } else {
+                    book_state.asks[delta_data.price_ticks] = updated_qty;//add new level 
+                }
+                book_state.last_seq_id = event.effective_sequence_id();
+                return DeltaApplyResult::kSuccess;
+            }
+        }
+        return DeltaApplyResult::kInvalidSeq;
+    }
+}
+BookApplyResult BookStore::apply_with_result(const internal::NormalizedEvent& event) {
+    /*
+    check if we are initialized with has_snapshot & market_id 
+    if not initialized, only apply snapshot events, buffer deltas and ignore trades, if we get a delta and buffer is full mark desynced
+    if initialized apply deltas and trades, if delta fails to apply mark desynced, ignore unsupported event types (heartbeat/status)
+    */
 
-            book.pending_deltas.push_back(BookState::PendingDelta{
-                .sequence_id = event.effective_sequence_id(),
-                .delta = *delta,
-            });
-            ++book.buffered_delta_count;
-            return BookApplyResult{
-                .applied = true,
-                .reason = BookApplyRejectReason::kNone,
-            };
-        }
-        if (!advance_sequence_if_present(book, event.effective_sequence_id()) ||
-            !apply_delta_data(book, *delta)) {
-            ++book.apply_reject_count;
-            return reject(BookApplyRejectReason::kDeltaSequenceOrLevelInvalid);
-        }
+    if(event.type == internal::EventType::kHeartbeat || event.type == internal::EventType::kStatus) {
+        return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kUnsupportedEventType};
+    }
+    
+    if(event.meta.market_id == 0){
+        //market_id of 0 is invalid and means we either malformed the json decode/router didn't attach market_id or market is not in our map
+        return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kMissingMarketOrUnknownEvent};
+    }
+    //try to emplace book state for market if it doesn't exist, if it does exist we will just get an iterator to it
+    auto [iterator, inserted] = books_.try_emplace(event.meta.market_id);
+    BookState& book_state = iterator->second;
+    if (inserted) {
+        book_state.market_id = event.meta.market_id;
+    }
+    //check book_state to see if we have a snapshot for this market && sequence id, if we are uninitialized we buffer deltas, disregard trades and apply snapshot only.
 
-        ++book.delta_count;
-        break;
-    }
-    case internal::EventType::kTrade: {
-        const auto* trade = std::get_if<internal::TradeData>(&event.data);
-        if (trade == nullptr || book.desynced) {
-            ++book.apply_reject_count;
-            return reject(BookApplyRejectReason::kTradeInvalidOrDesynced);
+    //unitialized check
+    if(!book_state.has_snapshot){
+        if(event.type == internal::EventType::kSnapshot){
+            if(!event.effective_sequence_id().has_value()){
+                return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kInvalidSnapshotData};
+            }
+            book_state.has_snapshot = true;
+            book_state.last_seq_id = event.effective_sequence_id();
+            const auto& snapshot_data = std::get<internal::SnapshotData>(event.data);
+            for(const auto& bid : snapshot_data.bids){
+                book_state.bids.emplace(bid.price_ticks, bid.qty_lots);
+            }
+            for(const auto& ask : snapshot_data.asks){
+                book_state.asks.emplace(ask.price_ticks, ask.qty_lots);
+            }
+            book_state.snapshot_count++;
+            if(book_state.pending_deltas.size()>0){
+                for(const auto& pending_delta : book_state.pending_deltas){
+                    if(apply_delta(pending_delta, book_state) != DeltaApplyResult::kSuccess){
+                        book_state.desynced = true;
+                        return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kReplayPendingDeltaFailure};
+                    }
+                    book_state.replayed_delta_count++;
+                }
+                book_state.pending_deltas.clear();
+                return BookApplyResult{.applied = true};
+            }
+            return BookApplyResult{.applied = true};
         }
-        book.last_trade = *trade;
-        ++book.trade_count;
-        break;
+        //handle case delta shows up before snapshot
+        if(event.type == internal::EventType::kDelta){
+            if(book_state.pending_deltas.size()>=kMaxPendingDeltas){
+                book_state.desynced = true;
+                return BookApplyResult{.applied = false,.reason = BookApplyRejectReason::kPendingDeltaOverflowDesync};
+            }
+            book_state.pending_deltas.push_back(event);
+            book_state.buffered_delta_count++;
+            return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kBufferedDelta};
+        }
+        if(event.type == internal::EventType::kTrade){
+            //we don't really want to do anything with trades that come in before snapshots
+            return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kTradeBeforeSnap};
+        }
     }
-    case internal::EventType::kHeartbeat:
-    case internal::EventType::kStatus:
-    case internal::EventType::kUnknown:
-        ++book.apply_reject_count;
-        return reject(BookApplyRejectReason::kUnsupportedEventType);
+    //initialized state we can apply deltas/track trades
+    if(event.type == internal::EventType::kSnapshot){
+        //invariant guard, Kalshi sends exactly 1 ss per market x session and we should never receive another snapshot after the first one, if we do something went very wrong mark desynced and return
+        book_state.desynced = true;
+        return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kUnexpectedSnapshotAfterInit};
     }
-    return BookApplyResult{
-        .applied = true,
-        .reason = BookApplyRejectReason::kNone,
-    };
+    if(event.type == internal::EventType::kDelta){
+        if(!book_state.desynced){
+            DeltaApplyResult result = apply_delta(event, book_state);
+            if(result == DeltaApplyResult::kSuccess){
+                book_state.delta_count++;
+                return BookApplyResult{.applied = true};
+            }
+            switch(result){
+                case DeltaApplyResult::kStaleSequence:
+                    book_state.stale_sequence_count++;
+                    return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kDeltaSequence};
+                    break;
+                case DeltaApplyResult::kInvalidSide:
+                    book_state.invalid_side_count++;
+                    return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kInvalidSide};
+                    break;
+                case DeltaApplyResult::kNegativeQuantityDesync:
+                    book_state.invalid_negative_level_count++;
+                    return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kNegativeQuantity};
+                case DeltaApplyResult::kInvalidSeq:
+                    book_state.invalid_seq_count++;
+                    return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kInvalidSeq};
+                default:
+                    break;
+            }
+        }
+        return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kDeltaWhileDesynced};
+    }
+    if(event.type == internal::EventType::kTrade){
+        const auto& trade_data = std::get<internal::TradeData>(event.data);
+        if(trade_data.price_ticks == 0 || trade_data.qty_lots == 0){
+            book_state.apply_reject_count++;
+            return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kTradeInvalidOrDesynced};
+        }
+        book_state.last_trade = trade_data;
+        book_state.trade_count++;
+    }
+    //trades for kalshi follow their own session id and therefore we don't want to update last_seq_id since it only applies to book updates
+    return BookApplyResult{.applied = true};
 }
 
-bool BookStore::apply(const internal::NormalizedEvent& event) {
-    return apply_with_result(event).applied;
-}
 
-const BookState* BookStore::find(std::string_view market_ticker) const {
-    const auto book_it = books_.find(std::string(market_ticker));
-    if (book_it == books_.end()) {
-        return nullptr;
+const BookState* BookStore::find(internal::MarketId market_id)const{
+    const auto iterator = books_.find(market_id);
+    if (iterator != books_.end()) {
+        return &iterator->second;
     }
-    return &book_it->second;
+    return nullptr;
 }
 
-std::size_t BookStore::size() const { return books_.size(); }
+std::size_t BookStore::size() const {
+    return books_.size();
+}
 
-} // namespace trading::shards
+}
+

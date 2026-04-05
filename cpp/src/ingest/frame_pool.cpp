@@ -1,105 +1,106 @@
-#include "trading/ingest/frame_pool.hpp"
+#include "predex/ingest/frame_pool.hpp"
+#include <cassert>
+#include <limits>
 
-#include <chrono>
 
-namespace trading::ingest {
-namespace {
+namespace predex::core::ingest::kalshi{
+    FramePool::FramePool(std::size_t capacity):
+        capacity_(capacity),
+        pool_(nullptr){
+            assert(capacity <= std::numeric_limits<std::uint32_t>::max() && "FramePool capacity exceeds maximum supported size due to uint32_t indexing");
+            //initialize vectors once with reserve capacity and then use push_back to maintain size invariants with pool
+            free_slots_.reserve(capacity);
+            generations_.reserve(capacity);
+            in_use_.reserve(capacity);
 
-uint64_t now_ns() {
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
-}
+            //warm up vectors with initial values
+            for(std::uint32_t i=0; i<capacity; ++i){
+                free_slots_.push_back(i);
+                generations_.push_back(1);
+                in_use_.push_back(0);
+            }
+            pool_ = new KalshiFrame[capacity_];
 
-} // namespace
+        }
+    
+    FramePool::~FramePool(){
+        delete[] pool_;
+    }
+    bool FramePool::try_acquire(FrameHandle& handle_out)noexcept{
+        if(free_slots_.empty()){
+            return false;
+        }
+        std::uint32_t idx = free_slots_.back();
+        if(idx >= capacity_){
+            assert(false && "FramePool invariant violated: free slot index out of bounds");
+            return false;
+        }
+        if(in_use_[idx]!=0){
+            assert(false && "FramePool invariant violated: free slot marked in use");
+            return false;
+        }
 
-FramePool::FramePool(std::size_t capacity)
-    : slot_count_(static_cast<uint32_t>(capacity)),
-      slots_(capacity),
-      generations_(capacity, kInitialGeneration),
-      in_use_(capacity, 0),
-      free_slots_(capacity) {
-    for (uint32_t i = 0; i < slot_count_; ++i) {
-        free_slots_[i] = slot_count_ - i - 1;
+        free_slots_.pop_back();
+        in_use_[idx] = 1;
+        pool_[idx] = KalshiFrame{}; //zero out frame memory for safety, might want to optimize this later by only zeroing out relevant fields or relying on caller to zero out after acquiring
+        handle_out = FrameHandle{};
+        handle_out.idx_ = idx;
+        handle_out.gen_ = generations_[idx];
+        
+
+        return true;
+    }
+    KalshiFrame* FramePool::writable_frame(const FrameHandle& handle) noexcept{
+        if(handle.idx_ >= capacity_){
+            assert(false && "FramePool invariant violated: handle index out of bounds");
+            return nullptr;
+        }
+        if(in_use_[handle.idx_] == 0){
+            assert(false && "FramePool invariant violated: handle index not in use");
+            return nullptr;
+        }
+        if(generations_[handle.idx_] != handle.gen_){
+            assert(false && "FramePool invariant violated: handle generation mismatch, possible use after free");
+            return nullptr;
+        }
+        return &pool_[handle.idx_];
+    }
+    const KalshiFrame* FramePool::frame(const FrameHandle& handle) const noexcept{
+        if(handle.idx_ >= capacity_){
+            assert(false && "FramePool invariant violated: handle index out of bounds");
+            return nullptr;
+        }
+        if(in_use_[handle.idx_] == 0){
+            assert(false && "FramePool invariant violated: handle index not in use");
+            return nullptr;
+        }
+        if(generations_[handle.idx_] != handle.gen_){
+            assert(false && "FramePool invariant violated: handle generation mismatch, possible use after free");
+            return nullptr;
+        }
+        return &pool_[handle.idx_];
+    }
+    bool FramePool::recycle(const FrameHandle& handle) noexcept{
+        if(handle.idx_ >= capacity_){
+            assert(false && "FramePool invariant violated: handle index out of bounds");
+            return false;
+        }
+        if(in_use_[handle.idx_] == 0){
+            assert(false && "FramePool invariant violated: handle index not in use");
+            return false;
+        }
+        if(generations_[handle.idx_] != handle.gen_){
+            assert(false && "FramePool invariant violated: handle generation mismatch, possible double free");
+            return false;
+        }
+
+        in_use_[handle.idx_] = 0;
+
+        ++generations_[handle.idx_];
+        if (generations_[handle.idx_] == 0) {
+            generations_[handle.idx_] = 1;
+        }
+        free_slots_.push_back(handle.idx_);
+        return true;
     }
 }
-
-bool FramePool::acquire(FrameRef& ref_out) noexcept {
-    std::scoped_lock lock{mutex_};
-    if (free_slots_.empty()) {
-        return false;
-    }
-
-    const uint32_t slot = free_slots_.back();
-    free_slots_.pop_back();
-    in_use_[slot] = 1;
-    slots_[slot] = RawFrame{};
-    if (generations_[slot] == 0) {
-        generations_[slot] = kInitialGeneration;
-    }
-
-    const uint64_t timestamp_ns = now_ns();
-    ref_out.slot = slot;
-    ref_out.generation = generations_[slot];
-    ref_out.payload_size = kPayloadSizeUnset;
-    ref_out.recv_timestamp_ns = timestamp_ns;
-    ref_out.mono_timestamp_ns = timestamp_ns;
-    return true;
-}
-
-bool FramePool::release(const FrameRef& ref) noexcept {
-    std::scoped_lock lock{mutex_};
-    if (ref.slot >= slot_count_) {
-        return false;
-    }
-    if (in_use_[ref.slot] == 0) {
-        return false;
-    }
-    if (ref.generation != generations_[ref.slot]) {
-        return false;
-    }
-
-    in_use_[ref.slot] = 0;
-    ++generations_[ref.slot];
-    if (generations_[ref.slot] == 0) {
-        generations_[ref.slot] = kInitialGeneration;
-    }
-    free_slots_.push_back(ref.slot);
-    return true;
-}
-
-RawFrame* FramePool::frame(const FrameRef& ref) noexcept {
-    std::scoped_lock lock{mutex_};
-    if (ref.slot >= slot_count_) {
-        return nullptr;
-    }
-    if (in_use_[ref.slot] == 0) {
-        return nullptr;
-    }
-    if (ref.generation != generations_[ref.slot]) {
-        return nullptr;
-    }
-    return &slots_[ref.slot];
-}
-
-const RawFrame* FramePool::frame(const FrameRef& ref) const noexcept {
-    std::scoped_lock lock{mutex_};
-    if (ref.slot >= slot_count_) {
-        return nullptr;
-    }
-    if (in_use_[ref.slot] == 0) {
-        return nullptr;
-    }
-    if (ref.generation != generations_[ref.slot]) {
-        return nullptr;
-    }
-    return &slots_[ref.slot];
-}
-
-std::size_t FramePool::capacity() const noexcept { return slots_.size(); }
-
-std::size_t FramePool::available() const noexcept {
-    std::scoped_lock lock{mutex_};
-    return free_slots_.size();
-}
-
-} // namespace trading::ingest

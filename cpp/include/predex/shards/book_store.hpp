@@ -22,8 +22,8 @@ struct BookState {
     std::optional<internal::SequenceId> last_seq_id;
     bool has_snapshot{false};
     bool desynced{false};
-    BidLevels bids;
-    AskLevels asks;
+    BidLevels bids{};
+    AskLevels asks{};
     std::deque<internal::NormalizedEvent> pending_deltas;
     std::optional<internal::TradeData> last_trade;
     std::uint64_t snapshot_count{0};

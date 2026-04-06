@@ -12,38 +12,32 @@ namespace{
             const auto& delta_data = std::get<internal::DeltaData>(event.data);
             //handle both sides
             if(delta_data.side == internal::Side::kBid){
-                auto bid_iterator = book_state.bids.find(delta_data.price_ticks);
-                const auto existing_qty = (bid_iterator != book_state.bids.end()) ? bid_iterator->second : 0;
+                if(delta_data.price_ticks > kMaxPriceTicks || delta_data.price_ticks < 0){
+                    book_state.desynced = true;
+                    return DeltaApplyResult::kInvalidSeq;//might want to expand enum to kInvalidPriceTicks, leaving it as invalid seq for now
+                }
+                const auto existing_qty = book_state.bids[delta_data.price_ticks];
                 const auto updated_qty = existing_qty + delta_data.delta_qty_lots;
                 if(updated_qty < 0){
                     book_state.desynced = true;
                     return DeltaApplyResult::kNegativeQuantityDesync;//should never happen means we are missing something mark book desynced and return
                 }
-                if(updated_qty == 0){
-                    if(bid_iterator != book_state.bids.end()){
-                        book_state.bids.erase(bid_iterator);//price level qty is 0 remove from book :thought, since Kalshi is dense 1-99 we might want to not explicitly erase?
-                    }
-                } else {
-                    book_state.bids[delta_data.price_ticks] = updated_qty;//add new level 
-                }
+                book_state.bids[delta_data.price_ticks] = updated_qty;
                 book_state.last_seq_id = event.effective_sequence_id();
                 return DeltaApplyResult::kSuccess;
             }
             if(delta_data.side == internal::Side::kAsk){
-                auto ask_iterator = book_state.asks.find(delta_data.price_ticks);
-                const auto existing_qty = (ask_iterator != book_state.asks.end()) ? ask_iterator->second : 0;
+                if(delta_data.price_ticks > kMaxPriceTicks || delta_data.price_ticks < 0){
+                    book_state.desynced = true;
+                    return DeltaApplyResult::kInvalidSeq;//might want to expand enum to kInvalidPriceTicks, leaving it as invalid seq for now
+                }
+                const auto existing_qty = book_state.asks[delta_data.price_ticks];
                 const auto updated_qty = existing_qty + delta_data.delta_qty_lots;
                 if(updated_qty < 0){
                     book_state.desynced = true;
                     return DeltaApplyResult::kNegativeQuantityDesync;//should never happen means we are missing something mark book desynced and return
                 }
-                if(updated_qty == 0){
-                    if(ask_iterator != book_state.asks.end()){
-                        book_state.asks.erase(ask_iterator);//price level qty is 0 remove from book :thought, since Kalshi is dense 1-99 we might want to not explicitly erase?
-                    }
-                } else {
-                    book_state.asks[delta_data.price_ticks] = updated_qty;//add new level 
-                }
+                book_state.asks[delta_data.price_ticks] = updated_qty;
                 book_state.last_seq_id = event.effective_sequence_id();
                 return DeltaApplyResult::kSuccess;
             }
@@ -84,10 +78,18 @@ BookApplyResult BookStore::apply_with_result(const internal::NormalizedEvent& ev
             book_state.last_seq_id = event.effective_sequence_id();
             const auto& snapshot_data = std::get<internal::SnapshotData>(event.data);
             for(const auto& bid : snapshot_data.bids){
-                book_state.bids.emplace(bid.price_ticks, bid.qty_lots);
+                if(bid.price_ticks > kMaxPriceTicks){
+                    book_state.desynced = true;
+                    return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kInvalidSnapshotData};
+                }
+                book_state.bids[bid.price_ticks] = bid.qty_lots;
             }
             for(const auto& ask : snapshot_data.asks){
-                book_state.asks.emplace(ask.price_ticks, ask.qty_lots);
+                if(ask.price_ticks > kMaxPriceTicks){
+                    book_state.desynced = true;
+                    return BookApplyResult{.applied = false, .reason = BookApplyRejectReason::kInvalidSnapshotData};
+                }
+                book_state.asks[ask.price_ticks] = ask.qty_lots;
             }
             book_state.snapshot_count++;
             if(book_state.pending_deltas.size()>0){

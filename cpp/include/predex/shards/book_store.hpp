@@ -2,20 +2,21 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <deque>
-#include <functional>
-#include <map>
 #include <optional>
 #include <unordered_map>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/internal/normalized_event.hpp"
 
-namespace predex::core::shards::kalshi {
 
+namespace predex::core::shards::kalshi {
+constexpr std::int64_t kMaxPriceTicks = 10000LL;
 struct BookState {
-    using BidLevels = std::map<internal::PriceTicks, internal::QtyLots, std::greater<>>;
-    using AskLevels = std::map<internal::PriceTicks, internal::QtyLots, std::less<>>;
+    using BidLevels = std::array<internal::QtyLots,kMaxPriceTicks+1>;
+    using AskLevels = std::array<internal::QtyLots,kMaxPriceTicks+1>;
+
 
     internal::MarketId market_id{0};
     std::optional<internal::SequenceId> last_seq_id;

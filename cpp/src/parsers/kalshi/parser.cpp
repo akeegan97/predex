@@ -15,7 +15,10 @@ template <typename T>
 using ParseResult = predex::parsers::ParseResult<T>;
 
 namespace {
-
+constexpr std::int64_t kMaxPriceTicks = 10000LL;
+std::int64_t reciprocal_price(std::int64_t p){
+    return kMaxPriceTicks - p;
+}
 // Kalshi on-demand message type strings.
 constexpr std::string_view kTypeOrderbook = "orderbook_snapshot";
 constexpr std::string_view kTypeOrderbookDelta = "orderbook_delta";
@@ -356,7 +359,7 @@ void set_sequence_from_msg(simdjson::ondemand::object& msg, internal::Normalized
     }
 }
 
-bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& out) noexcept {
+bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& out, bool kalshi_reciprocal_price) noexcept {
     for (auto level_val : arr) {
         auto level_arr_result = level_val.get_array();
         if (level_arr_result.error() != simdjson::SUCCESS) {
@@ -373,7 +376,6 @@ bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& 
         if (!parse_price_ticks_value(price_value, level.price_ticks)) {
             return false;
         }
-
         ++iter;
         if (iter.error() != simdjson::SUCCESS) {
             return false;
@@ -384,8 +386,11 @@ bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& 
             return false;
         }
 
-        if (level.price_ticks < 0 || level.qty_lots < 0) {
+        if (level.price_ticks < 0 || level.qty_lots < 0 || level.price_ticks > kMaxPriceTicks) {
             return false;
+        }
+        if(kalshi_reciprocal_price){
+            level.price_ticks = kMaxPriceTicks - level.price_ticks;
         }
         out.push_back(level);
     }
@@ -400,7 +405,7 @@ enum class OptionalLevelsParse : unsigned char {
 
 OptionalLevelsParse parse_optional_levels(simdjson::ondemand::object& msg,
                                           std::initializer_list<std::string_view> keys,
-                                          std::vector<internal::Level>& out) noexcept {
+                                          std::vector<internal::Level>& out,bool kalshi_reciprocal_price ) noexcept {
     for (const auto key : keys) {
         simdjson::ondemand::value value;
         if (!get_value(msg, key, value)) {
@@ -413,7 +418,7 @@ OptionalLevelsParse parse_optional_levels(simdjson::ondemand::object& msg,
         }
 
         auto levels = array_result.value_unsafe();
-        if (!parse_levels(levels, out)) {
+        if (!parse_levels(levels, out,kalshi_reciprocal_price)) {
             return OptionalLevelsParse::kInvalid;
         }
         return OptionalLevelsParse::kParsed;
@@ -428,13 +433,13 @@ parse_snapshot(simdjson::ondemand::object& msg, internal::NormalizedEvent event)
 
     internal::SnapshotData snapshot{};
     const auto yes_levels_parse =
-        parse_optional_levels(msg, {"yes", "yes_dollars_fp"}, snapshot.bids);
+        parse_optional_levels(msg, {"yes", "yes_dollars_fp"}, snapshot.bids,false);
     if (yes_levels_parse == OptionalLevelsParse::kInvalid) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
 
     const auto no_levels_parse =
-        parse_optional_levels(msg, {"no", "no_dollars_fp"}, snapshot.asks);
+        parse_optional_levels(msg, {"no", "no_dollars_fp"}, snapshot.asks,true);
     if (no_levels_parse == OptionalLevelsParse::kInvalid) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
@@ -482,7 +487,7 @@ parse_delta(simdjson::ondemand::object& msg,
             resolved_side = internal::Side::kAsk;
             has_price = true;
             has_delta = true;
-            price = inferred_price;
+            price = reciprocal_price(inferred_price);
             delta_qty = inferred_delta;
         } else {
             has_price = parse_first_price_ticks(

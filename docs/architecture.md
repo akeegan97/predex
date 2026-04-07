@@ -152,6 +152,14 @@ The shard applies parser output into a shard-local `BookStore`, which owns:
 - pending delta buffering
 - trade metadata
 
+### Kalshi Protocol: Reciprocal Pricing
+
+Kalshi's wire format does not carry an explicit Ask book. The Ask side is implied by the No-bid. A binary outcome market has two sides: Yes (bid) and No, where No represents the complementary probability. A No-bid at price tick `p` implies an Ask at `kMaxPriceTicks - p`, because the probability of No at `p` is the complement of Yes at `10000 - p`.
+
+The parser handles this at both the snapshot and delta level. For snapshots, `yes` levels are applied directly to the bid side and `no` levels are converted via `reciprocal_price(p) = 10000 - p` before being applied to the ask side. For deltas, the parser inspects whether the inbound message carries a `yes_price` field or a `no_price` field, routes to bid or ask accordingly, and applies the reciprocal conversion for No-side deltas before writing to the normalized event.
+
+By the time a `NormalizedEvent` leaves the parser, all prices are in a unified bid/ask convention. `BookStore` and everything downstream have no knowledge of the Yes/No distinction — they see a standard two-sided order book.
+
 ## Tape Model
 
 The logger is the terminal sink for raw feed capture.

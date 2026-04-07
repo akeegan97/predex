@@ -95,6 +95,7 @@ Kalshi WS
 Supporting docs:
 
 - [Architecture](docs/architecture.md)
+- [Design Decisions](docs/design_decisions.md)
 - [Ownership and Invariants](docs/ownership_invariants.md)
 - [Data Contract](docs/data_contract.md)
 - [Performance Backlog](docs/perf_backlog.md)

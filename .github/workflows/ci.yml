@@ -115,6 +115,7 @@ jobs:
           set -euo pipefail
           # Full clone required - shallow clones break vcpkg port tree resolution via git read-tree.
           # Pinned to builtin-baseline from cpp/vcpkg.json for reproducibility.
+          rm -rf "$RUNNER_TEMP/vcpkg"
           git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
           git -C "$RUNNER_TEMP/vcpkg" checkout 1e199d32ad53aab1defda61ce41c380302e3f95c
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics

@@ -55,6 +55,7 @@ jobs:
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' && steps.detect_cmake.outputs.has_vcpkg == 'true' }}
         run: |
           set -euo pipefail
+          rm -rf "$RUNNER_TEMP/vcpkg"
           git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
           git -C "$RUNNER_TEMP/vcpkg" checkout 1e199d32ad53aab1defda61ce41c380302e3f95c
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics

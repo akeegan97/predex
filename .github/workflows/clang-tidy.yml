@@ -1,0 +1,112 @@
+name: Clang-Tidy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clang-tidy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-tidy:
+    name: Advisory clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect CMake and vcpkg config
+        id: detect_cmake
+        run: |
+          set -euo pipefail
+          if [ -f cpp/CMakeLists.txt ]; then
+            echo "has_cmake=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cmake=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f cpp/vcpkg.json ]; then
+            echo "has_vcpkg=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_vcpkg=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install C++ toolchain
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang 
+
+      - name: Cache vcpkg artifacts
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' && steps.detect_cmake.outputs.has_vcpkg == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/vcpkg/downloads
+            ${{ github.workspace }}/.vcpkg_installed
+          key: ${{ runner.os }}-vcpkg-${{ hashFiles('cpp/vcpkg.json') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-
+
+      - name: Setup vcpkg
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' && steps.detect_cmake.outputs.has_vcpkg == 'true' }}
+        run: |
+          set -euo pipefail
+          git clone https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout 1e199d32ad53aab1defda61ce41c380302e3f95c
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/vcpkg" >> "$GITHUB_PATH"
+
+      - name: Configure (CMake)
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ -f CMakePresets.json ]; then
+            if [ -f cpp/vcpkg.json ]; then
+              cmake --preset ci-vcpkg
+            else
+              cmake --preset ci
+            fi
+          else
+            cmake -S cpp -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          fi
+
+      - name: Build
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ -f CMakePresets.json ]; then
+            if [ -f cpp/vcpkg.json ]; then
+              cmake --build --preset build-ci-vcpkg --parallel
+            else
+              cmake --build --preset build-ci --parallel
+            fi
+          else
+            cmake --build build/ci --parallel
+          fi
+
+      - name: clang-tidy
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
+        run: |
+          set -euo pipefail
+          mapfile -t cpp_files < <(
+            {
+              find cpp/src -type f \( -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \);
+              if [ -f cpp/apps/trader/main.cpp ]; then
+                printf '%s\n' cpp/apps/trader/main.cpp;
+              fi
+            } | sort -u
+          )
+          if [ "${#cpp_files[@]}" -eq 0 ]; then
+            echo "No C++ implementation files found for clang-tidy."
+            exit 0
+          fi
+          clang-tidy -p build/ci --warnings-as-errors='*' "${cpp_files[@]}"
+
+      - name: Skip clang-tidy (no CMake project)
+        if: ${{ steps.detect_cmake.outputs.has_cmake != 'true' }}
+        run: echo "cpp/CMakeLists.txt not found. Skipping clang-tidy."

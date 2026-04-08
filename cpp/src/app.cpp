@@ -14,6 +14,7 @@
 #include "predex/websocket/kalshi/ws_adapter.hpp"
 #include "predex/utils/spsc_queue.hpp"
 #include <chrono>
+#include <fmt/base.h>
 #include <memory>
 #include <thread>
 #include <atomic>
@@ -22,7 +23,7 @@
 
 
 namespace predex {
-    
+    constexpr std::int64_t kDefaultSleepMs = 100;
     struct App::Runtime {
         using FrameHandle = predex::core::ingest::kalshi::FrameHandle;
         using FrameQueue = predex::utils::SPSCQueue<FrameHandle>;
@@ -84,10 +85,10 @@ namespace predex {
         void run();
         void stop();
 
-        void io_loop(std::stop_token stop_token);
-        void router_loop(std::stop_token stop_token);
-        void shard_loop(std::size_t shard_index, std::stop_token stop_token);
-        void logger_loop(std::stop_token stop_token);
+        void io_loop(const std::stop_token& stop_token);
+        void router_loop(const std::stop_token& stop_token) const;
+        void shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const;
+        void logger_loop(const std::stop_token& stop_token) const;
         void set_error(std::string message);
         std::string_view last_error_view() const noexcept;
     };
@@ -99,7 +100,6 @@ namespace predex {
             .private_key_pem = config.kalshi_ws.private_key_pem,
         }),
         ws_adapter(auth_signer, config.kalshi_ws.endpoint),
-        ws_transport(),
         ws_session(ws_transport, ws_adapter),
         frame_pool(config.pipeline.frame_pool_capacity),
         market_registry(market_registry_entries) {
@@ -191,26 +191,26 @@ namespace predex {
         set_error("");
         running.store(true, std::memory_order_release);
         
-        io_thread = std::jthread([this](std::stop_token stop_token){
-            io_loop(std::move(stop_token));
+        io_thread = std::jthread([this](const std::stop_token& stop_token){
+            io_loop(stop_token);
         });
-        router_thread = std::jthread([this](std::stop_token stop_token){
-            router_loop(std::move(stop_token));
+        router_thread = std::jthread([this](const std::stop_token& stop_token){
+            router_loop(stop_token);
         });
         shard_threads.clear();
         shard_threads.reserve(config.pipeline.shard_count);
         for(std::size_t i = 0; i < config.pipeline.shard_count; ++i){
-            shard_threads.emplace_back([this, i](std::stop_token stop_token){
-                shard_loop(i, std::move(stop_token));
+            shard_threads.emplace_back([this, i](const std::stop_token& stop_token){
+                shard_loop(i, stop_token);
             });
         }
-        logger_thread = std::jthread([this](std::stop_token stop_token){
-            logger_loop(std::move(stop_token));
+        logger_thread = std::jthread([this](const std::stop_token& stop_token){
+            logger_loop(stop_token);
         });
         return true;
     }
 
-    void App::Runtime::io_loop(std::stop_token stop_token) {
+    void App::Runtime::io_loop(const std::stop_token& stop_token) {
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             const auto recv_result = ws_session.recv_text(std::chrono::milliseconds{50});
 
@@ -242,7 +242,7 @@ namespace predex {
         ws_session.close();
     }
 
-    void App::Runtime::router_loop(std::stop_token stop_token){
+    void App::Runtime::router_loop(const std::stop_token& stop_token) const {
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto routed = router->pump(config.pipeline.io_to_router_capacity);
             if(routed == 0U){
@@ -251,8 +251,8 @@ namespace predex {
         }
     }
 
-    void App::Runtime::shard_loop(std::size_t shard_index, std::stop_token stop_token){
-        auto& shard = shards[shard_index];
+    void App::Runtime::shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const {
+        const auto& shard = shards[shard_index];
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto processed = shard->pump(config.pipeline.shard_input_capacity);
             if(processed == 0U){
@@ -261,7 +261,7 @@ namespace predex {
         }
     }
 
-    void App::Runtime::logger_loop(std::stop_token stop_token){
+    void App::Runtime::logger_loop(const std::stop_token& stop_token) const {
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto logged = tape_logger->pump(config.pipeline.router_to_logger_capacity);
             if(logged == 0U){
@@ -276,7 +276,7 @@ namespace predex {
             return;
         }
         while(running.load(std::memory_order_acquire)){
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(kDefaultSleepMs));
         }
         // stop();
     }

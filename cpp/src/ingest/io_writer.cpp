@@ -3,7 +3,9 @@
 #include <cstring>
 #include <chrono>
 namespace predex::core::ingest::kalshi{
+
   IOWriter::IOWriter(predex::core::ingest::kalshi::FramePool& frame_pool, 
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
                      predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& router_queue,
                      predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
     : frame_pool_(frame_pool), router_queue_(router_queue), recycle_queue_(recycle_queue) {}
@@ -29,7 +31,7 @@ namespace predex::core::ingest::kalshi{
             frame->recv_ts_ns_ = monotonic_now_ns();
             frame->len_ = static_cast<std::uint32_t>(payload.size());
             frame->flags_ = 0; // can set flags based on message type or other
-            std::memcpy(frame->payload, payload.data(), payload.size());
+            std::memcpy(frame->payload.data(), payload.data(), payload.size());
             //enqueue handle for router to process
             if(!router_queue_.try_push(handle)){
                 // if router queue is full, we return false, catastrophic backpressure we must fail.

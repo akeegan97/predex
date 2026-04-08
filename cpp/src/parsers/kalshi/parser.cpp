@@ -16,14 +16,15 @@ using ParseResult = predex::parsers::ParseResult<T>;
 
 namespace {
 constexpr std::int64_t kMaxPriceTicks = 10000LL;
-std::int64_t reciprocal_price(std::int64_t p){
-    return kMaxPriceTicks - p;
+std::int64_t reciprocal_price(std::int64_t price){
+    return kMaxPriceTicks - price;
 }
 // Kalshi on-demand message type strings.
 constexpr std::string_view kTypeOrderbook = "orderbook_snapshot";
 constexpr std::string_view kTypeOrderbookDelta = "orderbook_delta";
 constexpr std::string_view kTypeTrade = "trade";
-
+constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+constexpr auto kScale = 10000U;
 bool get_string(simdjson::ondemand::object& obj, std::string_view key, std::string_view& out) noexcept {
     auto result = obj.find_field_unordered(key).get_string();
     if (result.error() != simdjson::SUCCESS) {
@@ -91,7 +92,6 @@ bool parse_signed_decimal_string_to_int64(std::string_view value, std::int64_t& 
         return false;
     }
 
-    constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
     if ((!negative && parsed > kInt64MaxAsU64) || (negative && parsed > (kInt64MaxAsU64 + 1U))) {
         return false;
     }
@@ -117,7 +117,7 @@ bool parse_non_negative_decimal_string_to_int64(std::string_view value, std::int
     }
     return true;
 }
-
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& out) noexcept {
     if (value.empty() || value.front() == '-' || value.front() == '+') {
         return false;
@@ -151,23 +151,24 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
     if (!frac_part.empty()) {
         const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
         for (std::size_t index = 0; index < digits_to_take; ++index) {
+            //NOLINTNEXTLINE(readability-magic-numbers)
             subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
         }
         for (std::size_t index = digits_to_take; index < 4U; ++index) {
+            //NOLINTNEXTLINE(readability-magic-numbers)
             subcent_units *= 10U;
         }
-
+        //NOLINTNEXTLINE(readability-magic-numbers)
         if (frac_part.size() >= 5U && frac_part[4] >= '5') {
             ++subcent_units;
-            if (subcent_units == 10000U) {
+            if (subcent_units == kScale) {
                 subcent_units = 0U;
                 ++dollars;
             }
         }
     }
 
-    constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-    constexpr auto kScale = 10000U;
+
     if (dollars > (kInt64MaxAsU64 - subcent_units) / kScale) {
         return false;
     }
@@ -563,7 +564,7 @@ parse_trade(simdjson::ondemand::object& msg,
 }
 
 } // namespace
-
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::parsers::kalshi::Parser::parse(const predex::core::ingest::kalshi::FrameHandle& handle,
     const predex::core::ingest::kalshi::KalshiFrame& frame) const{
 
@@ -578,9 +579,10 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     // Kalshi does not provide exchange timestamps, so we leave event.meta.exchange_ts_ns as 0.
     //all other data needs to be parsed out of the payload, which is a JSON blob.
 
-    const auto* payload = reinterpret_cast<const char*>(frame.payload);
+    const auto* payload = frame.payload.data();
 
-    simdjson::padded_string padded{payload, frame.len_};
+    std::string payload_json{reinterpret_cast<const char*>(payload), frame.len_};
+    simdjson::padded_string padded{payload_json};
     
     simdjson::ondemand::parser parser;
     auto doc = parser.iterate(padded);

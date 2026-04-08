@@ -24,6 +24,7 @@ constexpr int kExitArgsFailure = 2;
 constexpr int kExitConfigFailure = 3;
 constexpr int kExitStartupFailure = 4;
 constexpr int kExitRuntimeFailure = 5;
+constexpr std::int64_t kDefaultSleepMs = 100;
 
 void handle_shutdown_signal(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
@@ -64,13 +65,13 @@ std::optional<std::string> resolve_config_path(int argc, char** argv) {
 
 std::vector<std::string> read_string_array(const nlohmann::json& parent, std::string_view key) {
     std::vector<std::string> values;
-    const auto it = parent.find(std::string(key));
-    if (it == parent.end() || !it->is_array()) {
+    const auto iterator = parent.find(std::string(key));
+    if (iterator == parent.end() || !iterator->is_array()) {
         return values;
     }
 
-    values.reserve(it->size());
-    for (const auto& value : *it) {
+    values.reserve(iterator->size());
+    for (const auto& value : *iterator) {
         if (value.is_string()) {
             values.push_back(value.get<std::string>());
         }
@@ -81,21 +82,21 @@ std::vector<std::string> read_string_array(const nlohmann::json& parent, std::st
 std::size_t read_size(const nlohmann::json& parent,
                       std::string_view key,
                       std::size_t fallback) {
-    const auto it = parent.find(std::string(key));
-    if (it == parent.end() || !it->is_number_unsigned()) {
+    const auto iterator = parent.find(std::string(key));
+    if (iterator == parent.end() || !iterator->is_number_unsigned()) {
         return fallback;
     }
-    return it->get<std::size_t>();
+    return iterator->get<std::size_t>();
 }
 
 std::string read_string(const nlohmann::json& parent,
                         std::string_view key,
                         std::string fallback = {}) {
-    const auto it = parent.find(std::string(key));
-    if (it == parent.end() || !it->is_string()) {
+    const auto iterator = parent.find(std::string(key));
+    if (iterator == parent.end() || !iterator->is_string()) {
         return fallback;
     }
-    return it->get<std::string>();
+    return iterator->get<std::string>();
 }
 
 std::vector<predex::MarketRouteConfig> build_market_routes(
@@ -134,7 +135,7 @@ std::vector<predex::MarketRouteConfig> build_market_routes(
     }
     return routes;
 }
-
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
                                                   std::string& error_out) {
     predex::AppConfig config{};
@@ -242,7 +243,7 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
 }
 
 } // namespace
-
+//NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char** argv) {
     const auto config_path = resolve_config_path(argc, argv);
     if (!config_path.has_value()) {
@@ -281,14 +282,14 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<bool> app_finished{false};
-    std::jthread app_thread([&app, &app_finished](std::stop_token) {
+    std::jthread app_thread([&app, &app_finished](const std::stop_token&) {
         app.run();
         app_finished.store(true, std::memory_order_release);
     });
 
     while (!g_shutdown_requested.load(std::memory_order_relaxed) &&
            !app_finished.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(kDefaultSleepMs));
     }
 
     if (g_shutdown_requested.load(std::memory_order_relaxed)) {

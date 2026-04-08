@@ -69,6 +69,11 @@ namespace predex::core::shards::kalshi{
             ++parse_fail_count_;
             return ApplyResult::kParseFail; // failed to parse frame
         }
+        if(!parse_result.value().has_value()){
+            ++parse_fail_count_;
+            return ApplyResult::kParseFail; // parsed frame but no event produced, could be due to unsupported message type or other parsing issues
+        }
+        //NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         const auto& event = *parse_result.value();
         auto apply_result = book_store_.apply_with_result(event);
         if(!apply_result.applied){

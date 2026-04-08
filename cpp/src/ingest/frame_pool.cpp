@@ -5,8 +5,8 @@
 
 namespace predex::core::ingest::kalshi{
     FramePool::FramePool(std::size_t capacity):
-        capacity_(capacity),
-        pool_(nullptr){
+        capacity_(capacity)
+        {
             assert(capacity <= std::numeric_limits<std::uint32_t>::max() && "FramePool capacity exceeds maximum supported size due to uint32_t indexing");
             //initialize vectors once with reserve capacity and then use push_back to maintain size invariants with pool
             free_slots_.reserve(capacity);

@@ -58,7 +58,7 @@ enum class BookApplyRejectReason : unsigned char {
     kInvalidSeq,
     kUnexpectedSnapshotAfterInit,
 };
-enum class DeltaApplyResult: unsigned int{
+enum class DeltaApplyResult: std::uint8_t{
     kSuccess = 0,
     kStaleSequence,
     kInvalidSide,

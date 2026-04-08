@@ -6,6 +6,7 @@
 #include <utility>
 #include <cstdint>
 #include <stdexcept>
+#include <array>
 namespace predex::utils{
     // A single-producer, single-consumer lock-free queue implementation.
     // T must be move-assignable for try_pop to work, and must be constructible with the provided arguments for try_emplace to work.
@@ -13,7 +14,7 @@ constexpr std::size_t CACHE_LINE_SIZE = 64;
 
 struct alignas(CACHE_LINE_SIZE) PaddedIndex{
     std::atomic<std::uint64_t> v{0};
-    char padding[CACHE_LINE_SIZE - sizeof(std::atomic<std::uint64_t>)];
+    std::array<char, CACHE_LINE_SIZE - sizeof(std::atomic<std::uint64_t>)> padding{};
 };
 
 

@@ -6,12 +6,14 @@ namespace predex::core::shards::kalshi {
 namespace{
     DeltaApplyResult apply_delta(const internal::NormalizedEvent& event, BookState& book_state){
         if(event.effective_sequence_id().has_value() && book_state.last_seq_id.has_value()){
+            //NOLINTNEXTLINE(bugprone-unchecked-optional-access)
             if(event.effective_sequence_id().value() <= book_state.last_seq_id.value()){
                 return DeltaApplyResult::kStaleSequence;
             }
             const auto& delta_data = std::get<internal::DeltaData>(event.data);
             //handle both sides
             if(delta_data.side == internal::Side::kBid){
+                //NOLINTNEXTLINE(bugprone-unchecked-optional-access)
                 if(delta_data.price_ticks > kMaxPriceTicks || delta_data.price_ticks < 0){
                     book_state.desynced = true;
                     return DeltaApplyResult::kInvalidSeq;//might want to expand enum to kInvalidPriceTicks, leaving it as invalid seq for now
@@ -45,6 +47,7 @@ namespace{
         return DeltaApplyResult::kInvalidSeq;
     }
 }
+//NOLINTNEXTLINE(readability-function-cognitive-complexity)
 BookApplyResult BookStore::apply_with_result(const internal::NormalizedEvent& event) {
     /*
     check if we are initialized with has_snapshot & market_id 
@@ -92,7 +95,7 @@ BookApplyResult BookStore::apply_with_result(const internal::NormalizedEvent& ev
                 book_state.asks[ask.price_ticks] = ask.qty_lots;
             }
             book_state.snapshot_count++;
-            if(book_state.pending_deltas.size()>0){
+            if(!book_state.pending_deltas.empty()){
                 for(const auto& pending_delta : book_state.pending_deltas){
                     if(apply_delta(pending_delta, book_state) != DeltaApplyResult::kSuccess){
                         book_state.desynced = true;

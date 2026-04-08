@@ -32,7 +32,7 @@ namespace predex::core::tape::kalshi {
                 if(frame != nullptr){
                     //write frame length followed by frame payload for easier parsing during replay
                     output_file_.write(reinterpret_cast<const char*>(&frame->len_), sizeof(frame->len_));
-                    output_file_.write(reinterpret_cast<const char*>(frame->payload), frame->len_);
+                    output_file_.write(reinterpret_cast<const char*>(frame->payload.data()), frame->len_);
                     if(output_file_.fail()){
                         ++write_failed_count_;
                         //still try and recycle handle back to IOWriter even if write failed to avoid blocking the pipeline, but increment write_failed_count_ for telemetry

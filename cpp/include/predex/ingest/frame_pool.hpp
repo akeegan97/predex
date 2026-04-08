@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -12,7 +13,7 @@ namespace predex::core::ingest::kalshi{
     std::uint64_t recv_ts_ns_;
     std::uint32_t len_;
     std::uint32_t flags_;
-    std::byte payload[kMaxFrameBytes + kSimdJsonPadding];
+    std::array<std::byte, kMaxFrameBytes + kSimdJsonPadding> payload;
   };
 
   enum class KalshiEventType : std::uint8_t{
@@ -54,7 +55,7 @@ namespace predex::core::ingest::kalshi{
       [[nodiscard]] const KalshiFrame* frame(const FrameHandle& handle) const noexcept;
     private:
       const std::size_t capacity_;
-      KalshiFrame* pool_;
+      KalshiFrame* pool_{nullptr};
       std::vector<std::uint32_t> free_slots_;
       std::vector<std::uint32_t> generations_;
       std::vector<std::uint8_t> in_use_;

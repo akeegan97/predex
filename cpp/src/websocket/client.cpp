@@ -286,16 +286,28 @@ void BoostBeastWsTransport::close() {
     boost::system::error_code error_code;
     auto& socket = beast::get_lowest_layer(*impl_->ws_stream).socket();
 
-    socket.cancel(error_code);
-    error_code.clear();
-    socket.shutdown(tcp::socket::shutdown_both, error_code);
-    error_code.clear();
-    socket.close(error_code);
+    const auto cancelled_operations = socket.cancel(error_code);
+    if (error_code && error_code != net::error::not_connected) {
+        impl_->last_error = "Websocket cancel error: " + error_code.message();
+    }
+    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    (void)cancelled_operations;
 
-    impl_->connected = false;
+    error_code.clear();
+    const auto shutdown_result = socket.shutdown(tcp::socket::shutdown_both, error_code);
+    if (error_code && error_code != net::error::not_connected) {
+        impl_->last_error = "Websocket shutdown error: " + error_code.message();
+    }
+    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    (void)shutdown_result;
+    error_code.clear();
+    const auto close_result =   socket.close(error_code);
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket close error: " + error_code.message();
     }
+    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    (void)close_result;
+     impl_->connected = false;
 }
 
 std::string_view BoostBeastWsTransport::last_error() const { return impl_->last_error; }

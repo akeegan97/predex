@@ -1,0 +1,51 @@
+name: Clang-Format
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clang-format-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-format:
+    name: Advisory clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect C/C++ files
+        id: detect_cpp
+        run: |
+          set -euo pipefail
+          if find cpp -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' \) ! -path 'cpp/third_party/*' ! -path 'cpp/vendor/*' | grep -q .; then
+            echo "has_cpp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cpp=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install clang-format
+        if: ${{ steps.detect_cpp.outputs.has_cpp == 'true' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        if: ${{ steps.detect_cpp.outputs.has_cpp == 'true' }}
+        run: |
+          set -euo pipefail
+          mapfile -t cpp_files < <(find cpp -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' \) ! -path 'cpp/third_party/*' ! -path 'cpp/vendor/*')
+          if [ "${#cpp_files[@]}" -eq 0 ]; then
+            echo "No C/C++ files found."
+            exit 0
+          fi
+          clang-format --dry-run --Werror "${cpp_files[@]}"
+
+      - name: Skip clang-format (no C/C++ files)
+        if: ${{ steps.detect_cpp.outputs.has_cpp != 'true' }}
+        run: echo "No C/C++ files found. Skipping clang-format."

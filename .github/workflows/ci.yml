@@ -30,47 +30,8 @@ jobs:
             echo "::warning::No CMake or Python project files found yet."
           fi
 
-  cxx-format:
-    name: C++ clang-format
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Detect C/C++ files
-        id: detect_cpp
-        run: |
-          set -euo pipefail
-          if find cpp -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' \) ! -path 'cpp/third_party/*' ! -path 'cpp/vendor/*' | grep -q .; then
-            echo "has_cpp=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_cpp=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install clang-format
-        if: ${{ steps.detect_cpp.outputs.has_cpp == 'true' }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y clang-format
-
-      - name: Check formatting
-        if: ${{ steps.detect_cpp.outputs.has_cpp == 'true' }}
-        run: |
-          set -euo pipefail
-          mapfile -t cpp_files < <(find cpp -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' \) ! -path 'cpp/third_party/*' ! -path 'cpp/vendor/*')
-          if [ "${#cpp_files[@]}" -eq 0 ]; then
-            echo "No C/C++ files found."
-            exit 0
-          fi
-          clang-format --dry-run --Werror "${cpp_files[@]}"
-
-      - name: Skip clang-format (no C/C++ files)
-        if: ${{ steps.detect_cpp.outputs.has_cpp != 'true' }}
-        run: echo "No C/C++ files found. Skipping clang-format."
-
-  cxx-build-and-test:
-    name: C++ CMake build + tests
+  cxx-build-and-tidy:
+    name: C++ CMake build + clang-tidy + tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -150,6 +111,24 @@ jobs:
             cmake --build build/ci --parallel
           fi
 
+      - name: clang-tidy
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
+        run: |
+          set -euo pipefail
+          mapfile -t cpp_files < <(
+            {
+              find cpp/src -type f \( -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \);
+              if [ -f cpp/apps/trader/main.cpp ]; then
+                printf '%s\n' cpp/apps/trader/main.cpp;
+              fi
+            } | sort -u
+          )
+          if [ "${#cpp_files[@]}" -eq 0 ]; then
+            echo "No C++ implementation files found for clang-tidy."
+            exit 0
+          fi
+          clang-tidy -p build/ci --warnings-as-errors='*' "${cpp_files[@]}"
+
       - name: Test (ctest)
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
         run: |
@@ -164,9 +143,9 @@ jobs:
             ctest --test-dir build/ci --output-on-failure
           fi
 
-      - name: Skip C++ build/tests (no CMake project)
+      - name: Skip C++ build/tidy/tests (no CMake project)
         if: ${{ steps.detect_cmake.outputs.has_cmake != 'true' }}
-        run: echo "cpp/CMakeLists.txt not found. Skipping C++ build/tests."
+        run: echo "cpp/CMakeLists.txt not found. Skipping C++ build/tidy/tests."
 
   python:
     name: Python ruff + pytest

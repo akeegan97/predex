@@ -1,67 +1,177 @@
-#pragma once 
+#pragma once
+
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include "predex/ingest/frame_pool.hpp"
-#include "predex/shards/event_store.hpp"
-#include "predex/utils/spsc_queue.hpp"
 #include "predex/parsers/kalshi/parser.hpp"
-#include "predex/shards/event_handler.hpp"
+#include "predex/shards/applied_event_update.hpp"
+#include "predex/shards/event_store.hpp"
+#include "predex/shards/shard_pipeline.hpp"
+#include "predex/utils/spsc_queue.hpp"
 
 namespace predex::core::shards::kalshi {
 
-  enum class ProcessCode:std::uint8_t{
-    kIdle=0, // no more frames to process
-    kProcessed=1, // successfully processed frame and applied event update
-    kParseFail=2, // failed to parse frame into event
-    kApplyFail=3, // failed to apply event update to book store
-    kLoggerBackpressure=4, // failed to forward frame to logger due to logger queue backpressure/full
-    kFrameMissing=5,
-    kHandlerError=6,
-  };
+enum class ProcessCode : std::uint8_t {
+    kIdle = 0,
+    kProcessed = 1,
+    kParseFail = 2,
+    kApplyFail = 3,
+    kLoggerBackpressure = 4,
+    kFrameMissing = 5,
+    kPipelineError = 6,
+};
 
-  struct ProcessOneResult{
+struct ProcessOneResult {
     ProcessCode code{ProcessCode::kIdle};
     EventApplyCode apply_code{EventApplyCode::kRejected};
-    HandlerDecisionCode handler_code{HandlerDecisionCode::kDeclined};
-  };
+    PipelineDecisionCode pipeline_code{PipelineDecisionCode::kDeclined};
+};
 
-  class Shard{
-    //drains spsc queue of frame handles (router owned), processes frames -> decodes actual raw json-> updates internal book state 
-    //enqueues 2 things to logger -> framehandle once done with decoding, and book states 
-    
-    public:
-      explicit Shard(
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& input_queue, 
-        predex::core::ingest::kalshi::FramePool& frame_pool, 
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
-        predex::core::parsers::kalshi::Parser parser,
-        predex::core::shards::kalshi::EventStore& event_store,
-        predex::core::shards::kalshi::IShardEventHandler* event_handler
-      ); 
+template <typename Bundle>
+class Shard {
+  public:
+    explicit Shard(utils::SPSCQueue<ingest::kalshi::FrameHandle>& input_queue,
+                   ingest::kalshi::FramePool& frame_pool,
+                   utils::SPSCQueue<ingest::kalshi::FrameHandle>& logger_queue,
+                   parsers::kalshi::Parser parser,
+                   EventStore& event_store,
+                   Bundle bundle)
+        : input_queue_(input_queue),
+          frame_pool_(frame_pool),
+          logger_queue_(logger_queue),
+          parser_(std::move(parser)),
+          event_store_(event_store),
+          bundle_(std::move(bundle)) {}
 
-      [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
-    private:
-      predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& input_queue_; // Router producer, Shard consumer
-      predex::core::ingest::kalshi::FramePool& frame_pool_; // shared frame pool for zero copy access to frames
-      predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue_; // Shard producer, Logger consumer
-      predex::core::parsers::kalshi::Parser parser_; 
-      predex::core::shards::kalshi::EventStore& event_store_; 
-      predex::core::shards::kalshi::IShardEventHandler* event_handler_{nullptr}; // used to invoke/hook strategy invocations/callbacks based on events processed in the shard
+    [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept {
+        std::size_t processed = 0;
+        while (processed < max_batch_size) {
+            const ProcessOneResult result = process_one();
+            switch (result.code) {
+                case ProcessCode::kIdle:
+                    return processed;
+                case ProcessCode::kProcessed:
+                    ++processed;
+                    break;
+                case ProcessCode::kParseFail:
+                case ProcessCode::kApplyFail:
+                case ProcessCode::kFrameMissing:
+                case ProcessCode::kPipelineError:
+                    break;
+                case ProcessCode::kLoggerBackpressure:
+                    return processed;
+                default:
+                    ++failed_count_;
+                    return processed;
+            }
+        }
+        return processed;
+    }
 
-      std::uint64_t processed_count_{0};
-      std::uint64_t failed_count_{0};
-      std::uint64_t parse_fail_count_{0};
-      std::uint64_t apply_fail_count_{0};
-      std::uint64_t logger_fail_count_{0};
+  private:
+    utils::SPSCQueue<ingest::kalshi::FrameHandle>& input_queue_;
+    ingest::kalshi::FramePool& frame_pool_;
+    utils::SPSCQueue<ingest::kalshi::FrameHandle>& logger_queue_;
+    parsers::kalshi::Parser parser_;
+    EventStore& event_store_;
+    Bundle bundle_;
 
-      [[nodiscard]] ProcessOneResult process_one() noexcept;
-      [[nodiscard]] bool forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept; //forwards the frame to logger for persistence, returns false
-      [[nodiscard]] const predex::core::ingest::kalshi::KalshiFrame* get_frame(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept; //helper to get frame ptr from frame handle
-      [[nodiscard]] ProcessOneResult apply_event(
-        const predex::core::ingest::kalshi::FrameHandle& handle, 
-        const predex::core::ingest::kalshi::KalshiFrame& frame
-      ) noexcept;
+    std::uint64_t processed_count_{0};
+    std::uint64_t failed_count_{0};
+    std::uint64_t parse_fail_count_{0};
+    std::uint64_t apply_fail_count_{0};
+    std::uint64_t logger_fail_count_{0};
 
-  };
-}// namespace predex::core::shards::kalshi
+    [[nodiscard]] ProcessOneResult process_one() noexcept {
+        ingest::kalshi::FrameHandle handle{};
+        if (!input_queue_.try_pop(handle)) {
+            return ProcessOneResult{};
+        }
+
+        const ingest::kalshi::KalshiFrame* frame = get_frame(handle);
+        if (frame == nullptr) {
+            ++failed_count_;
+            return ProcessOneResult{
+                .code = ProcessCode::kFrameMissing,
+                .apply_code = EventApplyCode::kRejected,
+                .pipeline_code = PipelineDecisionCode::kDeclined,
+            };
+        }
+
+        ProcessOneResult result = apply_event(handle, *frame);
+        if (!forward_to_logger(handle)) {
+            ++logger_fail_count_;
+            result.code = ProcessCode::kLoggerBackpressure;
+            return result;
+        }
+
+        if (result.code == ProcessCode::kProcessed) {
+            ++processed_count_;
+        }
+        return result;
+    }
+
+    [[nodiscard]] bool forward_to_logger(const ingest::kalshi::FrameHandle& handle) noexcept {
+        return logger_queue_.try_push(handle);
+    }
+
+    [[nodiscard]] const ingest::kalshi::KalshiFrame* get_frame(
+        const ingest::kalshi::FrameHandle& handle) noexcept {
+        return frame_pool_.frame(handle);
+    }
+
+    [[nodiscard]] ProcessOneResult apply_event(const ingest::kalshi::FrameHandle& handle,
+                                               const ingest::kalshi::KalshiFrame& frame) noexcept {
+        auto parse_result = parser_.parse(handle, frame);
+        if (!parse_result.ok() || !parse_result.value().has_value()) {
+            ++parse_fail_count_;
+            return ProcessOneResult{
+                .code = ProcessCode::kParseFail,
+                .apply_code = EventApplyCode::kParseFail,
+                .pipeline_code = PipelineDecisionCode::kDeclined,
+            };
+        }
+
+        const auto& event = *parse_result.value();
+        auto* stored_event = event_store_.find(event.meta.event_id);
+        if (stored_event == nullptr) {
+            ++apply_fail_count_;
+            return ProcessOneResult{
+                .code = ProcessCode::kApplyFail,
+                .apply_code = EventApplyCode::kRejected,
+                .pipeline_code = PipelineDecisionCode::kDeclined,
+            };
+        }
+
+        const EventApplyCode apply_result = stored_event->apply_market_update(event);
+        if (apply_result != EventApplyCode::kApplied) {
+            ++apply_fail_count_;
+            return ProcessOneResult{
+                .code = ProcessCode::kApplyFail,
+                .apply_code = apply_result,
+                .pipeline_code = PipelineDecisionCode::kDeclined,
+            };
+        }
+
+        const AppliedEventUpdate update{event, *stored_event};
+        const PipelineResult pipeline_result = bundle_.on_event(update);
+        if (pipeline_result.code == PipelineDecisionCode::kError) {
+            ++failed_count_;
+            return ProcessOneResult{
+                .code = ProcessCode::kPipelineError,
+                .apply_code = apply_result,
+                .pipeline_code = pipeline_result.code,
+            };
+        }
+
+        return ProcessOneResult{
+            .code = ProcessCode::kProcessed,
+            .apply_code = apply_result,
+            .pipeline_code = pipeline_result.code,
+        };
+    }
+};
+
+} // namespace predex::core::shards::kalshi

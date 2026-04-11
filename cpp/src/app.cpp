@@ -5,6 +5,7 @@
 #include "predex/router/router.hpp"
 #include "predex/router/shard_dispatch.hpp"
 #include "predex/shards/shard.hpp"
+#include "predex/shards/shard_pipeline.hpp"
 #include "predex/tape/logger.hpp"
 #include "predex/parsers/kalshi/parser.hpp"
 #include "predex/websocket/client.hpp"
@@ -27,6 +28,8 @@ namespace predex {
     struct App::Runtime {
         using FrameHandle = predex::core::ingest::kalshi::FrameHandle;
         using FrameQueue = predex::utils::SPSCQueue<FrameHandle>;
+        using ShardPipeline = predex::core::shards::kalshi::NoopShardPipeline;
+        using Shard = predex::core::shards::kalshi::Shard<ShardPipeline>;
 
         explicit Runtime(AppConfig config_in);
 
@@ -152,7 +155,7 @@ namespace predex {
         std::unique_ptr<core::tape::kalshi::Logger> tape_logger;
 
         std::vector<core::shards::kalshi::EventStore> event_stores;
-        std::vector<std::unique_ptr<core::shards::kalshi::Shard>> shards;
+        std::vector<std::unique_ptr<Shard>> shards;
         std::jthread io_thread;
         std::jthread router_thread;
         std::vector<std::jthread> shard_threads; // will house strategy & risk eventually on the same thread as shard 
@@ -258,13 +261,13 @@ namespace predex {
             config.tape.output_path);
 
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
-            shards.push_back(std::make_unique<core::shards::kalshi::Shard>(
+            shards.push_back(std::make_unique<Shard>(
                 *shard_input_queues[i],
                 frame_pool,
                 *shard_to_logger_queues[i],
                 predex::core::parsers::kalshi::Parser{},
                 event_stores[i],
-                nullptr));
+                ShardPipeline{}));
         }
     }
     void App::Runtime::set_error(std::string message){

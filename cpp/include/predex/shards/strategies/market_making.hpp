@@ -1,7 +1,5 @@
 #pragma once
 
-#include <vector>
-
 #include "predex/shards/applied_event_update.hpp"
 #include "predex/shards/signal_types.hpp"
 
@@ -17,8 +15,9 @@ class MarketMakingStrategy {
   public:
     explicit MarketMakingStrategy(MarketMakingConfig config = {}) : config_(config) {}
 
+    template <typename SignalSink>
     void on_event(const AppliedEventUpdate& update,
-                  std::vector<Signal>& out_signals) noexcept {
+                  SignalSink& out_signals) noexcept {
         if (!config_.enabled || update.event.topology_kind == internal::EventTopologyKind::kUnknown) {
             return;
         }

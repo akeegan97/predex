@@ -4,7 +4,6 @@
 #include "predex/router/market_registry.hpp"
 #include "predex/router/router.hpp"
 #include "predex/router/shard_dispatch.hpp"
-#include "predex/shards/book_store.hpp"
 #include "predex/shards/shard.hpp"
 #include "predex/tape/logger.hpp"
 #include "predex/parsers/kalshi/parser.hpp"
@@ -13,11 +12,12 @@
 #include "predex/websocket/kalshi/auth_signer.hpp"
 #include "predex/websocket/kalshi/ws_adapter.hpp"
 #include "predex/utils/spsc_queue.hpp"
+#include <algorithm>
 #include <chrono>
-#include <fmt/base.h>
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <unordered_map>
 #include <vector>
 #include <mutex>
 
@@ -31,6 +31,7 @@ namespace predex {
         explicit Runtime(AppConfig config_in);
 
         AppConfig config;
+        bool init_ok{true};
         mutable std::mutex error_mutex;
         std::string last_error;
         std::atomic<bool> running{false};
@@ -43,10 +44,90 @@ namespace predex {
                 entries.push_back({
                     .ticker_ = route.market_ticker,
                     .market_id_ = static_cast<uint32_t>(route.market_id),
+                    .event_id_ = static_cast<uint32_t>(route.event_id),
                     .affinity_key_ = static_cast<uint16_t>(route.affinity_key),
+                    .topology_kind_ = route.topology_kind,
+                    .strike_key_ = route.strike_key,
                 });
             }
             return entries;
+        }
+        static bool
+        build_event_definitions_by_shard(
+            const std::vector<predex::core::routing::kalshi::MarketRegistryEntry>& entries,
+            std::size_t shard_count,
+            std::vector<std::vector<core::shards::kalshi::EventDefinition>>& definitions_by_shard,
+            std::string& error_out) {
+            definitions_by_shard.clear();
+            definitions_by_shard.resize(shard_count);
+            if (shard_count == 0) {
+                error_out = "pipeline.shard_count must be greater than zero";
+                return false;
+            }
+
+            struct EventAccumulator {
+                predex::internal::EventTopologyKind topology_kind{
+                    predex::internal::EventTopologyKind::kUnknown};
+                std::uint16_t affinity_key{0};
+                bool affinity_initialized{false};
+                std::vector<core::shards::kalshi::EventMarketDefinition> markets;
+            };
+
+            std::unordered_map<std::uint32_t, EventAccumulator> grouped_events;
+            grouped_events.reserve(entries.size());
+
+            for (const auto& entry : entries) {
+                if (entry.market_id_ == 0 || entry.event_id_ == 0) {
+                    error_out = "market route entries must define non-zero market_id and event_id";
+                    return false;
+                }
+                if (entry.topology_kind_ == predex::internal::EventTopologyKind::kUnknown) {
+                    error_out = "market route entries must define a non-unknown topology_kind";
+                    return false;
+                }
+                auto& accumulator = grouped_events[entry.event_id_];
+                if (!accumulator.affinity_initialized) {
+                    accumulator.affinity_key = entry.affinity_key_;
+                    accumulator.affinity_initialized = true;
+                    accumulator.topology_kind = entry.topology_kind_;
+                } else if (accumulator.affinity_key != entry.affinity_key_) {
+                    error_out = "event " + std::to_string(entry.event_id_) +
+                        " has inconsistent affinity_key values in config";
+                    return false;
+                } else if (accumulator.topology_kind != entry.topology_kind_) {
+                    error_out = "event " + std::to_string(entry.event_id_) +
+                        " has inconsistent topology_kind values in config";
+                    return false;
+                }
+                const auto duplicate_market = std::find_if(
+                    accumulator.markets.begin(),
+                    accumulator.markets.end(),
+                    [&entry](const core::shards::kalshi::EventMarketDefinition& market) {
+                        return market.market_id == entry.market_id_;
+                    });
+                if (duplicate_market != accumulator.markets.end()) {
+                    error_out = "event " + std::to_string(entry.event_id_) +
+                        " contains duplicate market_id " + std::to_string(entry.market_id_) +
+                        " in config";
+                    return false;
+                }
+                accumulator.markets.push_back(core::shards::kalshi::EventMarketDefinition{
+                    .market_id = entry.market_id_,
+                    .strike_key = entry.strike_key_,
+                });
+            }
+
+            for (const auto& [event_id, accumulator] : grouped_events) {
+                const std::size_t shard_id = accumulator.affinity_key % shard_count;
+                definitions_by_shard[shard_id].push_back(core::shards::kalshi::EventDefinition{
+                    .event_id = event_id,
+                    .topology_kind = accumulator.topology_kind,
+                    .expected_market_count = accumulator.markets.size(),
+                    .markets = accumulator.markets,
+                });
+            }
+
+            return true;
         }
 
         websocket::kalshi::AuthSigner auth_signer;
@@ -70,7 +151,7 @@ namespace predex {
         std::unique_ptr<core::ingest::kalshi::IOWriter> io_writer;
         std::unique_ptr<core::tape::kalshi::Logger> tape_logger;
 
-        std::vector<core::shards::kalshi::BookStore> book_stores;
+        std::vector<core::shards::kalshi::EventStore> event_stores;
         std::vector<std::unique_ptr<core::shards::kalshi::Shard>> shards;
         std::jthread io_thread;
         std::jthread router_thread;
@@ -115,7 +196,7 @@ namespace predex {
         shard_to_logger_queues.reserve(config.pipeline.shard_count);
         shard_input_queue_ptrs.reserve(config.pipeline.shard_count);
         logger_input_queue_ptrs.reserve(config.pipeline.shard_count + 1);
-        book_stores.reserve(config.pipeline.shard_count);
+        event_stores.reserve(config.pipeline.shard_count);
         shards.reserve(config.pipeline.shard_count);
 
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
@@ -123,7 +204,27 @@ namespace predex {
                 std::make_unique<FrameQueue>(config.pipeline.shard_input_capacity));
             shard_to_logger_queues.push_back(
                 std::make_unique<FrameQueue>(config.pipeline.shard_to_logger_capacity));
-            book_stores.emplace_back();
+            event_stores.emplace_back();
+        }
+
+        std::vector<std::vector<core::shards::kalshi::EventDefinition>> event_definitions_by_shard;
+        std::string event_definition_error;
+        if (!build_event_definitions_by_shard(
+                market_registry_entries,
+                config.pipeline.shard_count,
+                event_definitions_by_shard,
+                event_definition_error)) {
+            init_ok = false;
+            set_error(std::move(event_definition_error));
+            return;
+        }
+        for (std::size_t shard_index = 0; shard_index < config.pipeline.shard_count; ++shard_index) {
+            if (!event_stores[shard_index].initialize(event_definitions_by_shard[shard_index])) {
+                init_ok = false;
+                set_error("Failed to initialize event store for shard " +
+                    std::to_string(shard_index));
+                return;
+            }
         }
 
         for (const auto& queue : shard_input_queues) {
@@ -162,7 +263,7 @@ namespace predex {
                 frame_pool,
                 *shard_to_logger_queues[i],
                 predex::core::parsers::kalshi::Parser{},
-                book_stores[i],
+                event_stores[i],
                 nullptr));
         }
     }
@@ -172,6 +273,9 @@ namespace predex {
     }
 
     bool App::Runtime::start(){
+        if (!init_ok) {
+            return false;
+        }
         if(running.load(std::memory_order_acquire)){
             return true;
         }

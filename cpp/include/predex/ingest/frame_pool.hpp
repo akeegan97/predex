@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "predex/internal/event_topology.hpp"
 
 namespace predex::core::ingest::kalshi{
   constexpr std::size_t kMaxFrameBytes = 4096; 
@@ -30,8 +31,9 @@ namespace predex::core::ingest::kalshi{
     std::uint32_t idx_{0};
     std::uint32_t gen_{0};
     std::uint32_t market_id_{0};
+    std::uint32_t event_id_{0};
     std::uint16_t affinity_key_{0};
-
+    internal::EventTopologyKind topology_kind_{internal::EventTopologyKind::kUnknown};
     KalshiEventType event_type_{KalshiEventType::kUnknown};
   };
 

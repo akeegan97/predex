@@ -40,6 +40,7 @@ add_library(
   src/router/shard_dispatch.cpp
   src/router/router.cpp
   src/shards/book_store.cpp
+  src/shards/event_store.cpp
   src/shards/shard.cpp
   src/parsers/kalshi/parser.cpp
   src/tape/logger.cpp

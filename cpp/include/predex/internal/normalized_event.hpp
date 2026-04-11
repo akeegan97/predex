@@ -5,17 +5,24 @@
 #include <variant>
 #include <vector>
 
+#include "predex/internal/event_topology.hpp"
 #include "predex/internal/market_types.hpp"
 
 namespace predex::internal {
 
 struct EventMeta {
+    EventId event_id{0};
     ExchangeId exchange{ExchangeId::kUnknown};
+    EventTopologyKind topology_kind{EventTopologyKind::kUnknown};
     AffinityKey affinity_key{0};
     MarketId market_id{0};
     SequenceId sequence_id{0};
     TimestampNs recv_ns{0};
     TimestampNs exchange_ts_ns{0};
+
+    [[nodiscard]] bool has_routing_identity() const noexcept {
+        return event_id != 0U && market_id != 0U;
+    }
 };
 
 struct Level {
@@ -57,6 +64,10 @@ struct NormalizedEvent {
             return meta.sequence_id;
         }
         return std::nullopt;
+    }
+
+    [[nodiscard]] bool has_event_context() const noexcept {
+        return meta.has_routing_identity();
     }
 };
 

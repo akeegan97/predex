@@ -1,6 +1,5 @@
 #include "predex/router/router.hpp"
 #include "predex/ingest/frame_pool.hpp"
-#include "predex/router/market_registry.hpp"
 #include <chrono>
 #include <simdjson.h>
 
@@ -108,6 +107,8 @@ namespace predex::core::routing::kalshi{
         if(market_registry_.try_lookup(market_ticker, route)){
             handle.affinity_key_ = route.affinity_key_;
             handle.market_id_ = route.market_id_;
+            handle.event_id_ = route.event_id_;
+            handle.topology_kind_ = route.topology_kind_;
             return true;
         }
         return false;

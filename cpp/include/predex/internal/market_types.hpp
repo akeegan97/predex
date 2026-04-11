@@ -4,6 +4,7 @@
 
 namespace predex::internal {
 
+using EventId = std::uint32_t;
 using MarketId = std::uint32_t;
 using SequenceId = std::uint64_t;
 using PriceTicks = std::int64_t;

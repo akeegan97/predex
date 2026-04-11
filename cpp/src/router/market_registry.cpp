@@ -9,7 +9,15 @@ namespace predex::core::routing::kalshi{
                 //duplicate entry for ticker, could log this or handle differently if needed but for now just skip/keep first entry
                 continue;
             }
-            routes_.emplace(entry.ticker_, MarketRoute{entry.market_id_, entry.affinity_key_});
+            routes_.emplace(entry.ticker_, 
+                MarketRoute{
+                    entry.market_id_, 
+                    entry.event_id_, 
+                    entry.affinity_key_, 
+                    entry.topology_kind_, 
+                    entry.strike_key_
+                }
+            );
         }
     }
 

@@ -572,6 +572,8 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     event.raw_sequence_id = handle.seq_;
     event.type = internal::EventType::kUnknown;
     event.meta.exchange = internal::ExchangeId::kKalshi;
+    event.meta.topology_kind = handle.topology_kind_;
+    event.meta.event_id = handle.event_id_;
     event.meta.affinity_key = handle.affinity_key_;
     event.meta.market_id = handle.market_id_;
     event.meta.recv_ns = frame.recv_ts_ns_;

@@ -46,7 +46,7 @@ class Shard {
           bundle_(std::move(bundle)) {}
 
     [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept {
-        std::size_t processed = 0;
+        std::size_t processed = bundle_.drain_oms_updates(max_batch_size);
         while (processed < max_batch_size) {
             const ProcessOneResult result = process_one();
             switch (result.code) {

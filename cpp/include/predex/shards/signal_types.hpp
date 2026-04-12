@@ -4,8 +4,11 @@
 #include <optional>
 
 #include "predex/internal/market_types.hpp"
+#include "predex/oms/oms_types.hpp"
 
 namespace predex::core::shards::kalshi {
+
+using OmsOrderIntent = predex::core::oms::kalshi::OrderIntent;
 
 enum class SignalKind : std::uint8_t {
     kUnknown = 0,
@@ -30,17 +33,6 @@ struct Signal {
     std::int64_t score{0};
 };
 
-struct ShardOrderIntent {
-    std::uint64_t signal_id{0};
-    internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
-    internal::EventId event_id{0};
-    internal::MarketId market_id{0};
-    internal::Side side{internal::Side::kUnknown};
-    internal::QtyLots qty_lots{0};
-    std::optional<internal::PriceTicks> limit_price_ticks;
-    internal::TimestampNs intent_ts_ns{0};
-};
-
 enum class RiskDecisionCode : std::uint8_t {
     kAccepted = 1,
     kRejected = 2,
@@ -62,7 +54,7 @@ enum class RiskRejectReason : std::uint8_t {
 struct RiskDecision {
     RiskDecisionCode code{RiskDecisionCode::kRejected};
     RiskRejectReason reason{RiskRejectReason::kNone};
-    std::optional<ShardOrderIntent> accepted_intent;
+    std::optional<OmsOrderIntent> accepted_intent;
 };
 
 }  // namespace predex::core::shards::kalshi

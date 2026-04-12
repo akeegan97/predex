@@ -34,7 +34,7 @@ class LocalRiskManager {
 
     [[nodiscard]] RiskDecision evaluate(const AppliedEventUpdate& update,
                                         const Signal& signal,
-                                        const ShardOrderIntent& intent,
+                                        const OmsOrderIntent& intent,
                                         const LocalRiskState& state) const noexcept {
         if (!limits_.trading_enabled) {
             return RiskDecision{
@@ -42,7 +42,7 @@ class LocalRiskManager {
                 .reason = RiskRejectReason::kStrategyDisabled,
             };
         }
-        if (signal.kind == SignalKind::kUnknown || intent.market_id == 0 ||
+        if (signal.kind == SignalKind::kUnknown || intent.origin.market_id == 0 ||
             intent.qty_lots <= 0) {
             return RiskDecision{
                 .code = RiskDecisionCode::kRejected,

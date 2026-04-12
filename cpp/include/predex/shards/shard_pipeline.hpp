@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 #include "predex/shards/applied_event_update.hpp"
@@ -31,17 +32,27 @@ struct NoopShardPipeline {
     [[nodiscard]] PipelineResult on_event(const AppliedEventUpdate& update) noexcept {
         return {.code = PipelineDecisionCode::kDeclined};
     }
+
+    [[nodiscard]] std::size_t drain_oms_updates(std::size_t /*max_batch_size*/) noexcept {
+        return 0;
+    }
 };
 
 template <typename LocalRisk, typename... Strategies>
 class DefaultShardPipeline {
   public:
     explicit DefaultShardPipeline(
+        std::uint16_t shard_id,
         LocalRisk risk,
-        utils::SPSCQueue<ShardOrderIntent>* intent_queue,
+        utils::SPSCQueue<OmsOrderIntent>* intent_queue,
+        utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue,
+        utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue,
         Strategies... strategies)
-        : risk_(std::move(risk)),
+        : shard_id_(shard_id),
+          risk_(std::move(risk)),
           intent_queue_(intent_queue),
+          decision_queue_(decision_queue),
+          lifecycle_queue_(lifecycle_queue),
           strategies_(std::move(strategies)...) {}
 
     [[nodiscard]] PipelineResult on_event(const AppliedEventUpdate& update) noexcept{
@@ -82,7 +93,7 @@ class DefaultShardPipeline {
         }
 
         for (std::size_t intent_index = 0; intent_index < intent_count_; ++intent_index) {
-            const ShardOrderIntent& intent = intents_buffer_[intent_index];
+            const OmsOrderIntent& intent = intents_buffer_[intent_index];
             if (intent_queue_ == nullptr || !intent_queue_->try_push(intent)) {
                 return {
                     .code = PipelineDecisionCode::kBackpressure,
@@ -102,7 +113,29 @@ class DefaultShardPipeline {
 
     }
 
+    [[nodiscard]] std::size_t drain_oms_updates(std::size_t max_batch_size) noexcept {
+        std::size_t processed = 0;
+        while (processed < max_batch_size) {
+            if (process_one_intent_decision()) {
+                ++processed;
+                continue;
+            }
+            if (process_one_lifecycle_event()) {
+                ++processed;
+                continue;
+            }
+            break;
+        }
+        return processed;
+    }
+
   private:
+    struct TrackedIntentState {
+        predex::core::oms::kalshi::IntentOrigin origin{};
+        internal::QtyLots open_qty_lots{0};
+        std::optional<predex::core::oms::kalshi::OmsRequestId> oms_request_id;
+    };
+
     struct StrategySignalSink {
         explicit StrategySignalSink(DefaultShardPipeline& pipeline) : pipeline_(pipeline) {}
 
@@ -114,14 +147,23 @@ class DefaultShardPipeline {
         DefaultShardPipeline& pipeline_;
     };
 
+    std::uint16_t shard_id_{0};
     LocalRisk risk_;
     LocalRiskState risk_state_{};
-    utils::SPSCQueue<ShardOrderIntent>* intent_queue_{nullptr};
+    utils::SPSCQueue<OmsOrderIntent>* intent_queue_{nullptr};
+    utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue_{nullptr};
+    utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue_{nullptr};
     std::tuple<Strategies...> strategies_;
     std::array<Signal,kMaxSignalsPerEvent> signals_buffer_{};
     std::size_t signal_count_{0};
-    std::array<ShardOrderIntent, kMaxSignalsPerEvent> intents_buffer_{};
+    std::array<OmsOrderIntent, kMaxSignalsPerEvent> intents_buffer_{};
     std::size_t intent_count_{0};
+    predex::core::oms::kalshi::LocalIntentId next_local_intent_id_{1};
+    std::unordered_map<predex::core::oms::kalshi::LocalIntentId, TrackedIntentState>
+        tracked_intents_;
+    std::unordered_map<predex::core::oms::kalshi::OmsRequestId,
+                       predex::core::oms::kalshi::LocalIntentId>
+        local_intent_id_by_request_id_;
 
     void reset_buffers() noexcept{
         signal_count_ = 0;
@@ -135,7 +177,7 @@ class DefaultShardPipeline {
         signals_buffer_[signal_count_++] = signal;
         return true;
     }
-    [[nodiscard]] bool try_push_intent(const ShardOrderIntent& intent) noexcept{
+    [[nodiscard]] bool try_push_intent(const OmsOrderIntent& intent) noexcept{
         if (intent_count_ >= kMaxSignalsPerEvent) {
             return false;
         }
@@ -152,32 +194,206 @@ class DefaultShardPipeline {
             strategies_);
     }
 
-    [[nodiscard]] std::optional<ShardOrderIntent> build_candidate_intent(
+    [[nodiscard]] std::optional<OmsOrderIntent> build_candidate_intent(
         const AppliedEventUpdate& update,
-        const Signal& signal) const noexcept {
+        const Signal& signal) noexcept {
         if (signal.kind == SignalKind::kUnknown || signal.market_id == 0 ||
             signal.target_qty_lots <= 0) {
             return std::nullopt;
         }
 
-        return ShardOrderIntent{
-            .signal_id = signal.signal_id,
-            .exchange = signal.exchange,
-            .event_id = signal.event_id == 0 ? update.event.event_id : signal.event_id,
-            .market_id = signal.market_id,
+        return OmsOrderIntent{
+            .origin = predex::core::oms::kalshi::IntentOrigin{
+                .shard_id = shard_id_,
+                .affinity_key = update.update.meta.affinity_key,
+                .local_intent_id = next_local_intent_id_++,
+                .signal_id = signal.signal_id,
+                .event_id = signal.event_id == 0 ? update.event.event_id : signal.event_id,
+                .market_id = signal.market_id,
+            },
+            .exchange = signal.exchange == internal::ExchangeId::kUnknown
+                ? update.update.meta.exchange
+                : signal.exchange,
             .side = signal.side,
             .qty_lots = signal.target_qty_lots,
             .limit_price_ticks = signal.reference_price_ticks,
+            .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kGtc,
             .intent_ts_ns = signal.signal_ts_ns == 0 ? update.update.meta.recv_ns
                                                      : signal.signal_ts_ns,
         };
     }
 
-    void on_intent_enqueued(const ShardOrderIntent& intent) noexcept {
+    void on_intent_enqueued(const OmsOrderIntent& intent) noexcept {
         ++risk_state_.open_intents_for_event;
         ++risk_state_.open_intents_for_market;
         risk_state_.event_exposure_lots += intent.qty_lots;
         risk_state_.market_exposure_lots += intent.qty_lots;
+        tracked_intents_[intent.origin.local_intent_id] = TrackedIntentState{
+            .origin = intent.origin,
+            .open_qty_lots = intent.qty_lots,
+            .oms_request_id = std::nullopt,
+        };
+    }
+
+    [[nodiscard]] bool process_one_intent_decision() noexcept {
+        if (decision_queue_ == nullptr) {
+            return false;
+        }
+
+        predex::core::oms::kalshi::IntentDecision decision{};
+        if (!decision_queue_->try_pop(decision)) {
+            return false;
+        }
+
+        if (const auto* accepted =
+                std::get_if<predex::core::oms::kalshi::AcceptedIntent>(&decision.data)) {
+            auto* tracked = find_tracked_intent(accepted->intent.origin, accepted->oms_request_id);
+            if (tracked != nullptr) {
+                tracked->oms_request_id = accepted->oms_request_id;
+                local_intent_id_by_request_id_[accepted->oms_request_id] =
+                    accepted->intent.origin.local_intent_id;
+            }
+            return true;
+        }
+
+        if (const auto* rejected =
+                std::get_if<predex::core::oms::kalshi::RejectedIntent>(&decision.data)) {
+            release_tracked_intent(rejected->intent.origin.local_intent_id);
+            return true;
+        }
+
+        if (const auto* modified =
+                std::get_if<predex::core::oms::kalshi::ModifiedIntent>(&decision.data)) {
+            auto* tracked = find_tracked_intent(modified->modified_intent.origin,
+                                                modified->oms_request_id);
+            if (tracked != nullptr) {
+                tracked->origin = modified->modified_intent.origin;
+                tracked->oms_request_id = modified->oms_request_id;
+                reconcile_open_qty(*tracked, modified->modified_intent.qty_lots);
+                local_intent_id_by_request_id_[modified->oms_request_id] =
+                    modified->modified_intent.origin.local_intent_id;
+            }
+            return true;
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] bool process_one_lifecycle_event() noexcept {
+        if (lifecycle_queue_ == nullptr) {
+            return false;
+        }
+
+        predex::core::oms::kalshi::OrderLifecycleEvent event{};
+        if (!lifecycle_queue_->try_pop(event)) {
+            return false;
+        }
+
+        TrackedIntentState* tracked = find_tracked_intent(event.origin, event.oms_request_id);
+        if (tracked == nullptr) {
+            return true;
+        }
+
+        if (const auto* fill =
+                std::get_if<predex::core::oms::kalshi::OrderFill>(&event.data)) {
+            reduce_open_qty(*tracked, fill->fill_qty_lots);
+        }
+        if (const auto* replace_ack =
+                std::get_if<predex::core::oms::kalshi::ReplaceAck>(&event.data)) {
+            reconcile_open_qty(*tracked, replace_ack->replaced_qty_lots);
+        }
+
+        switch (event.kind) {
+            case predex::core::oms::kalshi::OrderLifecycleEventKind::kReject:
+            case predex::core::oms::kalshi::OrderLifecycleEventKind::kFill:
+            case predex::core::oms::kalshi::OrderLifecycleEventKind::kCanceled:
+                release_tracked_intent(event.origin.local_intent_id);
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    [[nodiscard]] TrackedIntentState* find_tracked_intent(
+        const predex::core::oms::kalshi::IntentOrigin& origin,
+        predex::core::oms::kalshi::OmsRequestId oms_request_id = 0) noexcept {
+        auto tracked = tracked_intents_.find(origin.local_intent_id);
+        if (tracked != tracked_intents_.end()) {
+            return &tracked->second;
+        }
+        if (oms_request_id != 0) {
+            const auto local_id = local_intent_id_by_request_id_.find(oms_request_id);
+            if (local_id != local_intent_id_by_request_id_.end()) {
+                auto tracked_by_request = tracked_intents_.find(local_id->second);
+                if (tracked_by_request != tracked_intents_.end()) {
+                    return &tracked_by_request->second;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    void reconcile_open_qty(TrackedIntentState& tracked, internal::QtyLots new_open_qty) noexcept {
+        if (new_open_qty < 0) {
+            new_open_qty = 0;
+        }
+        if (new_open_qty == tracked.open_qty_lots) {
+            return;
+        }
+        if (new_open_qty > tracked.open_qty_lots) {
+            const internal::QtyLots delta = new_open_qty - tracked.open_qty_lots;
+            risk_state_.event_exposure_lots += delta;
+            risk_state_.market_exposure_lots += delta;
+        } else {
+            const internal::QtyLots delta = tracked.open_qty_lots - new_open_qty;
+            decrement_exposure(delta);
+        }
+        tracked.open_qty_lots = new_open_qty;
+    }
+
+    void reduce_open_qty(TrackedIntentState& tracked, internal::QtyLots delta_qty) noexcept {
+        if (delta_qty <= 0) {
+            return;
+        }
+        const internal::QtyLots reduction =
+            delta_qty > tracked.open_qty_lots ? tracked.open_qty_lots : delta_qty;
+        tracked.open_qty_lots -= reduction;
+        decrement_exposure(reduction);
+    }
+
+    void release_tracked_intent(
+        predex::core::oms::kalshi::LocalIntentId local_intent_id) noexcept {
+        auto tracked = tracked_intents_.find(local_intent_id);
+        if (tracked == tracked_intents_.end()) {
+            return;
+        }
+
+        if (risk_state_.open_intents_for_event > 0) {
+            --risk_state_.open_intents_for_event;
+        }
+        if (risk_state_.open_intents_for_market > 0) {
+            --risk_state_.open_intents_for_market;
+        }
+        decrement_exposure(tracked->second.open_qty_lots);
+        if (tracked->second.oms_request_id.has_value()) {
+            local_intent_id_by_request_id_.erase(*tracked->second.oms_request_id);
+        }
+        tracked_intents_.erase(tracked);
+    }
+
+    void decrement_exposure(internal::QtyLots delta_qty) noexcept {
+        if (delta_qty <= 0) {
+            return;
+        }
+        risk_state_.event_exposure_lots =
+            risk_state_.event_exposure_lots > delta_qty
+                ? risk_state_.event_exposure_lots - delta_qty
+                : 0;
+        risk_state_.market_exposure_lots =
+            risk_state_.market_exposure_lots > delta_qty
+                ? risk_state_.market_exposure_lots - delta_qty
+                : 0;
     }
 };
 

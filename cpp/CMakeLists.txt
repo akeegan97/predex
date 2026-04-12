@@ -36,6 +36,7 @@ add_library(
   predex_core_pipeline
   src/ingest/frame_pool.cpp
   src/ingest/io_writer.cpp
+  src/oms/oms.cpp
   src/router/market_registry.cpp
   src/router/shard_dispatch.cpp
   src/router/router.cpp

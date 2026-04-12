@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -29,6 +31,29 @@ struct Signal {
     internal::Side side{internal::Side::kUnknown};
     internal::QtyLots target_qty_lots{0};
     std::optional<internal::PriceTicks> reference_price_ticks;
+    internal::TimestampNs signal_ts_ns{0};
+    std::int64_t edge_ticks{0};
+    std::int64_t score{0};
+};
+
+struct SubmissionLeg {
+    internal::MarketId market_id{0};
+    internal::Side side{internal::Side::kUnknown};
+    internal::QtyLots qty_lots{0};
+    std::optional<internal::PriceTicks> limit_price_ticks;
+    predex::core::oms::kalshi::OmsTimeInForce time_in_force{
+        predex::core::oms::kalshi::OmsTimeInForce::kGtc};
+};
+
+struct GroupSignal {
+    std::uint64_t signal_id{0};
+    internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
+    internal::EventId event_id{0};
+    SignalKind kind{SignalKind::kUnknown};
+    predex::core::oms::kalshi::GroupExecutionPolicy execution_policy{
+        predex::core::oms::kalshi::GroupExecutionPolicy::kAbortRemainingOnReject};
+    std::array<SubmissionLeg, predex::core::oms::kalshi::kMaxGroupOrderLegs> legs{};
+    std::size_t leg_count{0};
     internal::TimestampNs signal_ts_ns{0};
     std::int64_t edge_ticks{0};
     std::int64_t score{0};

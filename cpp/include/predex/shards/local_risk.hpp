@@ -33,17 +33,17 @@ class LocalRiskManager {
     [[nodiscard]] const LocalRiskLimits& limits() const noexcept { return limits_; }
 
     [[nodiscard]] RiskDecision evaluate(const AppliedEventUpdate& update,
-                                        const Signal& signal,
                                         const OmsOrderIntent& intent,
                                         const LocalRiskState& state) const noexcept {
+        static_cast<void>(update);
         if (!limits_.trading_enabled) {
             return RiskDecision{
                 .code = RiskDecisionCode::kDisabled,
                 .reason = RiskRejectReason::kStrategyDisabled,
             };
         }
-        if (signal.kind == SignalKind::kUnknown || intent.origin.market_id == 0 ||
-            intent.qty_lots <= 0) {
+        if (intent.origin.market_id == 0 || intent.qty_lots <= 0 ||
+            intent.side == internal::Side::kUnknown) {
             return RiskDecision{
                 .code = RiskDecisionCode::kRejected,
                 .reason = RiskRejectReason::kInvalidIntent,

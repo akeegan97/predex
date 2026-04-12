@@ -1,19 +1,41 @@
 #include "predex/oms/oms.hpp"
 #include "predex/oms/oms_types.hpp"
 
-
 namespace predex::core::oms::kalshi{
+    namespace {
+        [[nodiscard]] OmsRequestId extract_oms_request_id(const IntentDecision& decision) {
+            if (const auto* accepted = std::get_if<AcceptedIntent>(&decision.data)) {
+                return accepted->oms_request_id;
+            }
+            if (const auto* modified = std::get_if<ModifiedIntent>(&decision.data)) {
+                return modified->oms_request_id;
+            }
+            return 0;
+        }
+
+        [[nodiscard]] std::uint8_t extract_reject_reason(const IntentDecision& decision) {
+            if (const auto* rejected = std::get_if<RejectedIntent>(&decision.data)) {
+                return static_cast<std::uint8_t>(rejected->reason);
+            }
+            if (const auto* modified = std::get_if<ModifiedIntent>(&decision.data)) {
+                return static_cast<std::uint8_t>(modified->reason);
+            }
+            return 0;
+        }
+    }
     
     Oms::Oms(std::vector<SubmissionQueue*> shard_intent_queues,
                  std::vector<DecisionQueue*> shard_decision_queues,
                  std::vector<LifecycleQueue*> shard_lifecycle_queues,
                  OmsTransportQueues transport_queues,
-                 GlobalRiskManager global_risk)
+                 GlobalRiskManager global_risk,
+                 AuditQueue* audit_queue)
         : global_risk_(std::move(global_risk)),
           shard_intent_queues_(std::move(shard_intent_queues)),
           shard_decision_queues_(std::move(shard_decision_queues)),
           shard_lifecycle_queues_(std::move(shard_lifecycle_queues)),
-          transport_queues_(std::move(transport_queues)) {}//using std::move since potentially later they might not be trivially copyable
+          transport_queues_(std::move(transport_queues)),
+          audit_queue_(audit_queue) {}//using std::move since potentially later they might not be trivially copyable
     
     //NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] OmsPumpResult Oms::pump(std::size_t max_transport_updates, std::size_t max_shard_intents) noexcept{
@@ -80,6 +102,27 @@ namespace predex::core::oms::kalshi{
         if(!transport_queues_.inbound_update_queue->try_pop(event)){
             return OmsProcessCode::kIdle;
         }
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kOmsLifecycle,
+            .ts_ns = event.recv_ts_ns,
+            .shard_id = event.origin.shard_id,
+            .signal_id = event.origin.signal_id,
+            .group_id = event.origin.group_id,
+            .local_intent_id = event.origin.local_intent_id,
+            .oms_request_id = event.oms_request_id,
+            .exchange = internal::ExchangeId::kKalshi,
+            .event_id = event.origin.event_id,
+            .market_id = event.origin.market_id,
+            .side = internal::Side::kUnknown,
+            .leg_index = event.origin.leg_index,
+            .leg_count = event.origin.leg_count,
+            .qty_lots = 0,
+            .price_ticks = 0,
+            .decision_code = 0,
+            .reject_reason = 0,
+            .lifecycle_kind = static_cast<std::uint8_t>(event.kind),
+            .order_status = static_cast<std::uint8_t>(event.status),
+        });
         if(!apply_transport_update(event)){
             return OmsProcessCode::kError;
         }
@@ -177,10 +220,48 @@ namespace predex::core::oms::kalshi{
                 !transport_queues_.submit_queue->try_push(submit_cmd)) {
                 decision = make_transport_reject(intent, decision_ts_ns);
             } else {
+                emit_audit(predex::core::audit::AuditEvent{
+                    .kind = predex::core::audit::AuditKind::kOmsTransport,
+                    .ts_ns = decision_ts_ns,
+                    .shard_id = accepted_intent->intent.origin.shard_id,
+                    .signal_id = accepted_intent->intent.origin.signal_id,
+                    .group_id = accepted_intent->intent.origin.group_id,
+                    .local_intent_id = accepted_intent->intent.origin.local_intent_id,
+                    .oms_request_id = accepted_intent->oms_request_id,
+                    .exchange = accepted_intent->intent.exchange,
+                    .event_id = accepted_intent->intent.origin.event_id,
+                    .market_id = accepted_intent->intent.origin.market_id,
+                    .side = accepted_intent->intent.side,
+                    .leg_index = accepted_intent->intent.origin.leg_index,
+                    .leg_count = accepted_intent->intent.origin.leg_count,
+                    .qty_lots = accepted_intent->intent.qty_lots,
+                    .price_ticks = accepted_intent->intent.limit_price_ticks.value_or(0),
+                });
                 global_risk_.on_intent_accepted(*accepted_intent, global_risk_state_);
                 insert_live_order(*accepted_intent, decision_ts_ns);
             }
         }
+
+        const IntentOrigin audit_origin = extract_origin(decision);
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kOmsDecision,
+            .ts_ns = decision.decision_ts_ns,
+            .shard_id = audit_origin.shard_id,
+            .signal_id = audit_origin.signal_id,
+            .group_id = audit_origin.group_id,
+            .local_intent_id = audit_origin.local_intent_id,
+            .oms_request_id = extract_oms_request_id(decision),
+            .exchange = intent.exchange,
+            .event_id = audit_origin.event_id,
+            .market_id = audit_origin.market_id,
+            .side = intent.side,
+            .leg_index = audit_origin.leg_index,
+            .leg_count = audit_origin.leg_count,
+            .qty_lots = intent.qty_lots,
+            .price_ticks = intent.limit_price_ticks.value_or(0),
+            .decision_code = static_cast<std::uint8_t>(decision.code),
+            .reject_reason = extract_reject_reason(decision),
+        });
 
         if (!emit_intent_decision(decision)) {
             return OmsProcessCode::kShardBackpressure;
@@ -201,7 +282,6 @@ namespace predex::core::oms::kalshi{
             .data = RejectedIntent{
                 .intent = intent,
                 .reason = IntentRejectReason::kVenueUnavailable,
-                .reason_message = "submit transport unavailable or backpressured",
             },
             .decision_ts_ns = decision_ts_ns,
         };
@@ -223,6 +303,13 @@ namespace predex::core::oms::kalshi{
         }
         LifecycleQueue* const queue = shard_lifecycle_queues_[*shard_index];
         return queue != nullptr && queue->try_push(event);
+    }
+
+    void Oms::emit_audit(const predex::core::audit::AuditEvent& event) noexcept {
+        if (audit_queue_ == nullptr) {
+            return;
+        }
+        static_cast<void>(audit_queue_->try_push(event));
     }
 
     [[nodiscard]] IntentOrigin Oms::extract_origin(const IntentDecision& decision) {

@@ -45,7 +45,6 @@ class GlobalRiskManager {
                 .data = RejectedIntent{
                     .intent = intent,
                     .reason = IntentRejectReason::kOmsDisabled,
-                    .reason_message = "OMS trading disabled",
                 },
                 .decision_ts_ns = decision_ts_ns,
             };
@@ -58,7 +57,6 @@ class GlobalRiskManager {
                 .data = RejectedIntent{
                     .intent = intent,
                     .reason = IntentRejectReason::kInvalidIntent,
-                    .reason_message = "invalid order intent",
                 },
                 .decision_ts_ns = decision_ts_ns,
             };
@@ -70,7 +68,6 @@ class GlobalRiskManager {
                 .data = RejectedIntent{
                     .intent = intent,
                     .reason = IntentRejectReason::kGlobalRisk,
-                    .reason_message = "global open order limit exceeded",
                 },
                 .decision_ts_ns = decision_ts_ns,
             };
@@ -82,7 +79,6 @@ class GlobalRiskManager {
                 .data = RejectedIntent{
                     .intent = intent,
                     .reason = IntentRejectReason::kGlobalRisk,
-                    .reason_message = "event open order limit exceeded",
                 },
                 .decision_ts_ns = decision_ts_ns,
             };
@@ -94,7 +90,6 @@ class GlobalRiskManager {
                 .data = RejectedIntent{
                     .intent = intent,
                     .reason = IntentRejectReason::kGlobalRisk,
-                    .reason_message = "global exposure limit exceeded",
                 },
                 .decision_ts_ns = decision_ts_ns,
             };
@@ -106,7 +101,6 @@ class GlobalRiskManager {
                 .data = RejectedIntent{
                     .intent = intent,
                     .reason = IntentRejectReason::kGlobalRisk,
-                    .reason_message = "event exposure limit exceeded",
                 },
                 .decision_ts_ns = decision_ts_ns,
             };

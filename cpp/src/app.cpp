@@ -1,4 +1,5 @@
 #include "predex/app.hpp"
+#include "predex/audit/audit_logger.hpp"
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/ingest/io_writer.hpp"
 #include "predex/oms/oms.hpp"
@@ -56,12 +57,15 @@ namespace predex {
             predex::utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>;
         using OmsLifecycleQueue =
             predex::utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>;
+        using AuditQueue =
+            predex::utils::SPSCQueue<predex::core::audit::AuditEvent>;
         using SubmitOrderQueue =
             predex::utils::SPSCQueue<predex::core::oms::kalshi::SubmitOrderCmd>;
         using CancelOrderQueue =
             predex::utils::SPSCQueue<predex::core::oms::kalshi::CancelOrderCmd>;
         using ModifyOrderQueue =
             predex::utils::SPSCQueue<predex::core::oms::kalshi::ModifyOrderCmd>;
+        using AuditLogger = predex::core::audit::AuditLogger;
 
         explicit Runtime(AppConfig config_in);
 
@@ -179,10 +183,12 @@ namespace predex {
         std::vector<std::unique_ptr<OmsIntentQueue>> shard_to_oms_intent_queues;
         std::vector<std::unique_ptr<OmsDecisionQueue>> oms_to_shard_decision_queues;
         std::vector<std::unique_ptr<OmsLifecycleQueue>> oms_to_shard_lifecycle_queues;
+        std::vector<std::unique_ptr<AuditQueue>> shard_audit_queues;
         std::unique_ptr<SubmitOrderQueue> oms_submit_queue;
         std::unique_ptr<CancelOrderQueue> oms_cancel_queue;
         std::unique_ptr<ModifyOrderQueue> oms_modify_queue;
         std::unique_ptr<OmsLifecycleQueue> oms_transport_update_queue;
+        std::unique_ptr<AuditQueue> oms_audit_queue;
 
         core::routing::kalshi::MarketRegistry market_registry;
         std::vector<FrameQueue*> shard_input_queue_ptrs;
@@ -190,11 +196,13 @@ namespace predex {
         std::vector<OmsIntentQueue*> shard_to_oms_intent_queue_ptrs;
         std::vector<OmsDecisionQueue*> oms_to_shard_decision_queue_ptrs;
         std::vector<OmsLifecycleQueue*> oms_to_shard_lifecycle_queue_ptrs;
+        std::vector<AuditQueue*> audit_input_queue_ptrs;
 
         std::unique_ptr<core::routing::kalshi::ShardDispatch> shard_dispatch;
         std::unique_ptr<core::routing::kalshi::Router> router;
         std::unique_ptr<core::ingest::kalshi::IOWriter> io_writer;
         std::unique_ptr<core::tape::kalshi::Logger> tape_logger;
+        std::unique_ptr<AuditLogger> audit_logger;
         std::unique_ptr<Oms> oms;
 
         std::vector<core::shards::kalshi::EventStore> event_stores;
@@ -204,6 +212,7 @@ namespace predex {
         std::vector<std::jthread> shard_threads; // will house strategy & risk eventually on the same thread as shard 
         std::jthread oms_thread;
         std::jthread logger_thread;
+        std::jthread audit_thread;
 
         
         
@@ -217,6 +226,7 @@ namespace predex {
         void shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const;
         void oms_loop(const std::stop_token& stop_token);
         void logger_loop(const std::stop_token& stop_token) const;
+        void audit_loop(const std::stop_token& stop_token) const;
         void set_error(std::string message);
         std::string_view last_error_view() const noexcept;
     };
@@ -244,11 +254,13 @@ namespace predex {
         shard_to_oms_intent_queues.reserve(config.pipeline.shard_count);
         oms_to_shard_decision_queues.reserve(config.pipeline.shard_count);
         oms_to_shard_lifecycle_queues.reserve(config.pipeline.shard_count);
+        shard_audit_queues.reserve(config.pipeline.shard_count);
         shard_input_queue_ptrs.reserve(config.pipeline.shard_count);
         logger_input_queue_ptrs.reserve(config.pipeline.shard_count + 1);
         shard_to_oms_intent_queue_ptrs.reserve(config.pipeline.shard_count);
         oms_to_shard_decision_queue_ptrs.reserve(config.pipeline.shard_count);
         oms_to_shard_lifecycle_queue_ptrs.reserve(config.pipeline.shard_count);
+        audit_input_queue_ptrs.reserve(config.pipeline.shard_count + 1);
         event_stores.reserve(config.pipeline.shard_count);
         shards.reserve(config.pipeline.shard_count);
 
@@ -263,6 +275,8 @@ namespace predex {
                 std::make_unique<OmsDecisionQueue>(config.pipeline.shard_input_capacity));
             oms_to_shard_lifecycle_queues.push_back(
                 std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity));
+            shard_audit_queues.push_back(
+                std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity));
             event_stores.emplace_back();
         }
 
@@ -274,6 +288,8 @@ namespace predex {
             std::make_unique<ModifyOrderQueue>(config.pipeline.shard_input_capacity);
         oms_transport_update_queue =
             std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity);
+        oms_audit_queue =
+            std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
 
         std::vector<std::vector<core::shards::kalshi::EventDefinition>> event_definitions_by_shard;
         std::string event_definition_error;
@@ -307,6 +323,10 @@ namespace predex {
         for (const auto& queue : oms_to_shard_lifecycle_queues) {
             oms_to_shard_lifecycle_queue_ptrs.push_back(queue.get());
         }
+        for (const auto& queue : shard_audit_queues) {
+            audit_input_queue_ptrs.push_back(queue.get());
+        }
+        audit_input_queue_ptrs.push_back(oms_audit_queue.get());
 
         logger_input_queue_ptrs.push_back(router_to_logger_queue.get());
         for (const auto& queue : shard_to_logger_queues) {
@@ -333,6 +353,9 @@ namespace predex {
             frame_pool,
             *recycle_queue,
             config.tape.output_path);
+        audit_logger = std::make_unique<AuditLogger>(
+            audit_input_queue_ptrs,
+            config.audit.output_path);
 
         oms = std::make_unique<Oms>(
             shard_to_oms_intent_queue_ptrs,
@@ -343,7 +366,9 @@ namespace predex {
                 .cancel_queue = oms_cancel_queue.get(),
                 .modify_queue = oms_modify_queue.get(),
                 .inbound_update_queue = oms_transport_update_queue.get(),
-            });
+            },
+            predex::core::oms::kalshi::GlobalRiskManager{},
+            oms_audit_queue.get());
 
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
             shards.push_back(std::make_unique<Shard>(
@@ -358,6 +383,7 @@ namespace predex {
                     shard_to_oms_intent_queues[i].get(),
                     oms_to_shard_decision_queues[i].get(),
                     oms_to_shard_lifecycle_queues[i].get(),
+                    shard_audit_queues[i].get(),
                     MonotonicArbStrategy{},
                     CdfViolationStrategy{},
                     MarketMakingStrategy{},
@@ -411,6 +437,9 @@ namespace predex {
         });
         logger_thread = std::jthread([this](const std::stop_token& stop_token){
             logger_loop(stop_token);
+        });
+        audit_thread = std::jthread([this](const std::stop_token& stop_token){
+            audit_loop(stop_token);
         });
         return true;
     }
@@ -501,6 +530,15 @@ namespace predex {
         }
     }
 
+    void App::Runtime::audit_loop(const std::stop_token& stop_token) const {
+        while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
+            const auto logged = audit_logger->pump(config.pipeline.router_to_logger_capacity);
+            if(logged == 0U){
+                std::this_thread::yield();
+            }
+        }
+    }
+
     void App::Runtime::run(){
         if(!running.load(std::memory_order_acquire)){
             set_error("Attempted to run App that is not started");
@@ -536,6 +574,10 @@ namespace predex {
         if(logger_thread.joinable()){
             logger_thread.request_stop();
             logger_thread.join();
+        }
+        if(audit_thread.joinable()){
+            audit_thread.request_stop();
+            audit_thread.join();
         }
 
     }

@@ -112,7 +112,6 @@ struct AcceptedIntent {
 struct RejectedIntent {
     OrderIntent intent{};
     IntentRejectReason reason{IntentRejectReason::kNone};
-    std::string reason_message;
 };
 
 struct ModifiedIntent {
@@ -216,7 +215,6 @@ struct OrderLifecycleEvent {
     std::optional<ExchangeOrderId> exchange_order_id;
     internal::TimestampNs recv_ts_ns{0};
     OrderLifecycleData data;
-    std::string raw_payload;
 };
 
 struct OrderState {

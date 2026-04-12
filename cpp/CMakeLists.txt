@@ -34,6 +34,7 @@ target_link_libraries(
 
 add_library(
   predex_core_pipeline
+  src/audit/audit_logger.cpp
   src/ingest/frame_pool.cpp
   src/ingest/io_writer.cpp
   src/oms/oms.cpp

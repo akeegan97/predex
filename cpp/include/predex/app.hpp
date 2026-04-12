@@ -41,10 +41,15 @@ namespace predex{
         std::string output_path{"predex_tape.bin"};
     };
 
+    struct AuditConfig{
+        std::string output_path{"predex_audit.jsonl"};
+    };
+
     struct AppConfig{
         KalshiWsConfig kalshi_ws;
         PipelineConfig pipeline;
         TapeConfig tape;
+        AuditConfig audit;
         std::vector<MarketRouteConfig> market_routes;
     };
 

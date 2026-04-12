@@ -9,6 +9,7 @@
 #include <utility>
 #include <variant>
 
+#include "predex/audit/audit_types.hpp"
 #include "predex/shards/applied_event_update.hpp"
 #include "predex/shards/local_risk.hpp"
 #include "predex/shards/signal_types.hpp"
@@ -49,12 +50,14 @@ class DefaultShardPipeline {
         utils::SPSCQueue<OmsSubmission>* intent_queue,
         utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue,
         utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue,
+        utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
         Strategies... strategies)
         : shard_id_(shard_id),
           risk_(std::move(risk)),
           intent_queue_(intent_queue),
           decision_queue_(decision_queue),
           lifecycle_queue_(lifecycle_queue),
+          audit_queue_(audit_queue),
           strategies_(std::move(strategies)...) {}
 
     [[nodiscard]] PipelineResult on_event(const AppliedEventUpdate& update) noexcept {
@@ -66,31 +69,20 @@ class DefaultShardPipeline {
             const Signal& signal = signals_buffer_[signal_index];
             auto candidate_intent = build_candidate_intent(update, signal);
             if (!candidate_intent.has_value()) {
-                return {
-                    .code = PipelineDecisionCode::kError,
-                    .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
-                    .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
-                };
+                return error_result();
             }
 
             const RiskDecision risk_decision =
                 risk_.evaluate(update, *candidate_intent, risk_state_);
+            emit_local_risk_audit(update, *candidate_intent, risk_decision);
             if (risk_decision.code == RiskDecisionCode::kError) {
-                return {
-                    .code = PipelineDecisionCode::kError,
-                    .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
-                    .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
-                };
+                return error_result();
             }
             if (!risk_decision.accepted_intent.has_value()) {
                 continue;
             }
             if (!try_push_submission(OmsSubmission{*risk_decision.accepted_intent})) {
-                return {
-                    .code = PipelineDecisionCode::kError,
-                    .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
-                    .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
-                };
+                return error_result();
             }
         }
 
@@ -99,11 +91,7 @@ class DefaultShardPipeline {
             const GroupSignal& group_signal = group_signals_buffer_[group_signal_index];
             auto candidate_group = build_candidate_group_intent(update, group_signal);
             if (!candidate_group.has_value()) {
-                return {
-                    .code = PipelineDecisionCode::kError,
-                    .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
-                    .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
-                };
+                return error_result();
             }
 
             auto preview_risk_state = risk_state_;
@@ -112,12 +100,9 @@ class DefaultShardPipeline {
                 const OmsOrderIntent& leg = candidate_group->legs[leg_index];
                 const RiskDecision leg_decision =
                     risk_.evaluate(update, leg, preview_risk_state);
+                emit_local_risk_audit(update, leg, leg_decision);
                 if (leg_decision.code == RiskDecisionCode::kError) {
-                    return {
-                        .code = PipelineDecisionCode::kError,
-                        .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
-                        .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
-                    };
+                    return error_result();
                 }
                 if (!leg_decision.accepted_intent.has_value()) {
                     group_ok = false;
@@ -130,15 +115,12 @@ class DefaultShardPipeline {
                 continue;
             }
             if (!try_push_submission(OmsSubmission{*candidate_group})) {
-                return {
-                    .code = PipelineDecisionCode::kError,
-                    .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
-                    .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
-                };
+                return error_result();
             }
         }
 
-        for (std::size_t submission_index = 0; submission_index < submission_count_; ++submission_index) {
+        for (std::size_t submission_index = 0; submission_index < submission_count_;
+             ++submission_index) {
             const OmsSubmission& submission = submissions_buffer_[submission_index];
             if (intent_queue_ == nullptr || !intent_queue_->try_push(submission)) {
                 return {
@@ -202,6 +184,7 @@ class DefaultShardPipeline {
     utils::SPSCQueue<OmsSubmission>* intent_queue_{nullptr};
     utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue_{nullptr};
     utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue_{nullptr};
+    utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue_{nullptr};
     std::tuple<Strategies...> strategies_;
 
     std::array<Signal, kMaxSignalsPerEvent> signals_buffer_{};
@@ -220,6 +203,14 @@ class DefaultShardPipeline {
                        predex::core::oms::kalshi::LocalIntentId>
         local_intent_id_by_request_id_;
 
+    [[nodiscard]] PipelineResult error_result() const noexcept {
+        return {
+            .code = PipelineDecisionCode::kError,
+            .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
+            .accepted_intent_count = static_cast<std::uint32_t>(accepted_submission_leg_count()),
+        };
+    }
+
     void reset_buffers() noexcept {
         signal_count_ = 0;
         group_signal_count_ = 0;
@@ -231,6 +222,20 @@ class DefaultShardPipeline {
             return false;
         }
         signals_buffer_[signal_count_++] = signal;
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kSignal,
+            .ts_ns = signal.signal_ts_ns,
+            .shard_id = shard_id_,
+            .signal_id = signal.signal_id,
+            .exchange = signal.exchange,
+            .event_id = signal.event_id,
+            .market_id = signal.market_id,
+            .side = signal.side,
+            .qty_lots = signal.target_qty_lots,
+            .price_ticks = signal.reference_price_ticks.value_or(0),
+            .edge_ticks = signal.edge_ticks,
+            .score = signal.score,
+        });
         return true;
     }
 
@@ -239,6 +244,17 @@ class DefaultShardPipeline {
             return false;
         }
         group_signals_buffer_[group_signal_count_++] = group_signal;
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kGroupSignal,
+            .ts_ns = group_signal.signal_ts_ns,
+            .shard_id = shard_id_,
+            .signal_id = group_signal.signal_id,
+            .exchange = group_signal.exchange,
+            .event_id = group_signal.event_id,
+            .leg_count = static_cast<std::uint16_t>(group_signal.leg_count),
+            .edge_ticks = group_signal.edge_ticks,
+            .score = group_signal.score,
+        });
         return true;
     }
 
@@ -347,11 +363,13 @@ class DefaultShardPipeline {
     void on_submission_enqueued(const OmsSubmission& submission) noexcept {
         if (const auto* intent = std::get_if<OmsOrderIntent>(&submission)) {
             on_intent_enqueued(*intent);
+            emit_submission_audit(*intent);
             return;
         }
         if (const auto* group = std::get_if<predex::core::oms::kalshi::GroupOrderIntent>(&submission)) {
             for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
                 on_intent_enqueued(group->legs[leg_index]);
+                emit_submission_audit(group->legs[leg_index]);
             }
         }
     }
@@ -412,11 +430,14 @@ class DefaultShardPipeline {
                 local_intent_id_by_request_id_[accepted->oms_request_id] =
                     accepted->intent.origin.local_intent_id;
             }
+            emit_reconcile_audit(accepted->intent.origin, accepted->oms_request_id,
+                                 accepted->intent.qty_lots);
             return true;
         }
 
         if (const auto* rejected =
                 std::get_if<predex::core::oms::kalshi::RejectedIntent>(&decision.data)) {
+            emit_reconcile_audit(rejected->intent.origin, 0, 0);
             release_tracked_intent(rejected->intent.origin.local_intent_id);
             return true;
         }
@@ -432,6 +453,8 @@ class DefaultShardPipeline {
                 local_intent_id_by_request_id_[modified->oms_request_id] =
                     modified->modified_intent.origin.local_intent_id;
             }
+            emit_reconcile_audit(modified->modified_intent.origin, modified->oms_request_id,
+                                 modified->modified_intent.qty_lots);
             return true;
         }
 
@@ -456,16 +479,19 @@ class DefaultShardPipeline {
         if (const auto* fill =
                 std::get_if<predex::core::oms::kalshi::OrderFill>(&event.data)) {
             reduce_open_qty(*tracked, fill->fill_qty_lots);
+            emit_reconcile_audit(event.origin, event.oms_request_id, tracked->open_qty_lots);
         }
         if (const auto* replace_ack =
                 std::get_if<predex::core::oms::kalshi::ReplaceAck>(&event.data)) {
             reconcile_open_qty(*tracked, replace_ack->replaced_qty_lots);
+            emit_reconcile_audit(event.origin, event.oms_request_id, tracked->open_qty_lots);
         }
 
         switch (event.kind) {
             case predex::core::oms::kalshi::OrderLifecycleEventKind::kReject:
             case predex::core::oms::kalshi::OrderLifecycleEventKind::kFill:
             case predex::core::oms::kalshi::OrderLifecycleEventKind::kCanceled:
+                emit_reconcile_audit(event.origin, event.oms_request_id, 0);
                 release_tracked_intent(event.origin.local_intent_id);
                 break;
             default:
@@ -553,6 +579,80 @@ class DefaultShardPipeline {
             risk_state_.market_exposure_lots > delta_qty
                 ? risk_state_.market_exposure_lots - delta_qty
                 : 0;
+    }
+
+    void emit_local_risk_audit(const AppliedEventUpdate& update,
+                               const OmsOrderIntent& intent,
+                               const RiskDecision& decision) noexcept {
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kLocalRisk,
+            .ts_ns = update.update.meta.recv_ns,
+            .shard_id = shard_id_,
+            .signal_id = intent.origin.signal_id,
+            .group_id = intent.origin.group_id,
+            .local_intent_id = intent.origin.local_intent_id,
+            .exchange = intent.exchange,
+            .event_id = intent.origin.event_id,
+            .market_id = intent.origin.market_id,
+            .side = intent.side,
+            .leg_index = intent.origin.leg_index,
+            .leg_count = intent.origin.leg_count,
+            .qty_lots = intent.qty_lots,
+            .price_ticks = intent.limit_price_ticks.value_or(0),
+            .decision_code = static_cast<std::uint8_t>(decision.code),
+            .reject_reason = static_cast<std::uint8_t>(decision.reason),
+            .event_exposure_lots = risk_state_.event_exposure_lots,
+            .market_exposure_lots = risk_state_.market_exposure_lots,
+        });
+    }
+
+    void emit_submission_audit(const OmsOrderIntent& intent) noexcept {
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kSubmission,
+            .ts_ns = intent.intent_ts_ns,
+            .shard_id = shard_id_,
+            .signal_id = intent.origin.signal_id,
+            .group_id = intent.origin.group_id,
+            .local_intent_id = intent.origin.local_intent_id,
+            .exchange = intent.exchange,
+            .event_id = intent.origin.event_id,
+            .market_id = intent.origin.market_id,
+            .side = intent.side,
+            .leg_index = intent.origin.leg_index,
+            .leg_count = intent.origin.leg_count,
+            .qty_lots = intent.qty_lots,
+            .price_ticks = intent.limit_price_ticks.value_or(0),
+            .event_exposure_lots = risk_state_.event_exposure_lots,
+            .market_exposure_lots = risk_state_.market_exposure_lots,
+        });
+    }
+
+    void emit_reconcile_audit(const predex::core::oms::kalshi::IntentOrigin& origin,
+                              predex::core::oms::kalshi::OmsRequestId oms_request_id,
+                              internal::QtyLots open_qty_lots) noexcept {
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kShardReconcile,
+            .ts_ns = 0,
+            .shard_id = shard_id_,
+            .signal_id = origin.signal_id,
+            .group_id = origin.group_id,
+            .local_intent_id = origin.local_intent_id,
+            .oms_request_id = oms_request_id,
+            .event_id = origin.event_id,
+            .market_id = origin.market_id,
+            .leg_index = origin.leg_index,
+            .leg_count = origin.leg_count,
+            .qty_lots = open_qty_lots,
+            .event_exposure_lots = risk_state_.event_exposure_lots,
+            .market_exposure_lots = risk_state_.market_exposure_lots,
+        });
+    }
+
+    void emit_audit(const predex::core::audit::AuditEvent& event) noexcept {
+        if (audit_queue_ == nullptr) {
+            return;
+        }
+        static_cast<void>(audit_queue_->try_push(event));
     }
 };
 

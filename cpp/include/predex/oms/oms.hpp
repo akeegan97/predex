@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "predex/audit/audit_types.hpp"
 #include "predex/oms/global_risk.hpp"
 #include "predex/oms/oms_types.hpp"
 #include "predex/utils/spsc_queue.hpp"
@@ -43,12 +44,14 @@ class Oms {
     using SubmissionQueue = utils::SPSCQueue<OmsSubmission>;
     using DecisionQueue = utils::SPSCQueue<IntentDecision>;
     using LifecycleQueue = utils::SPSCQueue<OrderLifecycleEvent>;
+    using AuditQueue = utils::SPSCQueue<predex::core::audit::AuditEvent>;
 
     explicit Oms(std::vector<SubmissionQueue*> shard_intent_queues,
                  std::vector<DecisionQueue*> shard_decision_queues,
                  std::vector<LifecycleQueue*> shard_lifecycle_queues,
                  OmsTransportQueues transport_queues = {},
-                 GlobalRiskManager global_risk = GlobalRiskManager{});
+                 GlobalRiskManager global_risk = GlobalRiskManager{},
+                 AuditQueue* audit_queue = nullptr);
 
     [[nodiscard]] OmsPumpResult pump(std::size_t max_transport_updates,
                                      std::size_t max_shard_intents) noexcept;
@@ -70,6 +73,7 @@ class Oms {
     std::vector<DecisionQueue*> shard_decision_queues_;
     std::vector<LifecycleQueue*> shard_lifecycle_queues_;
     OmsTransportQueues transport_queues_{};
+    AuditQueue* audit_queue_{nullptr};
 
     std::unordered_map<OmsRequestId, OrderState> orders_by_request_id_;
     std::unordered_map<ClientOrderId, OmsRequestId> request_by_client_order_id_;
@@ -98,6 +102,8 @@ class Oms {
     [[nodiscard]] bool emit_intent_decision(const IntentDecision& decision) noexcept;
 
     [[nodiscard]] bool emit_lifecycle_event(const OrderLifecycleEvent& event) noexcept;
+
+    void emit_audit(const predex::core::audit::AuditEvent& event) noexcept;
 
     [[nodiscard]] static IntentOrigin extract_origin(const IntentDecision& decision);
 

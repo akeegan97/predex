@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -11,8 +13,10 @@ namespace predex::core::oms::kalshi {
 
 using LocalIntentId = std::uint64_t;
 using OmsRequestId = std::uint64_t;
+using GroupIntentId = std::uint64_t;
 using ClientOrderId = std::string;
 using ExchangeOrderId = std::string;
+inline constexpr std::size_t kMaxGroupOrderLegs = 4;
 
 enum class OmsAction : std::uint8_t {
     kUnknown = 0,
@@ -50,7 +54,10 @@ enum class OmsOrderStatus : std::uint8_t {
 struct IntentOrigin {
     std::uint16_t shard_id{0};
     internal::AffinityKey affinity_key{0};
+    GroupIntentId group_id{0};
     LocalIntentId local_intent_id{0};
+    std::uint16_t leg_index{0};
+    std::uint16_t leg_count{1};
     std::uint64_t signal_id{0};
     internal::EventId event_id{0};
     internal::MarketId market_id{0};
@@ -65,6 +72,21 @@ struct OrderIntent {
     OmsTimeInForce time_in_force{OmsTimeInForce::kUnknown};
     internal::TimestampNs intent_ts_ns{0};
 };
+
+enum class GroupExecutionPolicy : std::uint8_t {
+    kAbortRemainingOnReject = 1,
+    kBestEffort = 2,
+};
+
+struct GroupOrderIntent {
+    GroupIntentId group_id{0};
+    GroupExecutionPolicy execution_policy{GroupExecutionPolicy::kAbortRemainingOnReject};
+    std::array<OrderIntent, kMaxGroupOrderLegs> legs{};
+    std::size_t leg_count{0};
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+using OmsSubmission = std::variant<OrderIntent, GroupOrderIntent>;
 
 enum class IntentDecisionCode : std::uint8_t {
     kAccepted = 1,

@@ -9,6 +9,7 @@
 namespace predex::core::shards::kalshi {
 
 using OmsOrderIntent = predex::core::oms::kalshi::OrderIntent;
+using OmsSubmission = predex::core::oms::kalshi::OmsSubmission;
 
 enum class SignalKind : std::uint8_t {
     kUnknown = 0,

@@ -45,6 +45,7 @@ struct TradeData {
     PriceTicks price_ticks{0};
     QtyLots qty_lots{0};
     Side aggressor{Side::kUnknown};
+    Side book_side{Side::kUnknown};
     std::optional<std::string> trade_id;
 };
 

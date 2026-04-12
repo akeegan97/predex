@@ -4,7 +4,7 @@
 
 namespace predex::core::oms::kalshi{
     
-    Oms::Oms(std::vector<IntentQueue*> shard_intent_queues,
+    Oms::Oms(std::vector<SubmissionQueue*> shard_intent_queues,
                  std::vector<DecisionQueue*> shard_decision_queues,
                  std::vector<LifecycleQueue*> shard_lifecycle_queues,
                  OmsTransportQueues transport_queues,
@@ -98,20 +98,18 @@ namespace predex::core::oms::kalshi{
         for (std::size_t scanned = 0; scanned < shard_intent_queues_.size(); ++scanned) {
             const std::size_t shard_index =
                 (next_shard_index_ + scanned) % shard_intent_queues_.size();
-            IntentQueue* const queue = shard_intent_queues_[shard_index];
+            SubmissionQueue* const queue = shard_intent_queues_[shard_index];
             if (queue == nullptr) {
                 continue;
             }
 
-            OrderIntent intent{};
-            if (!queue->try_pop(intent)) {
+            OmsSubmission submission{};
+            if (!queue->try_pop(submission)) {
                 continue;
             }
 
             next_shard_index_ = (shard_index + 1) % shard_intent_queues_.size();
-            intent.origin.shard_id = static_cast<std::uint16_t>(shard_index);
-
-            const OmsProcessCode code = process_intent(intent);
+            const OmsProcessCode code = process_submission(std::move(submission));
             if (code == OmsProcessCode::kProcessedIntent) {
                 ++processed_intent_count_;
             }
@@ -119,6 +117,38 @@ namespace predex::core::oms::kalshi{
         }
 
         return OmsProcessCode::kIdle;
+    }
+
+    [[nodiscard]] OmsProcessCode Oms::process_submission(OmsSubmission submission) noexcept {
+        if (auto* intent = std::get_if<OrderIntent>(&submission)) {
+            return process_intent(std::move(*intent));
+        }
+
+        auto* group = std::get_if<GroupOrderIntent>(&submission);
+        if (group == nullptr || group->leg_count == 0 ||
+            group->leg_count > group->legs.size()) {
+            return OmsProcessCode::kError;
+        }
+
+        for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
+            OrderIntent leg = group->legs[leg_index];
+            leg.origin.group_id = group->group_id;
+            leg.origin.leg_index = static_cast<std::uint16_t>(leg_index);
+            leg.origin.leg_count = static_cast<std::uint16_t>(group->leg_count);
+
+            const std::uint64_t rejected_before = rejected_intent_count_;
+            const OmsProcessCode code = process_intent(std::move(leg));
+            if (code != OmsProcessCode::kProcessedIntent) {
+                return code;
+            }
+            if (group->execution_policy ==
+                    GroupExecutionPolicy::kAbortRemainingOnReject &&
+                rejected_intent_count_ > rejected_before) {
+                break;
+            }
+        }
+
+        return OmsProcessCode::kProcessedIntent;
     }
 
     [[nodiscard]] OmsProcessCode Oms::process_intent(OrderIntent intent) noexcept{

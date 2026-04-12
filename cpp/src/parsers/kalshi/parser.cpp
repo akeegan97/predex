@@ -348,6 +348,16 @@ internal::Side parse_trade_side(std::string_view side_token) {
     return internal::Side::kUnknown;
 }
 
+internal::Side trade_aggressor_to_book_side(internal::Side aggressor) {
+    if (aggressor == internal::Side::kBuy) {
+        return internal::Side::kAsk;
+    }
+    if (aggressor == internal::Side::kSell) {
+        return internal::Side::kBid;
+    }
+    return internal::Side::kUnknown;
+}
+
 void set_sequence_from_msg(simdjson::ondemand::object& msg, internal::NormalizedEvent& event) {
     std::uint64_t seq = 0;
     if (get_uint64(msg, "seq", seq) || get_uint64(msg, "seq_id", seq)) {
@@ -552,6 +562,7 @@ parse_trade(simdjson::ondemand::object& msg,
         if (trade.aggressor == internal::Side::kUnknown && strict_field_validation) {
             trade.aggressor = internal::Side::kUnknown;
         }
+        trade.book_side = trade_aggressor_to_book_side(trade.aggressor);
     }
 
     std::string_view trade_id_view;

@@ -40,11 +40,11 @@ struct OmsPumpResult {
 
 class Oms {
   public:
-    using IntentQueue = utils::SPSCQueue<OrderIntent>;
+    using SubmissionQueue = utils::SPSCQueue<OmsSubmission>;
     using DecisionQueue = utils::SPSCQueue<IntentDecision>;
     using LifecycleQueue = utils::SPSCQueue<OrderLifecycleEvent>;
 
-    explicit Oms(std::vector<IntentQueue*> shard_intent_queues,
+    explicit Oms(std::vector<SubmissionQueue*> shard_intent_queues,
                  std::vector<DecisionQueue*> shard_decision_queues,
                  std::vector<LifecycleQueue*> shard_lifecycle_queues,
                  OmsTransportQueues transport_queues = {},
@@ -66,7 +66,7 @@ class Oms {
     GlobalRiskManager global_risk_;
     GlobalRiskState global_risk_state_{};
 
-    std::vector<IntentQueue*> shard_intent_queues_;
+    std::vector<SubmissionQueue*> shard_intent_queues_;
     std::vector<DecisionQueue*> shard_decision_queues_;
     std::vector<LifecycleQueue*> shard_lifecycle_queues_;
     OmsTransportQueues transport_queues_{};
@@ -86,6 +86,8 @@ class Oms {
     [[nodiscard]] OmsProcessCode process_one_transport_update() noexcept;
 
     [[nodiscard]] OmsProcessCode process_one_shard_intent() noexcept;
+
+    [[nodiscard]] OmsProcessCode process_submission(OmsSubmission submission) noexcept;
 
     [[nodiscard]] OmsProcessCode process_intent(OrderIntent intent) noexcept;
 

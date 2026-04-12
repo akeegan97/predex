@@ -44,7 +44,7 @@ class DefaultShardPipeline {
     explicit DefaultShardPipeline(
         std::uint16_t shard_id,
         LocalRisk risk,
-        utils::SPSCQueue<OmsOrderIntent>* intent_queue,
+        utils::SPSCQueue<OmsSubmission>* intent_queue,
         utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue,
         utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue,
         Strategies... strategies)
@@ -94,7 +94,8 @@ class DefaultShardPipeline {
 
         for (std::size_t intent_index = 0; intent_index < intent_count_; ++intent_index) {
             const OmsOrderIntent& intent = intents_buffer_[intent_index];
-            if (intent_queue_ == nullptr || !intent_queue_->try_push(intent)) {
+            if (intent_queue_ == nullptr ||
+                !intent_queue_->try_push(OmsSubmission{intent})) {
                 return {
                     .code = PipelineDecisionCode::kBackpressure,
                     .signal_count = static_cast<std::uint32_t>(signal_count_),
@@ -150,7 +151,7 @@ class DefaultShardPipeline {
     std::uint16_t shard_id_{0};
     LocalRisk risk_;
     LocalRiskState risk_state_{};
-    utils::SPSCQueue<OmsOrderIntent>* intent_queue_{nullptr};
+    utils::SPSCQueue<OmsSubmission>* intent_queue_{nullptr};
     utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue_{nullptr};
     utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue_{nullptr};
     std::tuple<Strategies...> strategies_;

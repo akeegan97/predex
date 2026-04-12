@@ -51,7 +51,7 @@ namespace predex {
             MeanReversionStrategy>;
         using Shard = predex::core::shards::kalshi::Shard<ShardPipeline>;
         using Oms = predex::core::oms::kalshi::Oms;
-        using OmsIntentQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::OrderIntent>;
+        using OmsIntentQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsSubmission>;
         using OmsDecisionQueue =
             predex::utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>;
         using OmsLifecycleQueue =

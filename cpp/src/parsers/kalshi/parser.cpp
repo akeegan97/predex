@@ -478,6 +478,9 @@ parse_delta(simdjson::ondemand::object& msg,
         resolved_side = parse_book_side(side_token);
         has_price = parse_first_price_ticks(msg, {"price", "price_dollars"}, price);
         has_delta = parse_first_lot_count(msg, {"delta", "delta_fp"}, delta_qty);
+        if (has_price && resolved_side == internal::Side::kAsk) {
+            price = reciprocal_price(price);
+        }
     } else {
         std::int64_t inferred_price = 0;
         std::int64_t inferred_delta = 0;

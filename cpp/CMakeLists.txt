@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(CTest)
+
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
@@ -82,3 +84,20 @@ target_link_libraries(
   PRIVATE predex::app
           nlohmann_json::nlohmann_json
 )
+
+if(BUILD_TESTING)
+  add_executable(
+    parser_regression_test
+    tests/parser_regression.cpp
+  )
+
+  target_link_libraries(
+    parser_regression_test
+    PRIVATE predex::core_pipeline
+  )
+
+  add_test(
+    NAME KalshiParserRegressionTest.ReciprocatesExplicitNoDeltaPrice
+    COMMAND parser_regression_test
+  )
+endif()

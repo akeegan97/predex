@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass
+from typing import Callable
+from typing import Any
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from .models import EventRecord
+
+
+@dataclass(slots=True)
+class KalshiPublicClient:
+    base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    user_agent: str = "predex-discovery/0.1"
+    timeout_seconds: float = 10.0
+    max_retries: int = 4
+    initial_backoff_seconds: float = 1.0
+    max_backoff_seconds: float = 8.0
+    progress_callback: Callable[[str], None] | None = None
+
+    def _urlopen(self, request: Request):
+        return urlopen(request, timeout=self.timeout_seconds)
+
+    def _sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def _report_progress(self, message: str) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(message)
+
+    def _retry_delay(self, attempt: int, error: HTTPError) -> float:
+        headers = error.headers or {}
+        retry_after = str(headers.get("Retry-After", "")).strip()
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+
+        delay = self.initial_backoff_seconds * (2 ** attempt)
+        return min(delay, self.max_backoff_seconds)
+
+    def _open_json_request(self, request: Request) -> dict[str, Any]:
+        attempt = 0
+        while True:
+            try:
+                with self._urlopen(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except HTTPError as error:
+                if error.code != 429 or attempt >= self.max_retries:
+                    raise
+                delay = self._retry_delay(attempt, error)
+                self._report_progress(
+                    f"rate limited on {request.full_url}; retrying in {delay:.1f}s "
+                    f"({attempt + 1}/{self.max_retries})"
+                )
+                self._sleep(delay)
+                attempt += 1
+
+    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        query = urlencode(
+            {
+                key: value
+                for key, value in (params or {}).items()
+                if value is not None and value != ""
+            },
+            doseq=True,
+        )
+        url = f"{self.base_url}{path}"
+        if query:
+            url = f"{url}?{query}"
+
+        request = Request(url, headers={"User-Agent": self.user_agent})
+        return self._open_json_request(request)
+
+    def get_event(self, event_ticker: str) -> EventRecord:
+        payload = self._get_json(f"/events/{event_ticker}", {"with_nested_markets": "true"})
+        event_payload = payload.get("event") or {}
+        if not event_payload:
+            raise ValueError(f"Kalshi response for {event_ticker} did not contain an event payload")
+
+        if not event_payload.get("markets") and payload.get("markets"):
+            event_payload = dict(event_payload)
+            event_payload["markets"] = payload["markets"]
+        return EventRecord.from_api(event_payload)
+
+    def list_event_tickers(
+        self,
+        *,
+        series_ticker: str | None = None,
+        status: str | None = "open",
+        limit: int | None = 200,
+    ) -> list[str]:
+        tickers: list[str] = []
+        cursor = ""
+        remaining = limit
+
+        if remaining is not None and remaining <= 0:
+            raise ValueError("limit must be greater than zero when provided")
+
+        while remaining is None or remaining > 0:
+            page_size = 200 if remaining is None else min(remaining, 200)
+            payload = self._get_json(
+                "/events",
+                {
+                    "series_ticker": series_ticker,
+                    "status": status,
+                    "limit": page_size,
+                    "cursor": cursor or None,
+                },
+            )
+            page_events = payload.get("events") or []
+            if not page_events:
+                break
+
+            self._report_progress(
+                f"discovered {len(page_events)} event tickers"
+                f"{' (paginated)' if cursor else ''}"
+            )
+
+            for event_payload in page_events:
+                ticker = str(event_payload.get("event_ticker", ""))
+                if ticker:
+                    tickers.append(ticker)
+                    if remaining is not None:
+                        remaining -= 1
+                    if remaining == 0:
+                        break
+
+            cursor = str(payload.get("cursor", ""))
+            if not cursor:
+                break
+
+        return tickers
+
+    def discover_events(
+        self,
+        *,
+        event_tickers: list[str] | None = None,
+        series_ticker: str | None = None,
+        status: str | None = "open",
+        limit: int | None = 200,
+    ) -> list[EventRecord]:
+        tickers = event_tickers or self.list_event_tickers(
+            series_ticker=series_ticker,
+            status=status,
+            limit=limit,
+        )
+        ordered_unique_tickers = list(dict.fromkeys(tickers))
+        events: list[EventRecord] = []
+        total = len(ordered_unique_tickers)
+        for index, event_ticker in enumerate(ordered_unique_tickers, start=1):
+            self._report_progress(f"fetching event {index}/{total}: {event_ticker}")
+            events.append(self.get_event(event_ticker))
+        return events

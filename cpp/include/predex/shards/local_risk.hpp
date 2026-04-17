@@ -1,15 +1,18 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 
 #include "predex/shards/applied_event_update.hpp"
 #include "predex/shards/signal_types.hpp"
 
 namespace predex::core::shards::kalshi {
-    constexpr std::size_t kDefaultMaxOpenIntentsPerEvent = 8;
-    constexpr std::size_t kDefaultMaxOpenIntentsPerMarket = 4;
-    constexpr internal::QtyLots kDefaultMaxEventExposureLots = 100;
-    constexpr internal::QtyLots kDefaultMaxMarketExposureLots = 50;
+    constexpr std::size_t kDefaultMaxOpenIntentsPerEvent = 1'000'000;
+    constexpr std::size_t kDefaultMaxOpenIntentsPerMarket = 1'000'000;
+    constexpr internal::QtyLots kDefaultMaxEventExposureLots =
+        std::numeric_limits<internal::QtyLots>::max() / 4;
+    constexpr internal::QtyLots kDefaultMaxMarketExposureLots =
+        std::numeric_limits<internal::QtyLots>::max() / 4;
 
 struct LocalRiskLimits {
     std::size_t max_open_intents_per_event{kDefaultMaxOpenIntentsPerEvent};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -8,10 +9,12 @@
 
 namespace predex::core::oms::kalshi {
 
-constexpr std::size_t kDefaultMaxOpenOrdersGlobal = 128;
-constexpr std::size_t kDefaultMaxOpenOrdersPerEvent = 16;
-constexpr internal::QtyLots kDefaultMaxGlobalExposureLots = 1000;
-constexpr internal::QtyLots kDefaultMaxEventExposureLots = 200;
+constexpr std::size_t kDefaultMaxOpenOrdersGlobal = 1'000'000;
+constexpr std::size_t kDefaultMaxOpenOrdersPerEvent = 1'000'000;
+constexpr internal::QtyLots kDefaultMaxGlobalExposureLots =
+    std::numeric_limits<internal::QtyLots>::max() / 4;
+constexpr internal::QtyLots kDefaultMaxEventExposureLots =
+    std::numeric_limits<internal::QtyLots>::max() / 4;
 
 struct GlobalRiskLimits {
     std::size_t max_open_orders_global{kDefaultMaxOpenOrdersGlobal};

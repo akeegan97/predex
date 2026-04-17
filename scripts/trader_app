@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${PREDEX_ENV_FILE:-$ROOT_DIR/.env}"
+TRADER_BIN="${PREDEX_TRADER_APP_BIN:-$ROOT_DIR/build/dev/cpp/trader_app}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+if [[ ! -x "$TRADER_BIN" ]]; then
+  echo "predex: trader_app binary not found at $TRADER_BIN" >&2
+  echo "Build it first with: cmake --build --preset build-dev-vcpkg" >&2
+  exit 1
+fi
+
+exec "$TRADER_BIN" "$@"

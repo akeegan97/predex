@@ -14,9 +14,10 @@ inline constexpr double kCentScale = 100.0;
 inline constexpr internal::PriceTicks kTicksPerCent = 100;
 inline constexpr double kTakerFeeRate = 0.07;
 inline constexpr double kMakerFeeRate = 0.0175;
+inline constexpr std::int64_t kMinEdgeTicks = 200;
 
 struct MonotonicArbConfig {
-    std::int64_t min_net_edge_ticks{200};
+    std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{1};
     bool enabled{true};
 };
@@ -51,6 +52,7 @@ class MonotonicArbStrategy {
             auto candidate = evaluate_pair(chain->markets[index], chain->markets[index + 1], update);
             if (candidate.has_value() &&
                 (!best_signal.has_value() || candidate->score > best_signal->score)) {
+                //NOLINTNEXTLINE(performance-move-const-arg)
                 best_signal = std::move(candidate);
             }
         }
@@ -65,6 +67,7 @@ class MonotonicArbStrategy {
     std::uint64_t next_signal_id_{1};
 
     [[nodiscard]] static internal::PriceTicks fee_ticks_(
+        //NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
         double fee_rate,
         internal::PriceTicks price_ticks,
         internal::QtyLots qty) noexcept {

@@ -3,6 +3,7 @@
 #include "predex/internal/normalized_event.hpp"
 #include "predex/parsers/parse_result.hpp"
 #include "predex/ingest/frame_pool.hpp"
+#include <simdjson.h>
 
 namespace predex::core::parsers::kalshi {
 
@@ -12,9 +13,10 @@ class Parser{
     Parser() = default;
     ~Parser() = default;
       [[nodiscard]] predex::parsers::ParseResult<predex::internal::NormalizedEvent> parse(const predex::core::ingest::kalshi::FrameHandle& handle, 
-      const predex::core::ingest::kalshi::KalshiFrame& frame) const;
+      const predex::core::ingest::kalshi::KalshiFrame& frame);
 
   private:
+        simdjson::ondemand::parser parser_;
 
 };
 

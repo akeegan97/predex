@@ -8,7 +8,7 @@
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/router/market_registry.hpp"
 #include "predex/router/shard_dispatch.hpp"
-
+#include <simdjson.h>
 
 
 
@@ -42,6 +42,8 @@ namespace predex::core::routing::kalshi{
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue_; // Router producer, logger consumer
 
             std::unordered_map<std::uint32_t, std::uint64_t> last_seq_by_sid_; //global checker for messages
+
+            simdjson::ondemand::parser parser_; //parser instance for reuse to avoid simdjson parser construction overhead
 
             [[nodiscard]] bool process_one() noexcept;
             [[nodiscard]] RouteDecision classify(predex::core::ingest::kalshi::FrameHandle& handle, const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept; //need to know where to send after classified or failed

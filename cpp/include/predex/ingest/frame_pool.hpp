@@ -4,12 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-
+#include <simdjson.h>
 #include "predex/internal/event_topology.hpp"
 
 namespace predex::core::ingest::kalshi{
   constexpr std::size_t kMaxFrameBytes = 4096; 
-  constexpr std::size_t kSimdJsonPadding  = 0;//currently not utilized but leaving room for it so we can avoid copy into simdjson padded buffers for parsing
+  constexpr std::size_t kSimdJsonPadding  = simdjson::SIMDJSON_PADDING;
   struct KalshiFrame{
     std::uint64_t recv_ts_ns_;
     std::uint32_t len_;

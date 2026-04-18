@@ -375,7 +375,6 @@ namespace predex {
                 *shard_input_queues[i],
                 frame_pool,
                 *shard_to_logger_queues[i],
-                predex::core::parsers::kalshi::Parser{},
                 event_stores[i],
                 ShardPipeline{
                     static_cast<std::uint16_t>(i),

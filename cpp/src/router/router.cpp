@@ -45,10 +45,14 @@ namespace predex::core::routing::kalshi{
     RouteDecision Router::classify(predex::core::ingest::kalshi::FrameHandle& handle, const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept{
         //Framehandle at this point is only stamped with iowriter timestamp,
         //need to extract market ticker, sid, seq, lookup/attach affinity key before we can make routing decision
-        const auto* payload = reinterpret_cast<const char*>(frame.payload.data());
-        simdjson::padded_string padded{payload, frame.len_};
-        simdjson::ondemand::parser parser;
-        auto doc = parser.iterate(padded);
+
+        if(frame.len_ == 0 || frame.len_ > predex::core::ingest::kalshi::kMaxFrameBytes){
+            return RouteDecision::kToLogger; //invalid frame length, forward to logger for troubleshooting
+        }
+
+        const char* buf = reinterpret_cast<const char*>(frame.payload.data());
+        const size_t len = frame.len_;
+        auto doc = parser_.iterate(buf, len,frame.payload.size());
         if(doc.error() != simdjson::SUCCESS) {
             return RouteDecision::kToLogger; 
         }

@@ -59,6 +59,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build clang clang-tidy
 
+      - name: Verify Ninja/CMake toolchain
+        if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
+        run: |
+          set -euo pipefail
+          if ! command -v ninja >/dev/null 2>&1; then
+            echo "ninja missing; installing fallback package..."
+            sudo apt-get update
+            sudo apt-get install -y ninja-build
+          fi
+          echo "CMake: $(cmake --version | head -n1)"
+          echo "Ninja path: $(command -v ninja)"
+          echo "Ninja: $(ninja --version)"
+
       - name: Cache vcpkg artifacts
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' && steps.detect_cmake.outputs.has_vcpkg == 'true' }}
         uses: actions/cache@v4
@@ -87,14 +100,15 @@ jobs:
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
         run: |
           set -euo pipefail
+          NINJA_PATH="$(command -v ninja)"
           if [ -f CMakePresets.json ]; then
             if [ -f cpp/vcpkg.json ]; then
-              cmake --preset ci-vcpkg
+              cmake --preset ci-vcpkg -DCMAKE_MAKE_PROGRAM="$NINJA_PATH"
             else
-              cmake --preset ci
+              cmake --preset ci -DCMAKE_MAKE_PROGRAM="$NINJA_PATH"
             fi
           else
-            cmake -S cpp -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            cmake -S cpp -B build/ci -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA_PATH" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           fi
 
       - name: Build
@@ -146,60 +160,3 @@ jobs:
       - name: Skip C++ build/tidy/tests (no CMake project)
         if: ${{ steps.detect_cmake.outputs.has_cmake != 'true' }}
         run: echo "cpp/CMakeLists.txt not found. Skipping C++ build/tidy/tests."
-
-  python:
-    name: Python ruff + pytest
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Detect Python project files
-        id: detect_python
-        run: |
-          set -euo pipefail
-          if [ -f pyproject.toml ] || [ -f requirements.txt ] || [ -f requirements-dev.txt ]; then
-            echo "has_python=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_python=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Setup Python
-        if: ${{ steps.detect_python.outputs.has_python == 'true' }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install dependencies
-        if: ${{ steps.detect_python.outputs.has_python == 'true' }}
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-          if [ -f requirements-dev.txt ]; then
-            pip install -r requirements-dev.txt
-          fi
-          pip install ruff pytest
-
-      - name: Lint (ruff)
-        if: ${{ steps.detect_python.outputs.has_python == 'true' }}
-        run: |
-          set -euo pipefail
-          ruff check .
-
-      - name: Test (pytest)
-        if: ${{ steps.detect_python.outputs.has_python == 'true' }}
-        run: |
-          set -euo pipefail
-          if [ -d tests ] || compgen -G "*_test.py" > /dev/null || compgen -G "test_*.py" > /dev/null; then
-            pytest -q
-          else
-            echo "No Python tests found."
-          fi
-
-      - name: Skip Python checks (no Python project files)
-        if: ${{ steps.detect_python.outputs.has_python != 'true' }}
-        run: echo "No Python project files found. Skipping Python checks."

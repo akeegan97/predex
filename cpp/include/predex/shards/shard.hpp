@@ -126,7 +126,7 @@ class Shard {
     [[nodiscard]] ProcessOneResult apply_event(const ingest::kalshi::FrameHandle& handle,
                                                const ingest::kalshi::KalshiFrame& frame) noexcept {
         auto parse_result = parser_.parse(handle, frame);
-        if (!parse_result.ok() || !parse_result.value().has_value()) {
+        if (!parse_result.ok()) {
             ++parse_fail_count_;
             return ProcessOneResult{
                 .code = ProcessCode::kParseFail,
@@ -135,7 +135,18 @@ class Shard {
             };
         }
 
-        const auto& event = *parse_result.value();
+        const auto& parsed_value = parse_result.value();
+        if (!parsed_value.has_value()) {
+            ++parse_fail_count_;
+            return ProcessOneResult{
+                .code = ProcessCode::kParseFail,
+                .apply_code = EventApplyCode::kParseFail,
+                .pipeline_code = PipelineDecisionCode::kDeclined,
+            };
+        }
+
+        const auto& event = *parsed_value;
+        
         auto* stored_event = event_store_.find(event.meta.event_id);
         if (stored_event == nullptr) {
             ++apply_fail_count_;

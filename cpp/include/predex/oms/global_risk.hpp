@@ -2,8 +2,7 @@
 
 #include <cstddef>
 #include <limits>
-#include <optional>
-#include <string>
+
 
 #include "predex/oms/oms_types.hpp"
 
@@ -120,8 +119,8 @@ class GlobalRiskManager {
         };
     }
 
-    void on_intent_accepted(const AcceptedIntent& accepted_intent,
-                            GlobalRiskState& state) const noexcept {
+    static void on_intent_accepted(const AcceptedIntent& accepted_intent,
+                            GlobalRiskState& state) noexcept {
         ++state.open_orders_global;
         ++state.open_orders_for_event;
         state.global_exposure_lots += accepted_intent.intent.qty_lots;

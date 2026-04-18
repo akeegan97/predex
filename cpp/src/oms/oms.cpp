@@ -358,7 +358,7 @@ namespace predex::core::oms::kalshi{
                     .qty_lots = accepted_intent->intent.qty_lots,
                     .price_ticks = accepted_intent->intent.limit_price_ticks.value_or(0),
                 });
-                global_risk_.on_intent_accepted(*accepted_intent, global_risk_state_);
+                predex::core::oms::kalshi::GlobalRiskManager::on_intent_accepted(*accepted_intent, global_risk_state_);
                 insert_live_order(*accepted_intent, decision_ts_ns);
             }
         }

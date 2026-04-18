@@ -126,6 +126,7 @@ namespace predex::core::shards::kalshi{
 
         void update_group_market_state(std::vector<EventMarketView>& markets,
                                        const std::unordered_map<internal::MarketId, std::size_t>& market_index_by_id,
+                                       //NOLINTNEXTLINE
                                        bool& complete,
                                        bool& desynced,
                                        internal::TimestampNs& last_update_ns,
@@ -365,6 +366,7 @@ namespace predex::core::shards::kalshi{
             case BookApplyRejectReason::kUnsupportedEventType:
                 //ignore unsupported event types like heartbeat/status
                 return EventApplyCode::kRejected;
+            //NOLINTNEXTLINE
             case BookApplyRejectReason::kUnexpectedSnapshotAfterInit:
             case BookApplyRejectReason::kDeltaWhileDesynced:
             case BookApplyRejectReason::kTradeInvalidOrDesynced:

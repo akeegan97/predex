@@ -41,6 +41,7 @@ class Shard {
         : input_queue_(input_queue),
           frame_pool_(frame_pool),
           logger_queue_(logger_queue),
+          //NOLINTNEXTLINE
           parser_(std::move(parser)),
           event_store_(event_store),
           bundle_(std::move(bundle)) {}

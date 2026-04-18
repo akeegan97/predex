@@ -23,6 +23,7 @@ python/src/predex/replay/books.py
 python/src/predex/replay/cli.py
 python/src/predex/replay/config.py
 python/src/predex/replay/dashboard.py
+python/src/predex/replay/latency.py
 python/src/predex/replay/tape.py
 python/src/predex/replay/timeline.py
 python/src/predex/replay/verify.py

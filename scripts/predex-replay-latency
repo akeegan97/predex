@@ -11,10 +11,14 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
+if [[ -x "$ROOT_DIR/.venv/bin/predex-replay-latency" ]]; then
+  exec "$ROOT_DIR/.venv/bin/predex-replay-latency" "$@"
+fi
+
 if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
   export PYTHONPATH="$ROOT_DIR/python/src${PYTHONPATH:+:$PYTHONPATH}"
-  exec "$ROOT_DIR/.venv/bin/python" -m predex.replay "$@"
+  exec "$ROOT_DIR/.venv/bin/python" -m predex.replay.latency "$@"
 fi
 
 export PYTHONPATH="$ROOT_DIR/python/src${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m predex.replay "$@"
+exec python3 -m predex.replay.latency "$@"

@@ -15,6 +15,7 @@ enum class AuditKind : std::uint8_t {
     kOmsTransport = 6,
     kOmsLifecycle = 7,
     kShardReconcile = 8,
+    kPipelineProbe = 9,
 };
 
 struct AuditEvent {
@@ -26,6 +27,26 @@ struct AuditEvent {
     std::uint64_t group_id{0};
     std::uint64_t local_intent_id{0};
     std::uint64_t oms_request_id{0};
+    /*
+    Latency tracking fields
+    */
+    internal::TimestampNs tick_recv_ns{0};
+    internal::TimestampNs signal_ts_ns{0};
+    internal::TimestampNs submission_enqueued_ns{0};
+    internal::TimestampNs oms_decision_ts_ns{0};
+    internal::TimestampNs transport_submit_ts_ns{0};
+    internal::TimestampNs first_fill_recv_ns{0};
+    internal::TimestampNs terminal_recv_ns{0};
+    /*
+    computed span fields
+    */
+    std::int64_t tick_to_signal_ns{0};
+    std::int64_t signal_to_submission_ns{0};
+    std::int64_t submission_to_decision_ns{0};
+    std::int64_t decision_to_transport_ns{0};
+    std::int64_t transport_to_first_fill_ns{0};
+    std::int64_t tick_to_first_fill_ns{0};
+    std::int64_t tick_to_terminal_ns{0};
 
     internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
     internal::EventId event_id{0};
@@ -50,6 +71,7 @@ struct AuditEvent {
 
     internal::QtyLots event_exposure_lots{0};
     internal::QtyLots market_exposure_lots{0};
+
 };
 
 } // namespace predex::core::audit

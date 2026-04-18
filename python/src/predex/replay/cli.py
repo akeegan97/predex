@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .audit import build_signal_bundles, load_audit_events
 from .config import load_config_index
+from .latency import DEFAULT_KINDS, export_latency_histograms
 from .timeline import (
     build_event_timeline,
     write_signal_hits_parquet,
@@ -78,6 +79,75 @@ def build_parser() -> argparse.ArgumentParser:
         "--parquet",
         action="store_true",
         help="Also write parquet outputs (*.parquet, *.signals.parquet). Requires pyarrow.",
+    )
+
+    latency_hist = subparsers.add_parser(
+        "latency-histograms",
+        help="Export interactive latency histograms from audit JSONL.",
+    )
+    latency_hist.add_argument("--audit", required=True, help="Audit JSONL emitted by trader_app.")
+    latency_hist.add_argument(
+        "--backend",
+        choices=("plotly", "matplotlib", "both"),
+        default="plotly",
+        help="Plot backend. Default: plotly",
+    )
+    latency_hist.add_argument(
+        "--output-html",
+        default="docs/replay/latency_histograms.html",
+        help="Output HTML plot path. Default: docs/replay/latency_histograms.html",
+    )
+    latency_hist.add_argument(
+        "--output-png-prefix",
+        default="docs/replay/latency_histograms",
+        help="PNG output prefix for matplotlib mode. Writes <prefix>.hist.png and <prefix>.trend.png",
+    )
+    latency_hist.add_argument(
+        "--output-csv",
+        default="docs/replay/latency_histograms.csv",
+        help="Output CSV path for per-sample latency rows. Default: docs/replay/latency_histograms.csv",
+    )
+    latency_hist.add_argument(
+        "--output-json",
+        default=None,
+        help="Optional JSON summary path.",
+    )
+    latency_hist.add_argument("--event-id", type=int, default=None, help="Optional event filter.")
+    latency_hist.add_argument("--market-id", type=int, default=None, help="Optional market filter.")
+    latency_hist.add_argument(
+        "--kinds",
+        default=",".join(DEFAULT_KINDS),
+        help=f"Comma-separated audit kinds. Default: {','.join(DEFAULT_KINDS)}",
+    )
+    latency_hist.add_argument(
+        "--spans",
+        default=None,
+        help="Comma-separated latency span fields to include.",
+    )
+    latency_hist.add_argument("--bins", type=int, default=80, help="Histogram bins. Default: 80")
+    latency_hist.add_argument(
+        "--max-ms",
+        type=float,
+        default=None,
+        help="Optional upper cap in milliseconds (drops larger values).",
+    )
+    latency_hist.add_argument(
+        "--time-bucket-ms",
+        type=int,
+        default=1000,
+        help="Bucket size for time trend p50/p95 lines. Default: 1000 ms",
+    )
+    latency_hist.add_argument(
+        "--histogram-every-seconds",
+        type=float,
+        default=None,
+        help="Optional: emit time-sliced histogram PNGs every N runtime seconds (matplotlib/both backend).",
+    )
+    latency_hist.add_argument(
+        "--max-bucket-plots",
+        type=int,
+        default=24,
+        help="Max number of time-slice histogram panels per span. Default: 24",
     )
     return parser
 
@@ -222,6 +292,24 @@ def main(argv: list[str] | None = None) -> int:
         payload = _audit_summary(args.config, args.audit, args.limit)
     elif args.command == "inspect-signal":
         payload = _inspect_signal(args.config, args.audit, args.tape, args.shard_id, args.signal_id)
+    elif args.command == "latency-histograms":
+        payload = export_latency_histograms(
+            audit_path=args.audit,
+            output_html=args.output_html,
+            backend=args.backend,
+            output_png_prefix=args.output_png_prefix,
+            output_csv=args.output_csv,
+            output_json=args.output_json,
+            event_id=args.event_id,
+            market_id=args.market_id,
+            kinds_csv=args.kinds,
+            spans_csv=args.spans,
+            bins=args.bins,
+            max_ms=args.max_ms,
+            time_bucket_ms=args.time_bucket_ms,
+            histogram_every_seconds=args.histogram_every_seconds,
+            max_bucket_plots=args.max_bucket_plots,
+        )
     else:
         payload = _export_event_timeline(
             args.config,

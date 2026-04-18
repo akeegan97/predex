@@ -59,6 +59,15 @@ struct IntentOrigin {
     std::uint16_t leg_index{0};
     std::uint16_t leg_count{1};
     std::uint64_t signal_id{0};
+    /*
+    latency fields below
+    */
+    internal::TimestampNs signal_ts_ns{0};
+    internal::TimestampNs tick_recv_ns{0};
+    internal::TimestampNs submission_enqueued_ns{0};
+    /*
+    end latency fields
+    */
     internal::EventId event_id{0};
     internal::MarketId market_id{0};
 };
@@ -228,6 +237,13 @@ struct OrderState {
     internal::QtyLots cum_fill_qty_lots{0};
     std::optional<internal::PriceTicks> live_limit_price_ticks;
     internal::TimestampNs last_update_ts_ns{0};
+    /*
+    latency fields below
+    */
+    internal::TimestampNs oms_decision_ts_ns{0};
+    internal::TimestampNs transport_submit_ts_ns{0};
+    internal::TimestampNs first_fill_recv_ns{0};
+    internal::TimestampNs terminal_recv_ns{0};
 };
 
 struct ExecutionRecord {

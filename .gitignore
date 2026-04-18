@@ -19,3 +19,4 @@ docs/replay/*.csv
 docs/replay/*.html
 docs/replay/*.parquet
 docs/replay/*.summary.json
+docs/replay/*.png

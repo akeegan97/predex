@@ -89,6 +89,16 @@ std::size_t read_size(const nlohmann::json& parent,
     return iterator->get<std::size_t>();
 }
 
+std::int64_t read_int64(const nlohmann::json& parent,
+                        std::string_view key,
+                        std::int64_t fallback) {
+    const auto iterator = parent.find(std::string(key));
+    if (iterator == parent.end() || !iterator->is_number_integer()) {
+        return fallback;
+    }
+    return iterator->get<std::int64_t>();
+}
+
 std::string read_string(const nlohmann::json& parent,
                         std::string_view key,
                         std::string fallback = {}) {
@@ -99,39 +109,65 @@ std::string read_string(const nlohmann::json& parent,
     return iterator->get<std::string>();
 }
 
-std::vector<predex::MarketRouteConfig> build_market_routes(
+std::optional<predex::internal::EventTopologyKind> parse_topology_kind(
+    std::string_view value) {
+    if (value == "monotonic_chain" || value == "monotonic-chain") {
+        return predex::internal::EventTopologyKind::kMonotonicChain;
+    }
+    if (value == "mutually_exclusive" || value == "mutually-exclusive") {
+        return predex::internal::EventTopologyKind::kMutuallyExclusive;
+    }
+    if (value == "unordered_group" || value == "unordered-group") {
+        return predex::internal::EventTopologyKind::kUnorderedGroup;
+    }
+    if (value == "single_market" || value == "single-market") {
+        return predex::internal::EventTopologyKind::kSingleMarket;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::vector<predex::MarketRouteConfig>> build_market_routes(
     const nlohmann::json& root,
-    const std::vector<std::string>& market_tickers,
-    std::size_t shard_count) {
+    std::string& error_out) {
     std::vector<predex::MarketRouteConfig> routes;
 
     const auto explicit_routes_it = root.find("market_routes");
-    if (explicit_routes_it != root.end() && explicit_routes_it->is_array()) {
-        routes.reserve(explicit_routes_it->size());
-        for (const auto& route_json : *explicit_routes_it) {
-            if (!route_json.is_object()) {
-                continue;
-            }
-
-            predex::MarketRouteConfig route{};
-            route.market_ticker = read_string(route_json, "market_ticker");
-            route.market_id = read_size(route_json, "market_id", 0);
-            route.affinity_key = read_size(route_json, "affinity_key", 0);
-            if (!route.market_ticker.empty() && route.market_id != 0) {
-                routes.push_back(std::move(route));
-            }
-        }
-        return routes;
+    if (explicit_routes_it == root.end() || !explicit_routes_it->is_array()) {
+        error_out = "market_routes must be explicitly configured for event-centric routing";
+        return std::nullopt;
     }
 
-    routes.reserve(market_tickers.size());
-    const std::size_t shard_denominator = shard_count == 0 ? 1 : shard_count;
-    for (std::size_t index = 0; index < market_tickers.size(); ++index) {
-        routes.push_back(predex::MarketRouteConfig{
-            .market_ticker = market_tickers[index],
-            .market_id = index + 1,
-            .affinity_key = index % shard_denominator,
-        });
+    routes.reserve(explicit_routes_it->size());
+    for (const auto& route_json : *explicit_routes_it) {
+        if (!route_json.is_object()) {
+            continue;
+        }
+
+        predex::MarketRouteConfig route{};
+        route.market_ticker = read_string(route_json, "market_ticker");
+        route.market_id = read_size(route_json, "market_id", 0);
+        route.event_id = read_size(route_json, "event_id", 0);
+        route.affinity_key = read_size(route_json, "affinity_key", 0);
+        route.strike_key = read_int64(route_json, "strike_key", 0);
+
+        const auto topology_value = read_string(route_json, "topology_kind");
+        if (!topology_value.empty()) {
+            const auto topology_kind = parse_topology_kind(topology_value);
+            if (!topology_kind.has_value()) {
+                error_out = "market_routes contains an invalid topology_kind";
+                return std::nullopt;
+            }
+            route.topology_kind = *topology_kind;
+        }
+
+        if (route.market_ticker.empty() || route.market_id == 0 || route.event_id == 0 ||
+            route.topology_kind == predex::internal::EventTopologyKind::kUnknown) {
+            error_out =
+                "each market_routes entry must define market_ticker, market_id, event_id, and topology_kind";
+            return std::nullopt;
+        }
+
+        routes.push_back(std::move(route));
     }
     return routes;
 }
@@ -219,10 +255,6 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         error_out = "kalshi.channels must contain at least one subscription channel";
         return std::nullopt;
     }
-    if (config.kalshi_ws.market_tickers.empty()) {
-        error_out = "No market tickers configured under kalshi.market_tickers or market_universe.tickers";
-        return std::nullopt;
-    }
     if (config.kalshi_ws.key_id.empty() || config.kalshi_ws.private_key_pem.empty()) {
         error_out = "Missing Kalshi credentials (inline or env-backed)";
         return std::nullopt;
@@ -232,10 +264,20 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         return std::nullopt;
     }
 
-    config.market_routes =
-        build_market_routes(root, config.kalshi_ws.market_tickers, config.pipeline.shard_count);
-    if (config.market_routes.empty()) {
-        error_out = "No market routes could be built";
+    auto market_routes = build_market_routes(root, error_out);
+    if (!market_routes.has_value()) {
+        return std::nullopt;
+    }
+    config.market_routes = std::move(*market_routes);
+
+    if (config.kalshi_ws.market_tickers.empty()) {
+        config.kalshi_ws.market_tickers.reserve(config.market_routes.size());
+        for (const auto& route : config.market_routes) {
+            config.kalshi_ws.market_tickers.push_back(route.market_ticker);
+        }
+    }
+    if (config.kalshi_ws.market_tickers.empty()) {
+        error_out = "No market tickers configured under kalshi.market_tickers, market_universe.tickers, or market_routes";
         return std::nullopt;
     }
 

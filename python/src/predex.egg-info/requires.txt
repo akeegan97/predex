@@ -1,0 +1,10 @@
+
+[replay]
+pyarrow>=16.0.0
+
+[replay-viz]
+pyarrow>=16.0.0
+pandas>=2.2.0
+plotly>=5.22.0
+matplotlib>=3.8.0
+streamlit>=1.40.0

@@ -5,17 +5,24 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
+#include "predex/internal/event_topology.hpp"
 
 namespace predex::core::routing::kalshi{
-    struct MarketRoute{
-        std::uint32_t market_id_{0};
-        std::uint16_t affinity_key_{0};
+    struct MarketRoute {
+    std::uint32_t market_id_{0};
+    std::uint32_t event_id_{0};
+    std::uint16_t affinity_key_{0};
+    internal::EventTopologyKind topology_kind_{internal::EventTopologyKind::kUnknown};
+    std::int64_t strike_key_{0};
     };
     struct MarketRegistryEntry{
         std::string ticker_;
+        std::string event_ticker_;
         std::uint32_t market_id_{0};
+        std::uint32_t event_id_{0};
         std::uint16_t affinity_key_{0};
+        internal::EventTopologyKind topology_kind_{internal::EventTopologyKind::kUnknown};
+        std::int64_t strike_key_{0}; //used for monotonic chain topology to determine ordering of markets within the chain, not used for other topologies
     };
 
     class MarketRegistry{

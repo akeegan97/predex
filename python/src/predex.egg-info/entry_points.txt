@@ -1,0 +1,5 @@
+[console_scripts]
+predex = predex.discovery.cli:main
+predex-discovery = predex.discovery.cli:main
+predex-replay = predex.replay.cli:main
+predex-replay-latency = predex.replay.latency:main

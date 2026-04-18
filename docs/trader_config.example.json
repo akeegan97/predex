@@ -7,6 +7,7 @@
     ],
     "market_tickers": [
       "KXPGATOUR-VATO26-JSPA",
+      "KXPGATOUR-VATO26-HOVL",
       "KXWMARMAD-26-UCLA",
       "KXWMARMAD-26-SCAR"
     ],
@@ -18,27 +19,49 @@
   "market_routes": [
     {
       "market_ticker": "KXPGATOUR-VATO26-JSPA",
-      "market_id": 1,
-      "affinity_key": 0
+      "market_id": 124830991,
+      "event_id": 88422102,
+      "affinity_key": 17041,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 1000000
+    },
+    {
+      "market_ticker": "KXPGATOUR-VATO26-HOVL",
+      "market_id": 287230110,
+      "event_id": 88422102,
+      "affinity_key": 17041,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 2000000
     },
     {
       "market_ticker": "KXWMARMAD-26-UCLA",
-      "market_id": 2,
-      "affinity_key": 1
+      "market_id": 74100103,
+      "event_id": 55110021,
+      "affinity_key": 2890,
+      "topology_kind": "mutually_exclusive",
+      "strike_key": 0
     },
     {
       "market_ticker": "KXWMARMAD-26-SCAR",
-      "market_id": 3,
-      "affinity_key": 2
+      "market_id": 74100104,
+      "event_id": 55110021,
+      "affinity_key": 2890,
+      "topology_kind": "mutually_exclusive",
+      "strike_key": 0
     }
   ],
   "pipeline": {
     "frame_pool_capacity": 8192,
-    "frame_queue_capacity": 4096,
     "shard_count": 2,
-    "per_shard_queue_capacity": 1024
+    "io_to_router_capacity": 4096,
+    "router_to_logger_capacity": 4096,
+    "shard_input_capacity": 1024,
+    "shard_to_logger_capacity": 1024
   },
   "tape": {
     "output_path": "predex_tape.bin"
+  },
+  "audit": {
+    "output_path": "predex_audit.jsonl"
   }
 }

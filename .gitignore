@@ -3,8 +3,21 @@ build/
 
 __pycache__/
 .pytest_cache/
+.venv/
+python/.venv/
 .env
 .pr-draft.md
 events.json
 docs/replay/kalshi_tape.jsonl
 predex_tape.bin
+docs/generated_config.report.json
+docs/generated_config.json
+predex_audit.jsonl
+
+# Generated replay visualization/export artifacts
+docs/replay/*.csv
+docs/replay/*.html
+docs/replay/*.parquet
+docs/replay/*.summary.json
+docs/replay/*.png
+docs/replay/*.xlsx

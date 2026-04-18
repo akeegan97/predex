@@ -33,7 +33,7 @@ Intentionally incomplete:
 - Local and global risk checks
 - OMS and order transport
 - Replay executable
-- Python tooling for tape decode, discovery, config generation, and backtesting
+- Python tooling for tape decode and backtesting
 
 ## Architecture
 
@@ -133,6 +133,15 @@ export KALSHI_KEY_ID=...
 export KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----...'
 ```
 
+If you keep credentials in the repo-root [`.env`](.env), the Python CLI and repo wrappers will load them automatically.
+
+Example `.env` keys:
+
+```bash
+KALSHI_KEY_ID=...
+KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----...'
+```
+
 ### Run
 
 ```bash
@@ -140,6 +149,62 @@ export KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----...'
 ```
 
 The runtime is quiet on success. The main observable artifact is the configured tape file, default `predex_tape.bin`.
+
+The repo wrapper below auto-loads the root `.env` before launching the binary:
+
+```bash
+./scripts/trader_app --config docs/trader_config.example.json
+```
+
+### Generate Configs With Python
+
+The repo now includes a small Python discovery toolchain for building event-centric trader configs from Kalshi metadata.
+
+```bash
+PYTHONPATH=python/src python3 -m predex.discovery \
+  --event-ticker KXPGATOUR-VATO26 \
+  --event-ticker KXWMARMAD-26 \
+  --shard-count 4 \
+  --output docs/generated_config.json
+```
+
+You can also discover by series ticker instead of enumerating events:
+
+```bash
+PYTHONPATH=python/src python3 -m predex.discovery \
+  --series-ticker KXPGATOUR \
+  --limit 20 \
+  --output docs/generated_config.json
+```
+
+If you use a repo-root virtualenv, the wrapper below will load `.env` and prefer `.venv/bin/predex` automatically:
+
+```bash
+./scripts/predex \
+  --include-topology monotonic_chain \
+  --event-limit 20 \
+  --market-limit 60 \
+  --output docs/generated_config.json \
+  --report-output docs/generated_config.report.json
+```
+
+To page through every matching event instead of stopping at the default discovery cap:
+
+```bash
+./scripts/predex \
+  --include-topology monotonic_chain \
+  --all-events \
+  --output docs/generated_config.json \
+  --report-output docs/generated_config.report.json
+```
+
+The same CLI also exposes the main C++ runtime pipeline knobs, such as:
+- `--shard-count`
+- `--frame-pool-capacity`
+- `--io-to-router-capacity`
+- `--router-to-logger-capacity`
+- `--shard-input-capacity`
+- `--shard-to-logger-capacity`
 
 ## Tape Format
 
@@ -149,9 +214,59 @@ The runtime is quiet on success. The main observable artifact is the configured 
 
 Each payload is the raw websocket text frame received from Kalshi.
 
+## Replay Verification and Timeline Export
+
+Use the Python replay CLI to inspect audit output and generate event timeline artifacts from tape:
+
+```bash
+PYTHONPATH=python/src python3 -m predex.replay audit-summary \
+  --config docs/generated_config.json \
+  --audit predex_audit.jsonl
+```
+
+Export a timeline for one event (or pass `--market-ticker` for a single-market focus):
+
+```bash
+./scripts/predex-replay export-event-timeline \
+  --config docs/generated_config.json \
+  --audit predex_audit.jsonl \
+  --tape predex_tape.bin \
+  --event-id 1344469444 \
+  --output-dir docs/replay \
+  --prefix eggs_event
+```
+
+This writes:
+- timeline CSV (`*.csv`) with top-of-book progression
+- signal-hit CSV (`*.signals.csv`)
+- summary JSON (`*.summary.json`)
+- standalone visualization HTML (`*.html`)
+
+Add `--parquet` to also emit parquet files (`*.parquet`, `*.signals.parquet`). This requires `pyarrow` in your venv:
+
+```bash
+.venv/bin/pip install pyarrow
+```
+
+### Replay Dashboard (Streamlit)
+
+Install viz dependencies in your venv:
+
+```bash
+.venv/bin/pip install '.[replay-viz]'
+```
+
+Launch:
+
+```bash
+./scripts/predex-replay-dashboard
+```
+
+The dashboard shows a run-wide view from config+audit (all events, submarkets, and signals), then lets you drill into per-market timeline charts from `docs/replay/*.summary.json` datasets when available.
+
 ## Runtime Config
 
-The config has four top-level sections: `kalshi`, `market_routes`, `pipeline`, and `tape`.
+The config has five top-level sections: `kalshi`, `market_routes`, `pipeline`, `tape`, and `audit`.
 
 Example: [`docs/trader_config.example.json`](docs/trader_config.example.json)
 
@@ -161,17 +276,24 @@ Key fields:
 - `kalshi.channels` — channel subscriptions (e.g. `orderbook_delta`, `trade`)
 - `kalshi.market_tickers` — markets to subscribe to
 - `kalshi.credentials.key_id_env` / `private_key_pem_env` — environment variable names for credentials
+- `market_routes[*].event_id` — stable local event id used to group markets in shard-local event stores
+- `market_routes[*].affinity_key` — stable per-event shard affinity; shard choice is `affinity_key % shard_count`
+- `market_routes[*].topology_kind` — one of `single_market`, `mutually_exclusive`, `monotonic_chain`, `unordered_group`
+- `market_routes[*].strike_key` — integer ordering key for topology-specific market ordering
 - `pipeline.frame_pool_capacity` — frame pool slot count
 - `pipeline.shard_count` — number of shard threads
+- `audit.output_path` — JSONL audit log output path
 - `tape.output_path` — binary tape output path
 
-If `market_routes` is omitted, `trader_app` derives simple routes from the configured market ticker list.
+`market_routes` is required by `trader_app`. The Python discovery CLI is the intended way to synthesize it programmatically.
 
 ## Repository Layout
 
 - `cpp/apps` — executable entrypoints
 - `cpp/include/predex` — public headers for websocket, pipeline, and app wiring
 - `cpp/src` — implementations
+- `python/src/predex` — Python discovery and config synthesis tooling
+- `python/tests` — Python unit tests
 - `cpp/tests` — tests and scaffolding
 - `docs` — architecture, contracts, config examples, and planning notes
 

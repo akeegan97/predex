@@ -1,11 +1,18 @@
 #include "predex/app.hpp"
+#include "predex/audit/audit_logger.hpp"
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/ingest/io_writer.hpp"
+#include "predex/oms/oms.hpp"
 #include "predex/router/market_registry.hpp"
 #include "predex/router/router.hpp"
 #include "predex/router/shard_dispatch.hpp"
-#include "predex/shards/book_store.hpp"
 #include "predex/shards/shard.hpp"
+#include "predex/shards/local_risk.hpp"
+#include "predex/shards/shard_pipeline.hpp"
+#include "predex/shards/strategies/cdf_violation.hpp"
+#include "predex/shards/strategies/market_making.hpp"
+#include "predex/shards/strategies/mean_reversion.hpp"
+#include "predex/shards/strategies/monotonic_arb.hpp"
 #include "predex/tape/logger.hpp"
 #include "predex/parsers/kalshi/parser.hpp"
 #include "predex/websocket/client.hpp"
@@ -13,11 +20,12 @@
 #include "predex/websocket/kalshi/auth_signer.hpp"
 #include "predex/websocket/kalshi/ws_adapter.hpp"
 #include "predex/utils/spsc_queue.hpp"
+#include <algorithm>
 #include <chrono>
-#include <fmt/base.h>
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <unordered_map>
 #include <vector>
 #include <mutex>
 
@@ -27,10 +35,42 @@ namespace predex {
     struct App::Runtime {
         using FrameHandle = predex::core::ingest::kalshi::FrameHandle;
         using FrameQueue = predex::utils::SPSCQueue<FrameHandle>;
+        using LocalRiskManager = predex::core::shards::kalshi::LocalRiskManager;
+        using MonotonicArbStrategy =
+            predex::core::shards::kalshi::strategies::MonotonicArbStrategy;
+        using CdfViolationStrategy =
+            predex::core::shards::kalshi::strategies::CdfViolationStrategy;
+        using MarketMakingStrategy =
+            predex::core::shards::kalshi::strategies::MarketMakingStrategy;
+        using MeanReversionStrategy =
+            predex::core::shards::kalshi::strategies::MeanReversionStrategy;
+        using ShardPipeline = predex::core::shards::kalshi::DefaultShardPipeline<
+            LocalRiskManager,
+            MonotonicArbStrategy,
+            CdfViolationStrategy,
+            MarketMakingStrategy,
+            MeanReversionStrategy>;
+        using Shard = predex::core::shards::kalshi::Shard<ShardPipeline>;
+        using Oms = predex::core::oms::kalshi::Oms;
+        using OmsIntentQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsSubmission>;
+        using OmsDecisionQueue =
+            predex::utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>;
+        using OmsLifecycleQueue =
+            predex::utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>;
+        using AuditQueue =
+            predex::utils::SPSCQueue<predex::core::audit::AuditEvent>;
+        using SubmitOrderQueue =
+            predex::utils::SPSCQueue<predex::core::oms::kalshi::SubmitOrderCmd>;
+        using CancelOrderQueue =
+            predex::utils::SPSCQueue<predex::core::oms::kalshi::CancelOrderCmd>;
+        using ModifyOrderQueue =
+            predex::utils::SPSCQueue<predex::core::oms::kalshi::ModifyOrderCmd>;
+        using AuditLogger = predex::core::audit::AuditLogger;
 
         explicit Runtime(AppConfig config_in);
 
         AppConfig config;
+        bool init_ok{true};
         mutable std::mutex error_mutex;
         std::string last_error;
         std::atomic<bool> running{false};
@@ -43,10 +83,90 @@ namespace predex {
                 entries.push_back({
                     .ticker_ = route.market_ticker,
                     .market_id_ = static_cast<uint32_t>(route.market_id),
+                    .event_id_ = static_cast<uint32_t>(route.event_id),
                     .affinity_key_ = static_cast<uint16_t>(route.affinity_key),
+                    .topology_kind_ = route.topology_kind,
+                    .strike_key_ = route.strike_key,
                 });
             }
             return entries;
+        }
+        static bool
+        build_event_definitions_by_shard(
+            const std::vector<predex::core::routing::kalshi::MarketRegistryEntry>& entries,
+            std::size_t shard_count,
+            std::vector<std::vector<core::shards::kalshi::EventDefinition>>& definitions_by_shard,
+            std::string& error_out) {
+            definitions_by_shard.clear();
+            definitions_by_shard.resize(shard_count);
+            if (shard_count == 0) {
+                error_out = "pipeline.shard_count must be greater than zero";
+                return false;
+            }
+
+            struct EventAccumulator {
+                predex::internal::EventTopologyKind topology_kind{
+                    predex::internal::EventTopologyKind::kUnknown};
+                std::uint16_t affinity_key{0};
+                bool affinity_initialized{false};
+                std::vector<core::shards::kalshi::EventMarketDefinition> markets;
+            };
+
+            std::unordered_map<std::uint32_t, EventAccumulator> grouped_events;
+            grouped_events.reserve(entries.size());
+
+            for (const auto& entry : entries) {
+                if (entry.market_id_ == 0 || entry.event_id_ == 0) {
+                    error_out = "market route entries must define non-zero market_id and event_id";
+                    return false;
+                }
+                if (entry.topology_kind_ == predex::internal::EventTopologyKind::kUnknown) {
+                    error_out = "market route entries must define a non-unknown topology_kind";
+                    return false;
+                }
+                auto& accumulator = grouped_events[entry.event_id_];
+                if (!accumulator.affinity_initialized) {
+                    accumulator.affinity_key = entry.affinity_key_;
+                    accumulator.affinity_initialized = true;
+                    accumulator.topology_kind = entry.topology_kind_;
+                } else if (accumulator.affinity_key != entry.affinity_key_) {
+                    error_out = "event " + std::to_string(entry.event_id_) +
+                        " has inconsistent affinity_key values in config";
+                    return false;
+                } else if (accumulator.topology_kind != entry.topology_kind_) {
+                    error_out = "event " + std::to_string(entry.event_id_) +
+                        " has inconsistent topology_kind values in config";
+                    return false;
+                }
+                const auto duplicate_market = std::find_if(
+                    accumulator.markets.begin(),
+                    accumulator.markets.end(),
+                    [&entry](const core::shards::kalshi::EventMarketDefinition& market) {
+                        return market.market_id == entry.market_id_;
+                    });
+                if (duplicate_market != accumulator.markets.end()) {
+                    error_out = "event " + std::to_string(entry.event_id_) +
+                        " contains duplicate market_id " + std::to_string(entry.market_id_) +
+                        " in config";
+                    return false;
+                }
+                accumulator.markets.push_back(core::shards::kalshi::EventMarketDefinition{
+                    .market_id = entry.market_id_,
+                    .strike_key = entry.strike_key_,
+                });
+            }
+
+            for (const auto& [event_id, accumulator] : grouped_events) {
+                const std::size_t shard_id = accumulator.affinity_key % shard_count;
+                definitions_by_shard[shard_id].push_back(core::shards::kalshi::EventDefinition{
+                    .event_id = event_id,
+                    .topology_kind = accumulator.topology_kind,
+                    .expected_market_count = accumulator.markets.size(),
+                    .markets = accumulator.markets,
+                });
+            }
+
+            return true;
         }
 
         websocket::kalshi::AuthSigner auth_signer;
@@ -60,23 +180,39 @@ namespace predex {
         std::unique_ptr<FrameQueue> recycle_queue;
         std::vector<std::unique_ptr<FrameQueue>> shard_input_queues;
         std::vector<std::unique_ptr<FrameQueue>> shard_to_logger_queues;
+        std::vector<std::unique_ptr<OmsIntentQueue>> shard_to_oms_intent_queues;
+        std::vector<std::unique_ptr<OmsDecisionQueue>> oms_to_shard_decision_queues;
+        std::vector<std::unique_ptr<OmsLifecycleQueue>> oms_to_shard_lifecycle_queues;
+        std::vector<std::unique_ptr<AuditQueue>> shard_audit_queues;
+        std::unique_ptr<SubmitOrderQueue> oms_submit_queue;
+        std::unique_ptr<CancelOrderQueue> oms_cancel_queue;
+        std::unique_ptr<ModifyOrderQueue> oms_modify_queue;
+        std::unique_ptr<OmsLifecycleQueue> oms_transport_update_queue;
+        std::unique_ptr<AuditQueue> oms_audit_queue;
 
         core::routing::kalshi::MarketRegistry market_registry;
         std::vector<FrameQueue*> shard_input_queue_ptrs;
         std::vector<FrameQueue*> logger_input_queue_ptrs;
+        std::vector<OmsIntentQueue*> shard_to_oms_intent_queue_ptrs;
+        std::vector<OmsDecisionQueue*> oms_to_shard_decision_queue_ptrs;
+        std::vector<OmsLifecycleQueue*> oms_to_shard_lifecycle_queue_ptrs;
+        std::vector<AuditQueue*> audit_input_queue_ptrs;
 
         std::unique_ptr<core::routing::kalshi::ShardDispatch> shard_dispatch;
         std::unique_ptr<core::routing::kalshi::Router> router;
         std::unique_ptr<core::ingest::kalshi::IOWriter> io_writer;
         std::unique_ptr<core::tape::kalshi::Logger> tape_logger;
+        std::unique_ptr<AuditLogger> audit_logger;
+        std::unique_ptr<Oms> oms;
 
-        std::vector<core::shards::kalshi::BookStore> book_stores;
-        std::vector<std::unique_ptr<core::shards::kalshi::Shard>> shards;
+        std::vector<core::shards::kalshi::EventStore> event_stores;
+        std::vector<std::unique_ptr<Shard>> shards;
         std::jthread io_thread;
         std::jthread router_thread;
         std::vector<std::jthread> shard_threads; // will house strategy & risk eventually on the same thread as shard 
-        //eventually add thread for OMS/EMS 
+        std::jthread oms_thread;
         std::jthread logger_thread;
+        std::jthread audit_thread;
 
         
         
@@ -88,7 +224,9 @@ namespace predex {
         void io_loop(const std::stop_token& stop_token);
         void router_loop(const std::stop_token& stop_token) const;
         void shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const;
+        void oms_loop(const std::stop_token& stop_token);
         void logger_loop(const std::stop_token& stop_token) const;
+        void audit_loop(const std::stop_token& stop_token) const;
         void set_error(std::string message);
         std::string_view last_error_view() const noexcept;
     };
@@ -113,9 +251,17 @@ namespace predex {
 
         shard_input_queues.reserve(config.pipeline.shard_count);
         shard_to_logger_queues.reserve(config.pipeline.shard_count);
+        shard_to_oms_intent_queues.reserve(config.pipeline.shard_count);
+        oms_to_shard_decision_queues.reserve(config.pipeline.shard_count);
+        oms_to_shard_lifecycle_queues.reserve(config.pipeline.shard_count);
+        shard_audit_queues.reserve(config.pipeline.shard_count);
         shard_input_queue_ptrs.reserve(config.pipeline.shard_count);
         logger_input_queue_ptrs.reserve(config.pipeline.shard_count + 1);
-        book_stores.reserve(config.pipeline.shard_count);
+        shard_to_oms_intent_queue_ptrs.reserve(config.pipeline.shard_count);
+        oms_to_shard_decision_queue_ptrs.reserve(config.pipeline.shard_count);
+        oms_to_shard_lifecycle_queue_ptrs.reserve(config.pipeline.shard_count);
+        audit_input_queue_ptrs.reserve(config.pipeline.shard_count + 1);
+        event_stores.reserve(config.pipeline.shard_count);
         shards.reserve(config.pipeline.shard_count);
 
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
@@ -123,12 +269,64 @@ namespace predex {
                 std::make_unique<FrameQueue>(config.pipeline.shard_input_capacity));
             shard_to_logger_queues.push_back(
                 std::make_unique<FrameQueue>(config.pipeline.shard_to_logger_capacity));
-            book_stores.emplace_back();
+            shard_to_oms_intent_queues.push_back(
+                std::make_unique<OmsIntentQueue>(config.pipeline.shard_input_capacity));
+            oms_to_shard_decision_queues.push_back(
+                std::make_unique<OmsDecisionQueue>(config.pipeline.shard_input_capacity));
+            oms_to_shard_lifecycle_queues.push_back(
+                std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity));
+            shard_audit_queues.push_back(
+                std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity));
+            event_stores.emplace_back();
+        }
+
+        oms_submit_queue =
+            std::make_unique<SubmitOrderQueue>(config.pipeline.shard_input_capacity);
+        oms_cancel_queue =
+            std::make_unique<CancelOrderQueue>(config.pipeline.shard_input_capacity);
+        oms_modify_queue =
+            std::make_unique<ModifyOrderQueue>(config.pipeline.shard_input_capacity);
+        oms_transport_update_queue =
+            std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity);
+        oms_audit_queue =
+            std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
+
+        std::vector<std::vector<core::shards::kalshi::EventDefinition>> event_definitions_by_shard;
+        std::string event_definition_error;
+        if (!build_event_definitions_by_shard(
+                market_registry_entries,
+                config.pipeline.shard_count,
+                event_definitions_by_shard,
+                event_definition_error)) {
+            init_ok = false;
+            set_error(std::move(event_definition_error));
+            return;
+        }
+        for (std::size_t shard_index = 0; shard_index < config.pipeline.shard_count; ++shard_index) {
+            if (!event_stores[shard_index].initialize(event_definitions_by_shard[shard_index])) {
+                init_ok = false;
+                set_error("Failed to initialize event store for shard " +
+                    std::to_string(shard_index));
+                return;
+            }
         }
 
         for (const auto& queue : shard_input_queues) {
             shard_input_queue_ptrs.push_back(queue.get());
         }
+        for (const auto& queue : shard_to_oms_intent_queues) {
+            shard_to_oms_intent_queue_ptrs.push_back(queue.get());
+        }
+        for (const auto& queue : oms_to_shard_decision_queues) {
+            oms_to_shard_decision_queue_ptrs.push_back(queue.get());
+        }
+        for (const auto& queue : oms_to_shard_lifecycle_queues) {
+            oms_to_shard_lifecycle_queue_ptrs.push_back(queue.get());
+        }
+        for (const auto& queue : shard_audit_queues) {
+            audit_input_queue_ptrs.push_back(queue.get());
+        }
+        audit_input_queue_ptrs.push_back(oms_audit_queue.get());
 
         logger_input_queue_ptrs.push_back(router_to_logger_queue.get());
         for (const auto& queue : shard_to_logger_queues) {
@@ -155,15 +353,42 @@ namespace predex {
             frame_pool,
             *recycle_queue,
             config.tape.output_path);
+        audit_logger = std::make_unique<AuditLogger>(
+            audit_input_queue_ptrs,
+            config.audit.output_path);
+
+        oms = std::make_unique<Oms>(
+            shard_to_oms_intent_queue_ptrs,
+            oms_to_shard_decision_queue_ptrs,
+            oms_to_shard_lifecycle_queue_ptrs,
+            predex::core::oms::kalshi::OmsTransportQueues{
+                .submit_queue = oms_submit_queue.get(),
+                .cancel_queue = oms_cancel_queue.get(),
+                .modify_queue = oms_modify_queue.get(),
+                .inbound_update_queue = oms_transport_update_queue.get(),
+            },
+            predex::core::oms::kalshi::GlobalRiskManager{},
+            oms_audit_queue.get());
 
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
-            shards.push_back(std::make_unique<core::shards::kalshi::Shard>(
+            shards.push_back(std::make_unique<Shard>(
                 *shard_input_queues[i],
                 frame_pool,
                 *shard_to_logger_queues[i],
                 predex::core::parsers::kalshi::Parser{},
-                book_stores[i],
-                nullptr));
+                event_stores[i],
+                ShardPipeline{
+                    static_cast<std::uint16_t>(i),
+                    LocalRiskManager{},
+                    shard_to_oms_intent_queues[i].get(),
+                    oms_to_shard_decision_queues[i].get(),
+                    oms_to_shard_lifecycle_queues[i].get(),
+                    shard_audit_queues[i].get(),
+                    MonotonicArbStrategy{},
+                    CdfViolationStrategy{},
+                    MarketMakingStrategy{},
+                    MeanReversionStrategy{},
+                }));
         }
     }
     void App::Runtime::set_error(std::string message){
@@ -172,6 +397,9 @@ namespace predex {
     }
 
     bool App::Runtime::start(){
+        if (!init_ok) {
+            return false;
+        }
         if(running.load(std::memory_order_acquire)){
             return true;
         }
@@ -204,8 +432,14 @@ namespace predex {
                 shard_loop(i, stop_token);
             });
         }
+        oms_thread = std::jthread([this](const std::stop_token& stop_token){
+            oms_loop(stop_token);
+        });
         logger_thread = std::jthread([this](const std::stop_token& stop_token){
             logger_loop(stop_token);
+        });
+        audit_thread = std::jthread([this](const std::stop_token& stop_token){
+            audit_loop(stop_token);
         });
         return true;
     }
@@ -261,9 +495,44 @@ namespace predex {
         }
     }
 
+    void App::Runtime::oms_loop(const std::stop_token& stop_token) {
+        while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
+            const auto result = oms->pump(
+                config.pipeline.shard_input_capacity,
+                config.pipeline.shard_input_capacity);
+            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kError) {
+                set_error("OMS encountered an unrecoverable processing error");
+                running.store(false, std::memory_order_release);
+                break;
+            }
+            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kShardBackpressure) {
+                set_error("OMS backpressured while routing decisions/lifecycle updates to shards");
+                running.store(false, std::memory_order_release);
+                break;
+            }
+            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kTransportBackpressure) {
+                set_error("OMS transport backpressured while enqueueing outbound commands");
+                running.store(false, std::memory_order_release);
+                break;
+            }
+            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kIdle) {
+                std::this_thread::yield();
+            }
+        }
+    }
+
     void App::Runtime::logger_loop(const std::stop_token& stop_token) const {
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto logged = tape_logger->pump(config.pipeline.router_to_logger_capacity);
+            if(logged == 0U){
+                std::this_thread::yield();
+            }
+        }
+    }
+
+    void App::Runtime::audit_loop(const std::stop_token& stop_token) const {
+        while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
+            const auto logged = audit_logger->pump(config.pipeline.router_to_logger_capacity);
             if(logged == 0U){
                 std::this_thread::yield();
             }
@@ -298,9 +567,17 @@ namespace predex {
             }
         }
         shard_threads.clear();
+        if(oms_thread.joinable()){
+            oms_thread.request_stop();
+            oms_thread.join();
+        }
         if(logger_thread.joinable()){
             logger_thread.request_stop();
             logger_thread.join();
+        }
+        if(audit_thread.joinable()){
+            audit_thread.request_stop();
+            audit_thread.join();
         }
 
     }

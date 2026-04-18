@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 
+#include "predex/internal/event_topology.hpp"
 
 
 //might make each a separate constant but for now just using a single global default capacity
@@ -13,7 +14,10 @@ namespace predex{
     struct MarketRouteConfig{
         std::string market_ticker;
         std::uint64_t market_id{0};
+        std::uint64_t event_id{0};
         std::uint64_t affinity_key{0};
+        internal::EventTopologyKind topology_kind{internal::EventTopologyKind::kUnknown};
+        std::int64_t strike_key{0};
     };
 
     struct KalshiWsConfig{
@@ -37,10 +41,15 @@ namespace predex{
         std::string output_path{"predex_tape.bin"};
     };
 
+    struct AuditConfig{
+        std::string output_path{"predex_audit.jsonl"};
+    };
+
     struct AppConfig{
         KalshiWsConfig kalshi_ws;
         PipelineConfig pipeline;
         TapeConfig tape;
+        AuditConfig audit;
         std::vector<MarketRouteConfig> market_routes;
     };
 

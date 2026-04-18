@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predex"
+version = "0.1.0"
+description = "Python discovery and config synthesis tooling for Predex"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+replay = [
+  "pyarrow>=16.0.0",
+]
+replay-viz = [
+  "pyarrow>=16.0.0",
+  "pandas>=2.2.0",
+  "plotly>=5.22.0",
+  "matplotlib>=3.8.0",
+  "streamlit>=1.40.0",
+]
+
+[project.scripts]
+predex = "predex.discovery.cli:main"
+predex-discovery = "predex.discovery.cli:main"
+predex-replay = "predex.replay.cli:main"
+predex-replay-latency = "predex.replay.latency:main"
+
+[tool.setuptools]
+package-dir = {"" = "python/src"}
+
+[tool.setuptools.packages.find]
+where = ["python/src"]

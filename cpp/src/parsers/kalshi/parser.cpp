@@ -348,6 +348,16 @@ internal::Side parse_trade_side(std::string_view side_token) {
     return internal::Side::kUnknown;
 }
 
+internal::Side trade_aggressor_to_book_side(internal::Side aggressor) {
+    if (aggressor == internal::Side::kBuy) {
+        return internal::Side::kAsk;
+    }
+    if (aggressor == internal::Side::kSell) {
+        return internal::Side::kBid;
+    }
+    return internal::Side::kUnknown;
+}
+
 void set_sequence_from_msg(simdjson::ondemand::object& msg, internal::NormalizedEvent& event) {
     std::uint64_t seq = 0;
     if (get_uint64(msg, "seq", seq) || get_uint64(msg, "seq_id", seq)) {
@@ -468,6 +478,9 @@ parse_delta(simdjson::ondemand::object& msg,
         resolved_side = parse_book_side(side_token);
         has_price = parse_first_price_ticks(msg, {"price", "price_dollars"}, price);
         has_delta = parse_first_lot_count(msg, {"delta", "delta_fp"}, delta_qty);
+        if (has_price && resolved_side == internal::Side::kAsk) {
+            price = reciprocal_price(price);
+        }
     } else {
         std::int64_t inferred_price = 0;
         std::int64_t inferred_delta = 0;
@@ -552,6 +565,7 @@ parse_trade(simdjson::ondemand::object& msg,
         if (trade.aggressor == internal::Side::kUnknown && strict_field_validation) {
             trade.aggressor = internal::Side::kUnknown;
         }
+        trade.book_side = trade_aggressor_to_book_side(trade.aggressor);
     }
 
     std::string_view trade_id_view;
@@ -572,6 +586,8 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     event.raw_sequence_id = handle.seq_;
     event.type = internal::EventType::kUnknown;
     event.meta.exchange = internal::ExchangeId::kKalshi;
+    event.meta.topology_kind = handle.topology_kind_;
+    event.meta.event_id = handle.event_id_;
     event.meta.affinity_key = handle.affinity_key_;
     event.meta.market_id = handle.market_id_;
     event.meta.recv_ns = frame.recv_ts_ns_;

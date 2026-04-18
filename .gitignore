@@ -20,3 +20,4 @@ docs/replay/*.html
 docs/replay/*.parquet
 docs/replay/*.summary.json
 docs/replay/*.png
+docs/replay/*.xlsx

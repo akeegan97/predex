@@ -14,7 +14,6 @@
 #include "predex/shards/strategies/mean_reversion.hpp"
 #include "predex/shards/strategies/monotonic_arb.hpp"
 #include "predex/tape/logger.hpp"
-#include "predex/parsers/kalshi/parser.hpp"
 #include "predex/websocket/client.hpp"
 #include "predex/websocket/session.hpp"
 #include "predex/websocket/kalshi/auth_signer.hpp"
@@ -476,9 +475,21 @@ namespace predex {
     }
 
     void App::Runtime::router_loop(const std::stop_token& stop_token) const {
-        while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
+        std::uint32_t idle_iters = 0;
+        while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             const auto routed = router->pump(config.pipeline.io_to_router_capacity);
-            if(routed == 0U){
+            if (routed > 0U) {
+                idle_iters = 0;
+                continue;
+            }
+
+            ++idle_iters;
+            if (idle_iters <= config.pipeline.idle_policy.spin_iters_router) {
+                continue;
+            }
+
+            if (config.pipeline.idle_policy.yield_every > 0U &&
+                (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
                 std::this_thread::yield();
             }
         }
@@ -486,15 +497,28 @@ namespace predex {
 
     void App::Runtime::shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const {
         const auto& shard = shards[shard_index];
+        std::uint32_t idle_iters = 0;
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto processed = shard->pump(config.pipeline.shard_input_capacity);
-            if(processed == 0U){
+            if(processed > 0U){
+                idle_iters = 0;
+                continue;
+            }
+
+            ++idle_iters;
+            if (idle_iters <= config.pipeline.idle_policy.spin_iters_shard) {
+                continue;
+            }
+
+            if (config.pipeline.idle_policy.yield_every > 0U &&
+                (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
                 std::this_thread::yield();
             }
         }
     }
 
     void App::Runtime::oms_loop(const std::stop_token& stop_token) {
+        std::uint32_t idle_iters = 0;
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             const auto result = oms->pump(
                 config.pipeline.shard_input_capacity,
@@ -514,25 +538,72 @@ namespace predex {
                 running.store(false, std::memory_order_release);
                 break;
             }
+            if (result.code != predex::core::oms::kalshi::OmsProcessCode::kIdle) {
+                idle_iters = 0;
+                continue;
+            }
             if (result.code == predex::core::oms::kalshi::OmsProcessCode::kIdle) {
-                std::this_thread::yield();
+                ++idle_iters;
+                if (idle_iters <= config.pipeline.idle_policy.spin_iters_oms) {
+                    continue;
+                }
+
+                if (config.pipeline.idle_policy.yield_every > 0U &&
+                    (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
+                    std::this_thread::yield();
+                }
             }
         }
     }
 
     void App::Runtime::logger_loop(const std::stop_token& stop_token) const {
+        std::uint32_t idle_iters = 0;
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto logged = tape_logger->pump(config.pipeline.router_to_logger_capacity);
-            if(logged == 0U){
+            if(logged > 0U){
+                idle_iters = 0;
+                continue;
+            }
+
+            ++idle_iters;
+            if (idle_iters <= config.pipeline.idle_policy.spin_iters_logger) {
+                continue;
+            }
+
+            if (idle_iters >= config.pipeline.idle_policy.sleep_after_idle_iters) {
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(config.pipeline.idle_policy.sleep_micros));
+                continue;
+            }
+
+            if (config.pipeline.idle_policy.yield_every > 0U &&
+                (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
                 std::this_thread::yield();
             }
         }
     }
 
     void App::Runtime::audit_loop(const std::stop_token& stop_token) const {
+        std::uint32_t idle_iters = 0;
         while(running.load(std::memory_order_acquire) && !stop_token.stop_requested()){
             const auto logged = audit_logger->pump(config.pipeline.router_to_logger_capacity);
-            if(logged == 0U){
+            if(logged > 0U){
+                idle_iters = 0;
+                continue;
+            }
+            ++idle_iters;
+            if (idle_iters <= config.pipeline.idle_policy.spin_iters_audit) {
+                continue;
+            }
+
+            if (idle_iters >= config.pipeline.idle_policy.sleep_after_idle_iters) {
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(config.pipeline.idle_policy.sleep_micros));
+                continue;
+            }
+
+            if (config.pipeline.idle_policy.yield_every > 0U &&
+                (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
                 std::this_thread::yield();
             }
         }
@@ -602,7 +673,4 @@ namespace predex {
         std::scoped_lock lock(runtime_->error_mutex);
         return runtime_->last_error;
     }
-
-
-
 }

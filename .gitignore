@@ -21,3 +21,4 @@ docs/replay/*.parquet
 docs/replay/*.summary.json
 docs/replay/*.png
 docs/replay/*.xlsx
+docs/replay/*.jsonl

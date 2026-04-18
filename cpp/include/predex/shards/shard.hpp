@@ -35,14 +35,11 @@ class Shard {
     explicit Shard(utils::SPSCQueue<ingest::kalshi::FrameHandle>& input_queue,
                    ingest::kalshi::FramePool& frame_pool,
                    utils::SPSCQueue<ingest::kalshi::FrameHandle>& logger_queue,
-                   parsers::kalshi::Parser parser,
                    EventStore& event_store,
                    Bundle bundle)
         : input_queue_(input_queue),
           frame_pool_(frame_pool),
           logger_queue_(logger_queue),
-          //NOLINTNEXTLINE
-          parser_(std::move(parser)),
           event_store_(event_store),
           bundle_(std::move(bundle)) {}
 

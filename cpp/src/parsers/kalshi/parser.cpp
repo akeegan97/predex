@@ -580,7 +580,7 @@ parse_trade(simdjson::ondemand::object& msg,
 } // namespace
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::parsers::kalshi::Parser::parse(const predex::core::ingest::kalshi::FrameHandle& handle,
-    const predex::core::ingest::kalshi::KalshiFrame& frame) const{
+    const predex::core::ingest::kalshi::KalshiFrame& frame){
 
     predex::internal::NormalizedEvent event{};
     event.raw_sequence_id = handle.seq_;
@@ -596,12 +596,15 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     //all other data needs to be parsed out of the payload, which is a JSON blob.
 
     const auto* payload = frame.payload.data();
-
-    std::string payload_json{reinterpret_cast<const char*>(payload), frame.len_};
-    simdjson::padded_string padded{payload_json};
     
-    simdjson::ondemand::parser parser;
-    auto doc = parser.iterate(padded);
+
+    const char* buf = reinterpret_cast<const char*>(payload);
+    const size_t len = frame.len_;
+    if(len == 0 || len > predex::core::ingest::kalshi::kMaxFrameBytes){
+        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson); //invalid frame length, forward to logger for troubleshooting
+    }
+
+    auto doc = parser_.iterate(buf, len,frame.payload.size());
     if(doc.error() != simdjson::SUCCESS) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson);
     }

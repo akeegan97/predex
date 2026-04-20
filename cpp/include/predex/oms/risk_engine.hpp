@@ -27,6 +27,8 @@ class RiskEngine {
 
     void on_fill(internal::EventId event_id, internal::QtyLots fill_qty_lots) noexcept;
 
+    void on_capital_released(std::int64_t released_capital_ticks) noexcept;
+
     void on_order_terminal(internal::EventId event_id,
                            internal::QtyLots remaining_open_qty_lots) noexcept;
 

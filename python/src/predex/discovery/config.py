@@ -66,6 +66,7 @@ class OmsTransportSettings:
     private_ws_endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     private_ws_channels: tuple[str, ...] = ("user_orders",)
     max_session_loss_ticks: int = 0
+    available_capital_ticks: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +75,7 @@ class OmsTransportSettings:
             "private_ws_endpoint": self.private_ws_endpoint,
             "private_ws_channels": list(self.private_ws_channels),
             "max_session_loss_ticks": self.max_session_loss_ticks,
+            "available_capital_ticks": self.available_capital_ticks,
         }
 
 

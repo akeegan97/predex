@@ -200,6 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="OMS private WS channel to include. Repeat for multiple channels. Default: user_orders.",
     )
+    parser.add_argument(
+        "--oms-available-capital-ticks",
+        type=int,
+        default=0,
+        help="Portfolio capital budget in ticks for OMS pre-trade gating. 0 disables the cap.",
+    )
     return parser
 
 
@@ -234,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         private_ws_channels=tuple(args.oms_private_ws_channel)
         if args.oms_private_ws_channel
         else ("user_orders",),
+        available_capital_ticks=args.oms_available_capital_ticks,
     )
 
     event_limit = None if args.all_events else args.event_limit

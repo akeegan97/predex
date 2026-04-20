@@ -160,6 +160,40 @@ namespace {
     }
     return object[key].get<std::string>();
 }
+
+[[nodiscard]] std::optional<bool> read_bool(const nlohmann::json& object,
+                                            const char* key) {
+    if (!object.contains(key)) {
+        return std::nullopt;
+    }
+    const auto& value = object[key];
+    if (!value.is_boolean()) {
+        return std::nullopt;
+    }
+    return value.get<bool>();
+}
+
+[[nodiscard]] internal::Side side_from_action_text(const std::string& text) {
+    const std::string lower = to_lower(text);
+    if (lower == "buy") {
+        return internal::Side::kBuy;
+    }
+    if (lower == "sell") {
+        return internal::Side::kSell;
+    }
+    return internal::Side::kUnknown;
+}
+
+[[nodiscard]] internal::Side side_from_side_text(const std::string& text) {
+    const std::string lower = to_lower(text);
+    if (lower == "yes" || lower == "buy" || lower == "bid") {
+        return internal::Side::kBuy;
+    }
+    if (lower == "no" || lower == "sell" || lower == "ask") {
+        return internal::Side::kSell;
+    }
+    return internal::Side::kUnknown;
+}
 //NOLINTNEXTLINE
 [[nodiscard]] bool parse_one_order_event(const nlohmann::json& message,
                                          const std::string& envelope_type,
@@ -236,6 +270,18 @@ namespace {
             fill.fill_price_ticks = static_cast<internal::PriceTicks>(*fill_price);
         } else if (const auto fill_price = read_i64(message, "price")) {
             fill.fill_price_ticks = static_cast<internal::PriceTicks>(*fill_price);
+        }
+        fill.raw_action = read_string(message, "action");
+        fill.raw_side = read_string(message, "side");
+        const auto is_yes = read_bool(message, "is_yes");
+        fill.raw_is_yes = is_yes.has_value() ? (*is_yes ? 1 : 0) : -1;
+
+        fill.side = side_from_action_text(fill.raw_action);
+        if (fill.side == internal::Side::kUnknown) {
+            fill.side = side_from_side_text(fill.raw_side);
+        }
+        if (fill.side == internal::Side::kUnknown && is_yes.has_value()) {
+            fill.side = *is_yes ? internal::Side::kBuy : internal::Side::kSell;
         }
         event.data = fill;
         return true;

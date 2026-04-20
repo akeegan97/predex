@@ -280,6 +280,9 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         config.oms_transport.max_session_loss_ticks =
             read_int64(oms_transport, "max_session_loss_ticks",
                        config.oms_transport.max_session_loss_ticks);
+        config.oms_transport.available_capital_ticks =
+            read_int64(oms_transport, "available_capital_ticks",
+                       config.oms_transport.available_capital_ticks);
     }
 
     const auto local_risk_it = root.find("local_risk");

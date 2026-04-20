@@ -29,6 +29,7 @@ struct OpenOrderSnapshot {
 struct OpenOrdersResult {
     bool ok{false};
     std::vector<OpenOrderSnapshot> orders;
+    std::optional<std::string> next_cursor;
     std::string error;
 };
 
@@ -47,7 +48,9 @@ class RestClient {
     [[nodiscard]] RestCallResult
     modify_order(const predex::core::oms::kalshi::ModifyOrderCmd& command) const;
 
-    [[nodiscard]] OpenOrdersResult fetch_open_orders(std::size_t limit = kOpenOrderFetchLimit) const;
+    [[nodiscard]] OpenOrdersResult
+    fetch_open_orders(std::size_t limit = kOpenOrderFetchLimit,
+                      std::optional<std::string> cursor = std::nullopt) const;
 
   private:
     AuthSigner signer_;

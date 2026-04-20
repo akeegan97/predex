@@ -2,6 +2,7 @@
 #include "predex/oms/oms_types.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <limits>
 
 namespace predex::core::oms::kalshi {
@@ -73,8 +74,14 @@ OmsPumpResult Oms::pump(std::size_t max_transport_updates,
     if (halt_mode_.load(std::memory_order_acquire) >=
             static_cast<std::uint8_t>(HaltMode::kHard) &&
         !hard_halt_cancel_triggered_) {
+        if (!cancel_all_live_orders()) {
+            return OmsPumpResult{
+                .code = OmsProcessCode::kTransportBackpressure,
+                .processed_intents = 0,
+                .processed_transport_updates = 0,
+            };
+        }
         hard_halt_cancel_triggered_ = true;
-        cancel_all_live_orders();
     }
 
     OmsPumpResult result{};
@@ -137,6 +144,10 @@ std::uint64_t Oms::rejected_intent_count() const noexcept {
     return rejected_intent_count_;
 }
 
+std::uint64_t Oms::unknown_fill_side_count() const noexcept {
+    return unknown_fill_side_count_;
+}
+
 OmsRequestId Oms::seed_orphaned_order(OrderState state, internal::Side side) noexcept {
     const OmsRequestId request_id = next_oms_request_id_++;
     state.oms_request_id = request_id;
@@ -168,12 +179,16 @@ void Oms::request_hard_halt() noexcept {
     halt_mode_.store(static_cast<std::uint8_t>(HaltMode::kHard), std::memory_order_release);
 }
 
-void Oms::cancel_all_live_orders() noexcept {
+bool Oms::cancel_all_live_orders() noexcept {
     const internal::TimestampNs now_ns = monotonic_now_ns();
     const auto cmds = order_store_.build_cancel_all_cmds(now_ns);
+    bool all_enqueued = true;
     for (const auto& cmd : cmds) {
-        transport_.try_cancel(cmd);
+        if (!transport_.try_cancel(cmd)) {
+            all_enqueued = false;
+        }
     }
+    return all_enqueued;
 }
 
 bool Oms::is_halted() const noexcept {
@@ -219,6 +234,8 @@ OmsProcessCode Oms::process_one_transport_update() noexcept {
     const OmsRequestId resolved_request_id = tracked->oms_request_id;
     const internal::TimestampNs decision_ts_ns = tracked->oms_decision_ts_ns;
     const internal::TimestampNs transport_ts_ns = tracked->transport_submit_ts_ns;
+    const std::optional<internal::PriceTicks> tracked_limit_price_ticks =
+        tracked->live_limit_price_ticks;
 
     const auto apply_result = order_store_.apply_lifecycle_event(event);
     if (!apply_result.ok) {
@@ -227,14 +244,50 @@ OmsProcessCode Oms::process_one_transport_update() noexcept {
 
     if (apply_result.fill_qty_lots > 0) {
         risk_engine_.on_fill(apply_result.event_id, apply_result.fill_qty_lots);
+        if (tracked_limit_price_ticks.has_value() && *tracked_limit_price_ticks > 0) {
+            const std::int64_t released_capital_ticks =
+                static_cast<std::int64_t>(apply_result.fill_qty_lots) *
+                static_cast<std::int64_t>(*tracked_limit_price_ticks);
+            risk_engine_.on_capital_released(released_capital_ticks);
+        }
         if (const auto* fill = std::get_if<OrderFill>(&event.data)) {
             const std::int64_t fill_value =
                 static_cast<std::int64_t>(fill->fill_price_ticks) *
                 static_cast<std::int64_t>(apply_result.fill_qty_lots);
             if (fill->side == internal::Side::kBuy || fill->side == internal::Side::kBid) {
                 session_net_ticks_ -= fill_value;
-            } else {
+            } else if (fill->side == internal::Side::kSell || fill->side == internal::Side::kAsk) {
                 session_net_ticks_ += fill_value;
+            } else {
+                ++unknown_fill_side_count_;
+                emit_audit(predex::core::audit::AuditEvent{
+                    .kind = predex::core::audit::AuditKind::kPipelineProbe,
+                    .ts_ns = event.recv_ts_ns,
+                    .shard_id = origin.shard_id,
+                    .signal_id = origin.signal_id,
+                    .group_id = origin.group_id,
+                    .local_intent_id = origin.local_intent_id,
+                    .oms_request_id = resolved_request_id,
+                    .exchange = internal::ExchangeId::kKalshi,
+                    .event_id = origin.event_id,
+                    .market_id = origin.market_id,
+                    .side = internal::Side::kUnknown,
+                    .leg_index = origin.leg_index,
+                    .leg_count = origin.leg_count,
+                    .qty_lots = apply_result.fill_qty_lots,
+                    .price_ticks = fill->fill_price_ticks,
+                    .score = static_cast<std::int64_t>(unknown_fill_side_count_),
+                    .lifecycle_kind = static_cast<std::uint8_t>(event.kind),
+                    .order_status = static_cast<std::uint8_t>(event.status),
+                });
+                std::fprintf(stderr,
+                             "[oms] unknown fill side (count=%llu, oms_request_id=%llu, "
+                             "action=%s, side=%s, is_yes=%d)\n",
+                             static_cast<unsigned long long>(unknown_fill_side_count_),
+                             static_cast<unsigned long long>(resolved_request_id),
+                             fill->raw_action.c_str(),
+                             fill->raw_side.c_str(),
+                             static_cast<int>(fill->raw_is_yes));
             }
             if (max_session_loss_ticks_ > 0 &&
                 session_net_ticks_ < -max_session_loss_ticks_ &&
@@ -245,6 +298,13 @@ OmsProcessCode Oms::process_one_transport_update() noexcept {
         }
     }
     if (apply_result.is_terminal) {
+        if (tracked_limit_price_ticks.has_value() && *tracked_limit_price_ticks > 0 &&
+            apply_result.remaining_open_qty_lots > 0) {
+            const std::int64_t released_capital_ticks =
+                static_cast<std::int64_t>(apply_result.remaining_open_qty_lots) *
+                static_cast<std::int64_t>(*tracked_limit_price_ticks);
+            risk_engine_.on_capital_released(released_capital_ticks);
+        }
         risk_engine_.on_order_terminal(apply_result.event_id,
                                        apply_result.remaining_open_qty_lots);
     }

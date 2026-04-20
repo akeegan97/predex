@@ -35,6 +35,10 @@ void RiskEngine::on_fill(internal::EventId event_id,
     event_risk.exposure_lots = state.target_event_exposure_lots;
 }
 
+void RiskEngine::on_capital_released(std::int64_t released_capital_ticks) noexcept {
+    GlobalRiskManager::on_capital_released(released_capital_ticks, global_state_);
+}
+
 void RiskEngine::on_order_terminal(internal::EventId event_id,
                                     internal::QtyLots remaining_open_qty_lots) noexcept {
     GlobalRiskState state = make_state_for_event(event_id);
@@ -59,6 +63,7 @@ GlobalRiskState RiskEngine::make_state_for_event(
         .open_orders_for_target_event = 0,
         .global_exposure_lots = global_state_.global_exposure_lots,
         .target_event_exposure_lots = 0,
+        .locked_capital_ticks = global_state_.locked_capital_ticks,
     };
     const auto it = event_state_.find(event_id);
     if (it != event_state_.end()) {

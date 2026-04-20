@@ -79,6 +79,7 @@ namespace predex{
         std::string private_ws_endpoint{"wss://api.elections.kalshi.com/trade-api/ws/v2"};
         std::vector<std::string> private_ws_channels;
         std::int64_t max_session_loss_ticks{0};
+        std::int64_t available_capital_ticks{0};
     };
 
     struct LocalRiskConfig {

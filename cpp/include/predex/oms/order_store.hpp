@@ -1,8 +1,8 @@
 #pragma once
-
 #include <cstddef>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/oms/oms_types.hpp"

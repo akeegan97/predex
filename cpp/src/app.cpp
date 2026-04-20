@@ -21,6 +21,7 @@
 #include "predex/websocket/kalshi/rest_client.hpp"
 #include "predex/websocket/kalshi/ws_adapter.hpp"
 #include "predex/utils/spsc_queue.hpp"
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -63,6 +64,32 @@ namespace predex {
                 return 0;
             }
             return static_cast<internal::QtyLots>(parsed);
+        }
+
+        [[nodiscard]] std::optional<std::uint64_t> read_u64_field(
+            const nlohmann::json& object,
+            const char* key) {
+            if (!object.contains(key)) {
+                return std::nullopt;
+            }
+            const auto& value = object[key];
+            if (value.is_number_unsigned()) {
+                return value.get<std::uint64_t>();
+            }
+            if (value.is_number_integer()) {
+                const auto as_i64 = value.get<std::int64_t>();
+                if (as_i64 >= 0) {
+                    return static_cast<std::uint64_t>(as_i64);
+                }
+            }
+            if (value.is_string()) {
+                try {
+                    return static_cast<std::uint64_t>(std::stoull(value.get<std::string>()));
+                } catch (...) {
+                    return std::nullopt;
+                }
+            }
+            return std::nullopt;
         }
     } // namespace
 
@@ -111,6 +138,7 @@ namespace predex {
         std::vector<core::routing::kalshi::MarketRegistryEntry> market_registry_entries;
         std::unordered_map<internal::MarketId, std::string> market_ticker_by_id_;
         std::unordered_map<std::string, std::size_t> registry_index_by_ticker_;
+        std::unordered_map<std::uint64_t, std::uint64_t> oms_ws_last_seq_by_sid_;
         static std::vector<predex::core::routing::kalshi::MarketRegistryEntry>
         build_market_registry_entries(const AppConfig& config) {
             std::vector<predex::core::routing::kalshi::MarketRegistryEntry> entries;
@@ -423,6 +451,10 @@ namespace predex {
             audit_input_queue_ptrs,
             config.audit.output_path);
 
+        predex::core::oms::kalshi::GlobalRiskLimits global_risk_limits{};
+        global_risk_limits.available_capital_ticks = config.oms_transport.available_capital_ticks;
+        global_risk_limits.trading_enabled = config.local_risk.trading_enabled;
+
         oms = std::make_unique<Oms>(
             shard_to_oms_intent_queue_ptrs,
             oms_to_shard_decision_queue_ptrs,
@@ -434,7 +466,7 @@ namespace predex {
                 .rest_update_queue = oms_rest_update_queue.get(),
                 .ws_update_queue = oms_ws_update_queue.get(),
             },
-            predex::core::oms::kalshi::GlobalRiskManager{},
+            predex::core::oms::kalshi::GlobalRiskManager{global_risk_limits},
             oms_audit_queue.get(),
             config.oms_transport.max_session_loss_ticks);
 
@@ -506,6 +538,7 @@ namespace predex {
                 set_error(oms_ws_session.last_error());
                 return false;
             }
+            oms_ws_last_seq_by_sid_.clear();
 
             for (const auto& channel : config.oms_transport.private_ws_channels) {
                 if (!oms_ws_session.subscribe(channel)) {
@@ -822,6 +855,7 @@ namespace predex {
                 if (!oms_ws_session.connect()) {
                     continue;
                 }
+                oms_ws_last_seq_by_sid_.clear();
                 bool subscribe_ok = true;
                 for (const auto& channel : config.oms_transport.private_ws_channels) {
                     if (!oms_ws_session.subscribe(channel)) {
@@ -846,6 +880,31 @@ namespace predex {
             }
 
             reconnect_attempts = 0;
+            try {
+                const auto envelope = nlohmann::json::parse(recv_result.payload);
+                if (envelope.is_object()) {
+                    const auto sid = read_u64_field(envelope, "sid");
+                    const auto seq = read_u64_field(envelope, "seq");
+                    if (sid.has_value() && seq.has_value()) {
+                        auto [it, inserted] = oms_ws_last_seq_by_sid_.emplace(*sid, *seq);
+                        if (!inserted) {
+                            const auto last_seq = it->second;
+                            if (*seq <= last_seq) {
+                                continue;
+                            }
+                            if (*seq != last_seq + 1) {
+                                if (!reconcile_open_orders_from_rest(/*is_startup=*/false)) {
+                                    running.store(false, std::memory_order_release);
+                                    break;
+                                }
+                            }
+                            it->second = *seq;
+                        }
+                    }
+                }
+            } catch (const std::exception&) {
+                // Let the parser handle invalid payload errors consistently.
+            }
             const auto parse_status =
                 oms_private_ws_parser.parse_message(recv_result.payload, parsed_events);
             if (parse_status == predex::core::oms::kalshi::PrivateWsParseStatus::kInvalidJson) {
@@ -869,92 +928,108 @@ namespace predex {
     }
 
     [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest(bool is_startup) {
-        const auto snapshot = oms_rest_client.fetch_open_orders();
-        if (!snapshot.ok) {
-            set_error("Failed to reconcile open orders from REST: " + snapshot.error);
-            return false;
-        }
+        std::optional<std::string> cursor;
+        constexpr std::size_t kMaxOpenOrdersPages = 128;
+        std::size_t pages_fetched = 0;
 
-        const auto now_ns = static_cast<predex::internal::TimestampNs>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-                .count());
-
-        for (const auto& order : snapshot.orders) {
-            // fetch_open_orders returns only open orders, but guard against terminal status.
-            if (order.status == "canceled" || order.status == "executed") {
-                continue;
+        while (pages_fetched < kMaxOpenOrdersPages) {
+            const auto snapshot = oms_rest_client.fetch_open_orders(
+                predex::websocket::kalshi::kOpenOrderFetchLimit,
+                cursor);
+            if (!snapshot.ok) {
+                set_error("Failed to reconcile open orders from REST: " + snapshot.error);
+                return false;
             }
 
-            if (is_startup) {
-                // Startup path: orders are from a prior session. Adopt them into OMS with
-                // synthetic tracking so the kill switch can reach them and fills are
-                // accounted for in session P&L.
-                const auto reg_it = registry_index_by_ticker_.find(order.ticker);
-                if (reg_it == registry_index_by_ticker_.end()) {
+            const auto now_ns = static_cast<predex::internal::TimestampNs>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+
+            for (const auto& order : snapshot.orders) {
+                // fetch_open_orders returns only open orders, but guard against terminal status.
+                if (order.status == "canceled" || order.status == "executed") {
+                    continue;
+                }
+
+                if (is_startup) {
+                    // Startup path: orders are from a prior session. Adopt them into OMS with
+                    // synthetic tracking so the kill switch can reach them and fills are
+                    // accounted for in session P&L.
+                    const auto reg_it = registry_index_by_ticker_.find(order.ticker);
+                    if (reg_it == registry_index_by_ticker_.end()) {
+                        std::fprintf(stdout,
+                            "[reconcile] orphaned order on unrecognized ticker=%s, "
+                            "skipping: client_order_id=%s exchange_order_id=%s\n",
+                            order.ticker.c_str(),
+                            order.client_order_id.c_str(), order.order_id.c_str());
+                        std::fflush(stdout);
+                        continue;
+                    }
+                    const auto& reg_entry = market_registry_entries[reg_it->second];
+                    const auto shard_id = static_cast<std::uint16_t>(
+                        reg_entry.affinity_key_ % config.pipeline.shard_count);
+                    predex::core::oms::kalshi::OrderState state{
+                        .origin = predex::core::oms::kalshi::IntentOrigin{
+                            .shard_id = shard_id,
+                            .affinity_key = reg_entry.affinity_key_,
+                            .event_id = reg_entry.event_id_,
+                            .market_id = reg_entry.market_id_,
+                        },
+                        .oms_request_id = 0,
+                        .status = predex::core::oms::kalshi::OmsOrderStatus::kLive,
+                        .client_order_id = order.client_order_id,
+                        .exchange_order_id = order.order_id,
+                        .original_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
+                        .live_qty_lots = parse_count_fp_to_lots(order.remaining_count_fp),
+                        .cum_fill_qty_lots = parse_count_fp_to_lots(order.fill_count_fp),
+                        .last_update_ts_ns = now_ns,
+                    };
+                    const auto side = order.side == "yes" ? predex::internal::Side::kBuy
+                                    : order.side == "no"  ? predex::internal::Side::kSell
+                                                          : predex::internal::Side::kUnknown;
+                    const auto assigned_id = oms->seed_orphaned_order(std::move(state), side);
                     std::fprintf(stdout,
-                        "[reconcile] orphaned order on unrecognized ticker=%s, "
-                        "skipping: client_order_id=%s exchange_order_id=%s\n",
+                        "[reconcile] adopted orphaned order: ticker=%s "
+                        "client_order_id=%s exchange_order_id=%s "
+                        "assigned_oms_request_id=%llu\n",
                         order.ticker.c_str(),
-                        order.client_order_id.c_str(), order.order_id.c_str());
+                        order.client_order_id.c_str(), order.order_id.c_str(),
+                        static_cast<unsigned long long>(assigned_id));
                     std::fflush(stdout);
                     continue;
                 }
-                const auto& reg_entry = market_registry_entries[reg_it->second];
-                const auto shard_id = static_cast<std::uint16_t>(
-                    reg_entry.affinity_key_ % config.pipeline.shard_count);
-                predex::core::oms::kalshi::OrderState state{
-                    .origin = predex::core::oms::kalshi::IntentOrigin{
-                        .shard_id = shard_id,
-                        .affinity_key = reg_entry.affinity_key_,
-                        .event_id = reg_entry.event_id_,
-                        .market_id = reg_entry.market_id_,
-                    },
+
+                // Reconnect path: orders may belong to the current session and are already tracked
+                // in the OMS by client_order_id. Push a lifecycle event so the OMS can reconcile.
+                predex::core::oms::kalshi::OrderLifecycleEvent event{
+                    .origin = {},
                     .oms_request_id = 0,
+                    .kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kAck,
                     .status = predex::core::oms::kalshi::OmsOrderStatus::kLive,
                     .client_order_id = order.client_order_id,
                     .exchange_order_id = order.order_id,
-                    .original_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
-                    .live_qty_lots = parse_count_fp_to_lots(order.remaining_count_fp),
-                    .cum_fill_qty_lots = parse_count_fp_to_lots(order.fill_count_fp),
-                    .last_update_ts_ns = now_ns,
+                    .recv_ts_ns = now_ns,
+                    .data = predex::core::oms::kalshi::OrderAck{
+                        .accepted_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
+                    },
                 };
-                const auto side = order.side == "yes" ? predex::internal::Side::kBuy
-                                : order.side == "no"  ? predex::internal::Side::kSell
-                                                      : predex::internal::Side::kUnknown;
-                const auto assigned_id = oms->seed_orphaned_order(std::move(state), side);
-                std::fprintf(stdout,
-                    "[reconcile] adopted orphaned order: ticker=%s "
-                    "client_order_id=%s exchange_order_id=%s "
-                    "assigned_oms_request_id=%llu\n",
-                    order.ticker.c_str(),
-                    order.client_order_id.c_str(), order.order_id.c_str(),
-                    static_cast<unsigned long long>(assigned_id));
-                std::fflush(stdout);
-                continue;
+                if (!oms_ws_update_queue->try_push(std::move(event))) {
+                    set_error("OMS transport update queue backpressured during reconciliation");
+                    return false;
+                }
             }
 
-            // Reconnect path: orders may belong to the current session and are already tracked
-            // in the OMS by client_order_id. Push a lifecycle event so the OMS can reconcile.
-            predex::core::oms::kalshi::OrderLifecycleEvent event{
-                .origin = {},
-                .oms_request_id = 0,
-                .kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kAck,
-                .status = predex::core::oms::kalshi::OmsOrderStatus::kLive,
-                .client_order_id = order.client_order_id,
-                .exchange_order_id = order.order_id,
-                .recv_ts_ns = now_ns,
-                .data = predex::core::oms::kalshi::OrderAck{
-                    .accepted_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
-                },
-            };
-            if (!oms_ws_update_queue->try_push(std::move(event))) {
-                set_error("OMS transport update queue backpressured during reconciliation");
-                return false;
+            ++pages_fetched;
+            if (!snapshot.next_cursor.has_value() || snapshot.next_cursor->empty() ||
+                (cursor.has_value() && *snapshot.next_cursor == *cursor)) {
+                return true;
             }
+            cursor = snapshot.next_cursor;
         }
 
-        return true;
+        set_error("Open-orders reconciliation exceeded pagination safety limit");
+        return false;
     }
 
     void App::Runtime::router_loop(const std::stop_token& stop_token) const {
@@ -1039,7 +1114,7 @@ namespace predex {
         }
         // Tail drain: cancel all live orders (enqueue cancel cmds), then drain remaining
         // intents — halted_ rejects them so no new orders are submitted.
-        oms->cancel_all_live_orders();
+        static_cast<void>(oms->cancel_all_live_orders());
         predex::core::oms::kalshi::OmsProcessCode tail_code{};
         do {
             const auto result = oms->pump(
@@ -1132,6 +1207,7 @@ namespace predex {
         const std::uint64_t intents = oms ? oms->processed_intent_count() : 0;
         const std::uint64_t transport_updates = oms ? oms->processed_transport_update_count() : 0;
         const std::uint64_t rejected = oms ? oms->rejected_intent_count() : 0;
+        const std::uint64_t unknown_fill_side = oms ? oms->unknown_fill_side_count() : 0;
 
         std::size_t desynced_events = 0;
         for (const auto& event_store : event_stores) {
@@ -1144,6 +1220,7 @@ namespace predex {
         std::fprintf(stdout,
             "[%s] STATUS | halted=%s | pnl_ticks=%+lld"
             " | live_orders=%zu | intents=%llu | rejected=%llu | transport_updates=%llu"
+            " | unknown_fill_side=%llu"
             " | router_frames=%zu | router_drops=%zu | desynced_events=%zu\n",
             time_buf,
             halted ? "true" : "false",
@@ -1152,6 +1229,7 @@ namespace predex {
             static_cast<unsigned long long>(intents),
             static_cast<unsigned long long>(rejected),
             static_cast<unsigned long long>(transport_updates),
+            static_cast<unsigned long long>(unknown_fill_side),
             telem.processed_frames_,
             telem.dropped_frames_,
             desynced_events);
@@ -1204,7 +1282,25 @@ namespace predex {
             predex::core::oms::kalshi::CancelOrderCmd cancel_cmd{};
             while (oms_cancel_queue != nullptr && oms_cancel_queue->try_pop(cancel_cmd)) {
                 if (config.oms_transport.enabled) {
-                    oms_rest_client.cancel_order(cancel_cmd);
+                    constexpr std::uint32_t kCancelRetryCount = 3;
+                    bool canceled = false;
+                    std::string last_cancel_error;
+                    for (std::uint32_t attempt = 0; attempt < kCancelRetryCount; ++attempt) {
+                        const auto cancel_result = oms_rest_client.cancel_order(cancel_cmd);
+                        if (cancel_result.ok) {
+                            canceled = true;
+                            break;
+                        }
+                        last_cancel_error = cancel_result.error;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                    if (!canceled) {
+                        std::fprintf(stderr,
+                                     "[stop] failed to cancel order (oms_request_id=%llu, client_order_id=%s): %s\n",
+                                     static_cast<unsigned long long>(cancel_cmd.oms_request_id),
+                                     cancel_cmd.client_order_id.c_str(),
+                                     last_cancel_error.c_str());
+                    }
                 }
             }
         }

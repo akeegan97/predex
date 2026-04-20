@@ -229,7 +229,7 @@ namespace predex::core::shards::kalshi{
                 markets.push_back(EventMarketView{
                     .market_id = definition.market_id,
                     .lifecycle = MarketLifecycleState{
-                        .close_time_s = definition.close_time_s,
+                        .close_ts_s = definition.close_time_s,
                         .tradeable = definition.tradeable,
                     },
                 });
@@ -270,7 +270,7 @@ namespace predex::core::shards::kalshi{
                             .market = EventMarketView{
                                 .market_id = market_definition.market_id,
                                 .lifecycle = MarketLifecycleState{
-                                    .close_time_s = market_definition.close_time_s,
+                                    .close_ts_s = market_definition.close_time_s,
                                     .tradeable = market_definition.tradeable,
                                 },
                             },
@@ -303,7 +303,7 @@ namespace predex::core::shards::kalshi{
                     state.market = EventMarketView{
                         .market_id = definition.markets.front().market_id,
                         .lifecycle = MarketLifecycleState{
-                            .close_time_s = definition.markets.front().close_time_s,
+                            .close_ts_s = definition.markets.front().close_time_s,
                             .tradeable = definition.markets.front().tradeable,
                         },
                     };
@@ -327,8 +327,8 @@ namespace predex::core::shards::kalshi{
             }
         }
 
-        EventMarketView* find_market_view(EventDerivedState& state,
-                                          internal::MarketId market_id) noexcept {
+        EventMarketView* find_market_view_mut(EventDerivedState& state,
+                                              internal::MarketId market_id) noexcept {
             if (auto* chain = std::get_if<MonotonicChainState>(&state)) {
                 auto it = chain->market_index_by_id.find(market_id);
                 if (it != chain->market_index_by_id.end()) {
@@ -415,7 +415,7 @@ namespace predex::core::shards::kalshi{
             if (lifecycle == nullptr) {
                 return EventApplyCode::kParseFail;
             }
-            auto* view = find_market_view(derived_state, event.meta.market_id);
+            auto* view = find_market_view_mut(derived_state, event.meta.market_id);
             if (view == nullptr) {
                 return EventApplyCode::kRejected;
             }

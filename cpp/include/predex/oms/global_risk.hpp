@@ -15,12 +15,14 @@ constexpr internal::QtyLots kDefaultMaxGlobalExposureLots =
     std::numeric_limits<internal::QtyLots>::max() / 4;
 constexpr internal::QtyLots kDefaultMaxEventExposureLots =
     std::numeric_limits<internal::QtyLots>::max() / 4;
+constexpr std::int64_t kDefaultAvailableCapitalTicks = 0;
 
 struct GlobalRiskLimits {
     std::size_t max_open_orders_global{kDefaultMaxOpenOrdersGlobal};
     std::size_t max_open_orders_per_event{kDefaultMaxOpenOrdersPerEvent};
     internal::QtyLots max_global_exposure_lots{kDefaultMaxGlobalExposureLots};
     internal::QtyLots max_event_exposure_lots{kDefaultMaxEventExposureLots};
+    std::int64_t available_capital_ticks{kDefaultAvailableCapitalTicks};
     bool trading_enabled{true};
 };
 
@@ -29,6 +31,7 @@ struct GlobalRiskState {
     std::size_t open_orders_for_target_event{0};
     internal::QtyLots global_exposure_lots{0};
     internal::QtyLots target_event_exposure_lots{0};
+    std::int64_t locked_capital_ticks{0};
 };
 
 class GlobalRiskManager {
@@ -110,6 +113,43 @@ class GlobalRiskManager {
             };
         }
 
+        if (limits_.available_capital_ticks > 0) {
+            if (!intent.limit_price_ticks.has_value() || *intent.limit_price_ticks <= 0) {
+                return IntentDecision{
+                    .code = IntentDecisionCode::kRejected,
+                    .data = RejectedIntent{
+                        .intent = intent,
+                        .reason = IntentRejectReason::kInvalidIntent,
+                    },
+                    .decision_ts_ns = decision_ts_ns,
+                };
+            }
+            const std::int64_t order_capital_ticks =
+                static_cast<std::int64_t>(intent.qty_lots) *
+                static_cast<std::int64_t>(*intent.limit_price_ticks);
+            if (order_capital_ticks <= 0) {
+                return IntentDecision{
+                    .code = IntentDecisionCode::kRejected,
+                    .data = RejectedIntent{
+                        .intent = intent,
+                        .reason = IntentRejectReason::kInvalidIntent,
+                    },
+                    .decision_ts_ns = decision_ts_ns,
+                };
+            }
+            if (state.locked_capital_ticks + order_capital_ticks >
+                limits_.available_capital_ticks) {
+                return IntentDecision{
+                    .code = IntentDecisionCode::kRejected,
+                    .data = RejectedIntent{
+                        .intent = intent,
+                        .reason = IntentRejectReason::kGlobalRisk,
+                    },
+                    .decision_ts_ns = decision_ts_ns,
+                };
+            }
+        }
+
         return IntentDecision{
             .code = IntentDecisionCode::kAccepted,
             .data = AcceptedIntent{
@@ -127,6 +167,12 @@ class GlobalRiskManager {
         ++state.open_orders_for_target_event;
         state.global_exposure_lots += accepted_intent.intent.qty_lots;
         state.target_event_exposure_lots += accepted_intent.intent.qty_lots;
+        if (accepted_intent.intent.limit_price_ticks.has_value() &&
+            *accepted_intent.intent.limit_price_ticks > 0) {
+            state.locked_capital_ticks +=
+                static_cast<std::int64_t>(accepted_intent.intent.qty_lots) *
+                static_cast<std::int64_t>(*accepted_intent.intent.limit_price_ticks);
+        }
     }
 
     static void on_order_terminal(internal::QtyLots remaining_open_qty_lots,
@@ -158,10 +204,30 @@ class GlobalRiskManager {
             saturating_subtract(state.target_event_exposure_lots, fill_qty_lots);
     }
 
+    static void on_capital_released(std::int64_t released_capital_ticks,
+                                    GlobalRiskState& state) noexcept {
+        if (released_capital_ticks <= 0) {
+            return;
+        }
+        state.locked_capital_ticks =
+            saturating_subtract_i64(state.locked_capital_ticks, released_capital_ticks);
+    }
+
   private:
     GlobalRiskLimits limits_{};
     static internal::QtyLots saturating_subtract(internal::QtyLots value,
                                                  internal::QtyLots delta) noexcept {
+        if (delta <= 0) {
+            return value;
+        }
+        if (delta >= value) {
+            return 0;
+        }
+        return value - delta;
+    }
+
+    static std::int64_t saturating_subtract_i64(std::int64_t value,
+                                                std::int64_t delta) noexcept {
         if (delta <= 0) {
             return value;
         }

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 
 #include <string_view>
 #include <utility>
@@ -167,17 +168,18 @@ void build_submit_order_body(const predex::core::oms::kalshi::SubmitOrderCmd& co
 }
 
 void build_modify_order_body(const predex::core::oms::kalshi::ModifyOrderCmd& command,
+                             std::string_view updated_client_order_id,
     //NOLINTNEXTLINE
                              std::string_view action,
                              std::string_view side,
                              std::string& body) {
     body.clear();
-    body.reserve(192 + (2 * command.client_order_id.size()));
+    body.reserve(192 + command.client_order_id.size() + updated_client_order_id.size());
     body.push_back('{');
     body.append("\"client_order_id\":");
     append_json_escaped(body, command.client_order_id);
     body.append(",\"updated_client_order_id\":");
-    append_json_escaped(body, command.client_order_id);
+    append_json_escaped(body, updated_client_order_id);
     body.append(",\"side\":");
     append_json_escaped(body, side);
     body.append(",\"action\":");
@@ -200,12 +202,47 @@ void build_order_target(std::string& target, std::string_view exchange_order_id,
     target.append(suffix);
 }
 
-void build_open_orders_target(std::string& target, std::size_t limit) {
+[[nodiscard]] bool is_unreserved(char car) noexcept {
+    const unsigned char uch = static_cast<unsigned char>(car);
+    return std::isalnum(uch) != 0 || car == '-' || car == '_' || car == '.' || car == '~';
+}
+
+void append_url_encoded(std::string& out, std::string_view value) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    for (const char car : value) {
+        if (is_unreserved(car)) {
+            out.push_back(car);
+            continue;
+        }
+        out.push_back('%');
+        const auto uch = static_cast<unsigned char>(car);
+        out.push_back(kHex[(uch >> 4) & 0x0F]);
+        out.push_back(kHex[uch & 0x0F]);
+    }
+}
+
+void build_open_orders_target(std::string& target,
+                              std::size_t limit,
+                              const std::optional<std::string>& cursor) {
     constexpr std::string_view kPrefix = "/trade-api/v2/portfolio/orders?limit=";
     target.clear();
-    target.reserve(kPrefix.size() + 24);
+    target.reserve(kPrefix.size() + 128);
     target.append(kPrefix);
     target.append(std::to_string(limit));
+    if (cursor.has_value() && !cursor->empty()) {
+        target.append("&cursor=");
+        append_url_encoded(target, *cursor);
+    }
+}
+
+[[nodiscard]] std::string build_updated_client_order_id(std::string_view current_client_order_id) {
+    thread_local std::uint64_t amend_seq = 0;
+    std::string updated_client_order_id;
+    updated_client_order_id.reserve(current_client_order_id.size() + 24);
+    updated_client_order_id.append(current_client_order_id);
+    updated_client_order_id.append("-am");
+    updated_client_order_id.append(std::to_string(++amend_seq));
+    return updated_client_order_id;
 }
 
 } // namespace
@@ -274,16 +311,21 @@ RestCallResult RestClient::modify_order(
         ? "buy"
         : (command.replacement_intent.side == predex::internal::Side::kSell ? "sell" : "buy");
     const std::string side = side_to_string(command.replacement_intent.side);
+    const std::string updated_client_order_id =
+        build_updated_client_order_id(command.client_order_id);
     thread_local std::string body_scratch;
-    build_modify_order_body(command, action, side, body_scratch);
+    build_modify_order_body(
+        command, updated_client_order_id, action, side, body_scratch);
     thread_local std::string target_scratch;
     build_order_target(target_scratch, *command.exchange_order_id, "/amend");
     return call_json_api("POST", target_scratch, body_scratch);
 }
 
-OpenOrdersResult RestClient::fetch_open_orders(std::size_t limit) const {
+OpenOrdersResult RestClient::fetch_open_orders(
+    std::size_t limit,
+    std::optional<std::string> cursor) const {
     thread_local std::string target_scratch;
-    build_open_orders_target(target_scratch, limit);
+    build_open_orders_target(target_scratch, limit, cursor);
     RestCallResult result = call_json_api("GET", target_scratch, "");
     if (!result.ok) {
         return {.ok = false, .error = result.error};
@@ -309,6 +351,12 @@ OpenOrdersResult RestClient::fetch_open_orders(std::size_t limit) const {
                 .remaining_count_fp = order.value("remaining_count_fp", "0.00"),
                 .initial_count_fp = order.value("initial_count_fp", "0.00"),
             });
+        }
+        if (parsed.contains("cursor") && parsed["cursor"].is_string()) {
+            const auto parsed_cursor = parsed["cursor"].get<std::string>();
+            if (!parsed_cursor.empty()) {
+                open_orders.next_cursor = parsed_cursor;
+            }
         }
     } catch (const std::exception& exception) {
         return {.ok = false, .error = exception.what()};

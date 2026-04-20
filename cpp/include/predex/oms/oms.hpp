@@ -68,7 +68,8 @@ class Oms {
     void request_hard_halt() noexcept;
 
     // OMS thread only: iterates OrderStore and enqueues CancelOrderCmd for every live order.
-    void cancel_all_live_orders() noexcept;
+    // Returns false if enqueue backpressure prevented one or more cancels.
+    [[nodiscard]] bool cancel_all_live_orders() noexcept;
 
     [[nodiscard]] bool is_halted() const noexcept;
     [[nodiscard]] std::int64_t session_net_ticks() const noexcept;
@@ -82,6 +83,8 @@ class Oms {
     [[nodiscard]] std::uint64_t processed_transport_update_count() const noexcept;
 
     [[nodiscard]] std::uint64_t rejected_intent_count() const noexcept;
+
+    [[nodiscard]] std::uint64_t unknown_fill_side_count() const noexcept;
 
   private:
     RiskEngine risk_engine_;
@@ -100,6 +103,7 @@ class Oms {
     std::uint64_t processed_intent_count_{0};
     std::uint64_t processed_transport_update_count_{0};
     std::uint64_t rejected_intent_count_{0};
+    std::uint64_t unknown_fill_side_count_{0};
 
     std::atomic<std::uint8_t> halt_mode_{0};
     bool hard_halt_cancel_triggered_{false};

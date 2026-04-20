@@ -206,6 +206,9 @@ struct OrderFill {
     internal::PriceTicks fill_price_ticks{0};
     internal::Side side{internal::Side::kUnknown};
     OmsLiquidity liquidity{OmsLiquidity::kUnknown};
+    std::string raw_action;
+    std::string raw_side;
+    std::int8_t raw_is_yes{-1}; // -1 unknown, 0 false, 1 true
 };
 
 struct CancelAck {};

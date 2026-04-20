@@ -24,8 +24,8 @@ This file tracks performance work that still matters, but is deliberately deferr
    - Goal: preserve safety while reducing lifecycle overhead where profiling shows it matters.
 
 4. Make idle behavior configurable.
-   - Current state: router, shard, and logger loops use `yield()` when idle.
-   - Goal: support policy choices like sleep, yield, spin, or spin-then-yield depending on deployment environment.
+   - Current state: router, shard, OMS, logger, and audit loops use a spin-then-yield-then-sleep idle policy with configurable thresholds.
+   - Goal: expose per-thread policy tuning in the trader config for deployment-specific environments.
 
 ## Routing And Sharding Work
 
@@ -35,8 +35,19 @@ This file tracks performance work that still matters, but is deliberately deferr
 2. Reduce per-message dynamic allocation in routing and parse output.
    - Goal: avoid accidental allocator pressure in steady-state market-data flow.
 
-3. Revisit shard-affinity policy once discovery/config tooling exists.
-   - Goal: make shard assignment intentional and stable under larger market sets.
+## OMS Work
+
+1. REST rate limiting.
+   - Current state: no throttle on submit/cancel/modify calls to `oms_rest_client`.
+   - Goal: add a per-second rate limiter so a burst of strategy signals does not blow through exchange rate limits.
+
+2. Soft halt logging.
+   - Current state: `request_soft_halt()` fires silently.
+   - Goal: emit an audit event and a stderr line when the drawdown circuit breaker trips so operators can observe the trigger.
+
+3. Fills during OMS WS outage.
+   - Current state: fills that arrive on the exchange while the private WS is down are not recovered in `reconcile_open_orders_from_rest(is_startup=false)` because the REST snapshot only reflects remaining open qty, not completed fills.
+   - Goal: query fill history after reconnect and apply missing fills to `session_net_ticks_`. Deferred as a rare edge case.
 
 ## Logging And Tape Work
 
@@ -44,25 +55,22 @@ This file tracks performance work that still matters, but is deliberately deferr
    - Current state: one output path, no runtime rotation policy.
 
 2. Add lightweight tape inspection and replay tools.
-   - Current state: tape format is simple, but first-party tooling is still missing.
+   - Current state: tape format is simple; Python tooling for decode and replay is planned.
 
 3. Measure logger throughput under sustained shard fan-in.
    - Goal: understand when one logger thread remains sufficient and when partitioned logging becomes necessary.
 
-## Future Runtime Work
+## Replay Tooling
 
-These are real future items, but they are not implemented today:
-
-1. Strategy and risk hooks colocated with shards
-2. OMS and order transport
-3. replay executable
-4. Python discovery, config synthesis, and backtesting tooling
+1. Build a Python tape decoder.
+2. Add a Python replay driver that can emit JSONL or feed synthetic consumers.
+3. Introduce a dedicated replay executable if the C++ side needs one.
 
 ## Benchmark Discipline
 
 For each serious performance PR:
 
-1. capture baseline throughput and latency
-2. change one subsystem at a time
-3. rerun the same workload
-4. keep correctness checks green
+1. Capture baseline throughput and latency.
+2. Change one subsystem at a time.
+3. Rerun the same workload.
+4. Keep correctness checks green.

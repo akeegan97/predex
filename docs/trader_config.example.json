@@ -5,6 +5,9 @@
       "trade",
       "orderbook_delta"
     ],
+    "lifecycle_channels": [
+      "market_lifecycle_v2"
+    ],
     "market_tickers": [
       "KXPGATOUR-VATO26-JSPA",
       "KXPGATOUR-VATO26-HOVL",
@@ -23,7 +26,9 @@
       "event_id": 88422102,
       "affinity_key": 17041,
       "topology_kind": "monotonic_chain",
-      "strike_key": 1000000
+      "strike_key": 1000000,
+      "close_time_s": 1750000000,
+      "tradeable": true
     },
     {
       "market_ticker": "KXPGATOUR-VATO26-HOVL",
@@ -31,7 +36,9 @@
       "event_id": 88422102,
       "affinity_key": 17041,
       "topology_kind": "monotonic_chain",
-      "strike_key": 2000000
+      "strike_key": 2000000,
+      "close_time_s": 1750000000,
+      "tradeable": true
     },
     {
       "market_ticker": "KXWMARMAD-26-UCLA",
@@ -39,7 +46,9 @@
       "event_id": 55110021,
       "affinity_key": 2890,
       "topology_kind": "mutually_exclusive",
-      "strike_key": 0
+      "strike_key": 0,
+      "close_time_s": 1750100000,
+      "tradeable": true
     },
     {
       "market_ticker": "KXWMARMAD-26-SCAR",
@@ -47,7 +56,9 @@
       "event_id": 55110021,
       "affinity_key": 2890,
       "topology_kind": "mutually_exclusive",
-      "strike_key": 0
+      "strike_key": 0,
+      "close_time_s": 1750100000,
+      "tradeable": true
     }
   ],
   "pipeline": {
@@ -70,6 +81,12 @@
     "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
     "private_ws_channels": [
       "user_orders"
-    ]
+    ],
+    "max_session_loss_ticks": 0
+  },
+  "local_risk": {
+    "max_net_position_lots_per_market": 0,
+    "min_seconds_to_close": 0,
+    "trading_enabled": true
   }
 }

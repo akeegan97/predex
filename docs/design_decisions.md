@@ -8,7 +8,7 @@ Each stage boundary uses a single-producer single-consumer lock-free queue rathe
 
 The SPSC constraint is strict: exactly one thread writes and one thread reads each queue during steady-state operation. Given that invariant, SPSC queues require no compare-and-swap, no contention, and no memory barriers beyond the acquire/release pair at head and tail. A mutex adds at minimum a kernel syscall on contention and a cache-line ownership transfer on every acquire. A general-purpose concurrent queue adds overhead even when there is provably only one producer and one consumer.
 
-The queue topology in `ownership_invariants.md` is designed so the SPSC invariant is always satisfied. Adding a second producer to any queue would break a design assumption, not just a performance assumption.
+The queue topology in `ownership_invariants.md` is designed so the SPSC invariant is always satisfied. The only exception is `oms_transport_update_queue`, which has two producers (OMS REST thread and OMS private WS thread). This deviation is deliberate: the alternative would require either a third thread to fan-in, additional queues, or polling two separate queues in the OMS coordinator loop. Since both transport threads are low-rate relative to market data, the MPSC overhead on this queue is not on the critical path.
 
 ## Router as a Separate Thread
 
@@ -42,4 +42,32 @@ The `affinity_key` in each `MarketRouteConfig` controls which shard a market's f
 
 The separation exists to allow co-location of related markets on the same shard. Kalshi event groups — where multiple sub-markets represent different strike levels of the same underlying outcome — should land on the same shard so a strategy can observe the full probability space of the event without cross-shard coordination. If affinity were derived per market ticker, related sub-markets could scatter across shards with no mechanism to group them.
 
-The intended invariant: all sub-markets of the same Kalshi event should share an affinity key derived from the event ticker, not from the individual market ticker. The current default (affinity by market index) is a placeholder that works for single-market configurations but should be replaced with event-level grouping as the strategy layer develops.
+The intended invariant: all sub-markets of the same Kalshi event share an affinity key derived from the event ticker. The Python discovery tooling (`stable_affinity_key`) derives this from the event ticker so all markets in an event hash to the same key. Shard assignment is `affinity_key % shard_count`.
+
+## Soft vs. Hard Halt
+
+The halt mechanism uses two distinct levels (`HaltMode::kSoft` and `HaltMode::kHard`) rather than a single boolean kill switch.
+
+A single kill switch that immediately cancels all open orders would be harmful for strategies that hold complementary positions to settlement. For example, `MonotonicArbStrategy` may hold two opposite-side legs that are individually loss-making but net profitable at settlement. Canceling both legs on a drawdown threshold would crystallize the loss rather than letting the arb settle.
+
+`kSoft` halt (triggered by the drawdown circuit breaker) blocks new order submissions but leaves existing orders alive to fill or settle. The session's P&L continues to update from fills on surviving orders.
+
+`kHard` halt (triggered by controlled shutdown via `App::stop()`) blocks new submissions and additionally cancels all live orders. This is the correct behavior on process exit: clean up all exchange state before the process terminates.
+
+`halt_mode_` is an `std::atomic<uint8_t>` so `is_halted()` is safe to query from the health-dump path without acquiring a lock.
+
+## Orphaned Order Adoption at Startup
+
+On startup, the OMS REST API is queried for open orders from any prior session. Rather than canceling them (which would crystallize losses on positions intended to settle) or ignoring them (which would leave them invisible to the kill switch and excluded from session P&L), they are adopted into `OrderStore` with synthetic request IDs.
+
+Adoption uses `next_oms_request_id_++` so synthetic IDs stay in-sequence with normal session orders and all three lookup indices are populated. `risk_engine_.on_intent_accepted()` is called with `live_qty_lots` so global event exposure counts are accurate from the first tick of the new session.
+
+This means the kill switch can reach orphaned orders and their fills count against `session_net_ticks_` — both required for the drawdown circuit breaker to be meaningful after a restart.
+
+## OMS Coordinator as a Single Writer
+
+All order state mutations — insert, apply lifecycle, erase — go through the OMS coordinator thread. `OrderStore` and `RiskEngine` have no internal synchronization because they are single-writer by design.
+
+The alternative (locking `OrderStore` so multiple threads can update it) would add contention on every fill event and every new order, which are already the latency-critical events the OMS is designed to process efficiently.
+
+The consequence is that shard threads cannot read order state directly. They receive decisions and lifecycle events through queue messages. This is acceptable because shards only need to know: was my intent accepted, and what is my current filled position? Both arrive via `oms_to_shard_decision_queue` and `oms_to_shard_lifecycle_queue`.

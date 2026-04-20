@@ -1,185 +1,237 @@
 # Architecture
 
-This document describes the currently supported runtime architecture in the C++ codebase.
+This document describes the current runtime architecture.
 
 ## Scope
 
-The runtime that exists today is a market-data capture and book-maintenance engine:
-- connect to Kalshi websocket
-- copy inbound frames into a bounded frame pool
-- route frames to either shard processing or direct tape logging
-- parse and apply market-data events in shard-local book stores
-- persist the raw inbound feed to a tape file
+The runtime is a full trading pipeline:
 
-The runtime does not yet include a production OMS, risk engine, replay executable, or strategy runtime beyond the shard event-handler seam.
+- connect to the Kalshi public websocket and ingest live market data
+- maintain shard-local order books via a zero-copy frame pipeline
+- run strategy and local-risk evaluation per shard
+- route order intents to a central OMS coordinator
+- submit, cancel, and modify orders via the Kalshi REST API
+- receive fills and lifecycle events from the Kalshi private websocket
+- persist raw inbound data to a binary tape
+- persist audit records (OMS decisions, fills, latency spans) to JSONL
 
 ## Main Components
 
 ### `predex_websocket`
 
-Defined in:
-- [`cpp/include/predex/websocket/client.hpp`](../cpp/include/predex/websocket/client.hpp)
-- [`cpp/include/predex/websocket/session.hpp`](../cpp/include/predex/websocket/session.hpp)
-- [`cpp/include/predex/websocket/kalshi/ws_adapter.hpp`](../cpp/include/predex/websocket/kalshi/ws_adapter.hpp)
+Defined in `cpp/include/predex/websocket/`.
 
 Responsibilities:
-- own websocket transport mechanics
-- build Kalshi-specific connect and subscribe requests
-- return raw websocket payloads to the IO thread
-
-The transport/session boundary is intentionally generic. The Kalshi adapter is exchange-specific.
+- websocket transport mechanics (Boost.Beast)
+- Kalshi-specific connect, subscribe, and auth request building
+- REST client for order submission, cancellation, and modification
+- raw payload delivery to the IO thread and OMS private WS thread
 
 ### `predex_core_pipeline`
 
-Defined across:
-- ingest
-- routing
-- shards
-- tape
-- parser
+Defined across `ingest/`, `routing/`, `shards/`, `tape/`, `parsers/`, `audit/`, `oms/`.
 
 Responsibilities:
-- frame allocation and reuse
-- bounded queue handoff between stages
-- routing and shard fanout
-- parser output normalization
-- shard-local book application
-- binary tape persistence
+- frame allocation and zero-copy reuse
+- bounded SPSC queue handoff between pipeline stages
+- market-data routing and shard fanout
+- shard-local book maintenance and event store
+- strategy signal evaluation and local risk gating
+- OMS intent coordination, order state tracking, risk controls
+- binary tape persistence and audit JSONL persistence
 
 ### `predex_app`
 
-Defined in:
-- [`cpp/include/predex/app.hpp`](../cpp/include/predex/app.hpp)
-- [`cpp/src/app.cpp`](../cpp/src/app.cpp)
+Defined in `cpp/include/predex/app.hpp` and `cpp/src/app.cpp`.
 
 Responsibilities:
-- construct the runtime object graph
-- own all queues, workers, and stage instances
-- spawn and stop threads
-- expose a small lifecycle:
-  - `start()`
-  - `run()`
-  - `stop()`
+- construct the complete runtime object graph
+- own all queues, thread instances, and stage objects
+- lifecycle: `start()` / `run()` / `stop()`
+- WS reconnect with exponential backoff on both data and OMS channels
+- periodic health status dump (30-second interval)
 
 ## Thread Topology
 
-The runtime is built around four classes of worker:
+The runtime runs eight classes of worker thread:
 
-1. IO thread
-   - owns websocket receive
-   - calls `IOWriter::on_wire_message(...)`
-   - drains recycled frame handles
+1. **IO thread** — owns public WS receive; calls `IOWriter::on_wire_message`; drains frame recycle queue; handles reconnect with backoff.
 
-2. Router thread
-   - drains the IO-to-router queue
-   - classifies messages
-   - forwards to shard queues or directly to the logger
+2. **Router thread** — drains `io_to_router_queue`; classifies messages; looks up `market_id` and `affinity_key`; enforces sequence checks; fans out to shard input queues or the logger queue.
 
-3. N shard threads
-   - each shard owns one input queue
-   - parse frame payloads into `NormalizedEvent`
-   - apply to a shard-local `BookStore`
-   - forward processed frame handles to the logger
+3. **N shard threads** — each shard owns one input queue; parses frames into `NormalizedEvent`; applies events to `EventStore` (books + derived topology state); runs `ShardPipeline` (local risk + strategy evaluation); drains OMS decision and lifecycle queues; forwards handles to the logger.
 
-4. Logger thread
-   - drains router and shard logger queues
-   - writes length-prefixed payloads to tape
-   - recycles frame handles back to ingest
+4. **OMS coordinator thread** — drains all shard intent queues (round-robin); runs `GlobalRiskManager` pre-trade checks; maintains `OrderStore`; enqueues `SubmitOrderCmd` / `CancelOrderCmd` / `ModifyOrderCmd` to the REST thread; drains `oms_transport_update_queue` for lifecycle events from both REST responses and the private WS; fans lifecycle events back to the originating shard.
+
+5. **OMS REST thread** — drains submit, cancel, and modify queues; executes blocking REST API calls; pushes results back to `oms_transport_update_queue`.
+
+6. **OMS private WS thread** — owns private WS receive; parses fill and order-lifecycle events; pushes them to `oms_transport_update_queue`; handles reconnect with backoff; calls `reconcile_open_orders_from_rest` after reconnect.
+
+7. **Logger thread** — drains router and all shard logger queues; writes length-prefixed payloads to the binary tape file; recycles frame handles back to the IO thread.
+
+8. **Audit thread** — drains all shard and OMS audit queues; writes `AuditEvent` records as JSONL.
 
 ## Queue Graph
 
-```text
+All queues are SPSC unless otherwise noted.
+
+```
 IO thread
   -> io_to_router_queue
+
 Router thread
   -> router_to_logger_queue
-  -> shard_input_queue[i]
+  -> shard_input_queue[i]     (one per shard)
+
 Shard thread i
   -> shard_to_logger_queue[i]
+  -> shard_to_oms_intent_queue[i]
+  -> shard_audit_queue[i]
+
+OMS coordinator thread
+  <- shard_to_oms_intent_queue[i]   (polls all, round-robin)
+  -> oms_to_shard_decision_queue[i]
+  -> oms_to_shard_lifecycle_queue[i]
+  -> oms_submit_queue
+  -> oms_cancel_queue
+  -> oms_modify_queue
+  -> oms_audit_queue
+  <- oms_transport_update_queue     (two producers: REST + private WS threads)
+
+OMS REST thread
+  <- oms_submit_queue
+  <- oms_cancel_queue
+  <- oms_modify_queue
+  -> oms_transport_update_queue
+
+OMS private WS thread
+  -> oms_transport_update_queue
+
 Logger thread
+  <- router_to_logger_queue
+  <- shard_to_logger_queue[i]       (polls all)
   -> recycle_queue
+
+Audit thread
+  <- shard_audit_queue[i]           (polls all)
+  <- oms_audit_queue
+
 IO thread
-  -> drain recycle_queue
+  <- recycle_queue
 ```
 
-All queues in the current design are SPSC queues. Multi-source fan-in is handled by the logger thread polling multiple SPSC inputs.
+Note: `oms_transport_update_queue` has two producers (REST thread and private WS thread). This is the only queue in the design that deviates from strict SPSC.
 
 ## Frame Lifecycle
 
-The hot-path object moving between stages is `predex::core::ingest::kalshi::FrameHandle`.
+The hot-path object is `predex::core::ingest::kalshi::FrameHandle`.
 
-The lifecycle is:
+1. `IOWriter` acquires a slot from `FramePool` and copies the websocket payload once.
+2. The handle is pushed to the router.
+3. Router forwards to a shard queue or directly to the logger queue.
+4. Shard parses/applies and forwards the same handle to the logger.
+5. Logger writes the payload and pushes the handle to the recycle queue.
+6. `IOWriter` drains recycle handles and returns slots to `FramePool`.
 
-1. `IOWriter` acquires a slot from `FramePool`
-2. raw websocket bytes are copied into the corresponding `KalshiFrame`
-3. the handle is pushed to the router
-4. Router either:
-   - forwards the handle to a shard, or
-   - forwards the handle directly to the logger
-5. Shard parses/applies and forwards the same handle to the logger
-6. Logger writes the payload and pushes the handle to the recycle queue
-7. `IOWriter` drains recycle handles and returns them to `FramePool`
-
-The payload itself is not copied between internal stages after the initial IO copy into the frame pool.
+No payload copies occur between steps 2–6.
 
 ## Routing Model
 
-The router does three things:
+The router:
+1. Classifies messages: shard-bound market data, direct-to-logger control plane, or drop.
+2. Looks up `market_id` and `affinity_key` from `MarketRegistry`.
+3. Enforces session sequence checks; calls `reset_sequence_state()` after WS reconnect.
 
-1. classify the message
-   - shard-bound market data
-   - direct-to-logger control plane messages
-   - drop if unsupported or invalid
+Shard assignment is `affinity_key % shard_count`. All markets in the same Kalshi event share an affinity key so they land on the same shard.
 
-2. route market messages through `MarketRegistry`
-   - set `market_id`
-   - set `affinity_key`
+## Event Store and Book Model
 
-3. enforce sequence checks where applicable
+Each shard owns an `EventStore` that holds one `Event` per Kalshi event (group of markets).
 
-The shard choice is derived from the configured affinity key.
+Each `Event` contains:
+- a `BookStore` with per-market bid/ask levels, sequence state, pending-delta buffer, and trade state
+- an `EventDerivedState` that mirrors the book into a topology-specific view:
+  - `MonotonicChainState` — markets ordered by strike key; used by monotonic arb
+  - `MutuallyExclusiveState` — unordered set of markets summing to 1
+  - `UnorderedGroupState` — unordered set of independent markets
+  - `SingleMarketState` — single-market event
 
-## Parser And Book Model
+On WS reconnect, `EventStore::reset_all_books()` clears `has_snapshot` so the next snapshot from the new session is accepted cleanly.
 
-The current parser interface:
-- takes a `FrameHandle`
-- takes the corresponding `KalshiFrame`
-- returns `ParseResult<NormalizedEvent>`
+### Kalshi Reciprocal Pricing
 
-The shard applies parser output into a shard-local `BookStore`, which owns:
-- per-market bid/ask levels
-- optional sequence state
-- pending delta buffering
-- trade metadata
+Kalshi's wire format has no explicit Ask book. The ask side is derived from the No-bid: a No-bid at tick `p` implies an Ask at `10000 - p`. The parser handles this at both snapshot and delta level. Everything downstream sees a standard two-sided book.
 
-### Kalshi Protocol: Reciprocal Pricing
+## Strategy Pipeline
 
-Kalshi's wire format does not carry an explicit Ask book. The Ask side is implied by the No-bid. A binary outcome market has two sides: Yes (bid) and No, where No represents the complementary probability. A No-bid at price tick `p` implies an Ask at `kMaxPriceTicks - p`, because the probability of No at `p` is the complement of Yes at `10000 - p`.
+Each shard runs a `ShardPipeline` that fires on every applied market event:
 
-The parser handles this at both the snapshot and delta level. For snapshots, `yes` levels are applied directly to the bid side and `no` levels are converted via `reciprocal_price(p) = 10000 - p` before being applied to the ask side. For deltas, the parser inspects whether the inbound message carries a `yes_price` field or a `no_price` field, routes to bid or ask accordingly, and applies the reciprocal conversion for No-side deltas before writing to the normalized event.
+1. **`LocalRiskManager::evaluate`** — checks close-time gating, net position limits, open intent counts, and event/market exposure limits. Rejects the intent before any strategy sees it if limits are breached.
 
-By the time a `NormalizedEvent` leaves the parser, all prices are in a unified bid/ask convention. `BookStore` and everything downstream have no knowledge of the Yes/No distinction — they see a standard two-sided order book.
+2. **Strategy evaluation** (in order, first accepted intent wins):
+   - `MonotonicArbStrategy` — detects probability-monotonicity violations across a chain event; submits IOC legs.
+   - `CdfViolationStrategy` — detects CDF-level mispricing (stub).
+   - `MarketMakingStrategy` — quotes bid/ask around fair value (stub).
+   - `MeanReversionStrategy` — mean-reversion signal (stub).
+
+3. Accepted intents are pushed to `shard_to_oms_intent_queue[i]`.
+
+4. OMS decisions and fill lifecycle events are drained from `oms_to_shard_decision_queue[i]` and `oms_to_shard_lifecycle_queue[i]` to update `LocalRiskState` (open exposure, net filled position).
+
+## OMS and Execution
+
+The OMS coordinator is the single writer to all order state. See [`oms_design.md`](oms_design.md) for the full design.
+
+Key properties:
+- `GlobalRiskManager` pre-trade check before every intent is accepted.
+- `OrderStore` tracks live orders in three lookup indices: by `oms_request_id`, `client_order_id`, and `exchange_order_id`.
+- Drawdown circuit breaker: if `session_net_ticks < -max_session_loss_ticks`, fires a **soft halt** (blocks new submissions; existing orders survive to settle).
+- Controlled shutdown fires a **hard halt** (blocks new submissions + cancel-all on the OMS thread).
+
+## Startup Reconciliation
+
+At startup, `reconcile_open_orders_from_rest(is_startup=true)` fetches open orders from the REST API and adopts any orders from a previous session into `OrderStore` with synthetic request IDs. This ensures the kill switch covers orphaned orders and fills are accounted for in session P&L.
+
+After OMS private WS reconnect, `reconcile_open_orders_from_rest(is_startup=false)` pushes lifecycle ACK events for current-session orders so the OMS can reconcile state via `client_order_id`.
+
+## Reconnect Behavior
+
+Both the public data WS and the OMS private WS have independent reconnect loops with exponential backoff (100ms base, 5s cap, max 5 doublings).
+
+On public WS reconnect:
+- Re-subscribes to configured channels.
+- Calls `router->reset_sequence_state()` so fresh SIDs from the new session are accepted.
+- Calls `shard->request_reset()` on each shard (atomic flag checked at top of `pump()`) which calls `EventStore::reset_all_books()` on the shard thread.
+
+## Observability
+
+`App::run()` prints a health line to stdout every 30 seconds:
+
+```
+[timestamp UTC] STATUS | halted=false | pnl_ticks=+0 | live_orders=0 | intents=0 | rejected=0 | transport_updates=0 | router_frames=0 | router_drops=0 | desynced_events=0
+```
 
 ## Tape Model
 
 The logger is the terminal sink for raw feed capture.
 
-Current tape format:
-- `u32` little-endian payload length
-- raw websocket payload bytes
+```
+[u32 payload_len_le][payload bytes] ...
+```
 
-This keeps the live runtime simple and makes it easy to build a replay/inspection tool outside the hot path.
+Repeated for every message that reaches the logger. The payload is the raw websocket text, not the normalized event.
 
-## Current Boundaries Versus Planned Work
+## Shutdown Sequence
 
-Current supported boundaries:
-- Kalshi websocket ingest
-- frame-pool based routing
-- shard-local book maintenance
-- tape recording
+`stop()` drains the pipeline in dependency order:
 
-Planned boundaries:
-- replay from tape
-- strategy and risk hooks per shard
-- OMS and order transport
-- Python discovery/backtesting toolchain
+1. `request_hard_halt()` on OMS (blocks new submissions).
+2. `running = false`.
+3. Join IO thread (closes WS).
+4. Join + drain router thread.
+5. Join + drain shard threads.
+6. Join OMS thread (tail drain: `cancel_all_live_orders()` + pump until idle).
+7. Directly flush remaining cancel commands from `oms_cancel_queue` via REST client.
+8. Join OMS REST and private WS threads.
+9. Drain + join logger thread.
+10. Drain + join audit thread.

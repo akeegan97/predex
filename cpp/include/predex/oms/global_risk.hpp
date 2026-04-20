@@ -4,6 +4,7 @@
 #include <limits>
 
 
+#include "predex/internal/market_types.hpp"
 #include "predex/oms/oms_types.hpp"
 
 namespace predex::core::oms::kalshi {
@@ -25,9 +26,9 @@ struct GlobalRiskLimits {
 
 struct GlobalRiskState {
     std::size_t open_orders_global{0};
-    std::size_t open_orders_for_event{0};
+    std::size_t open_orders_for_target_event{0};
     internal::QtyLots global_exposure_lots{0};
-    internal::QtyLots event_exposure_lots{0};
+    internal::QtyLots target_event_exposure_lots{0};
 };
 
 class GlobalRiskManager {
@@ -75,7 +76,7 @@ class GlobalRiskManager {
             };
         }
 
-        if (state.open_orders_for_event >= limits_.max_open_orders_per_event) {
+        if (state.open_orders_for_target_event >= limits_.max_open_orders_per_event) {
             return IntentDecision{
                 .code = IntentDecisionCode::kRejected,
                 .data = RejectedIntent{
@@ -97,7 +98,8 @@ class GlobalRiskManager {
             };
         }
 
-        if (state.event_exposure_lots + intent.qty_lots > limits_.max_event_exposure_lots) {
+        if (state.target_event_exposure_lots + intent.qty_lots >
+            limits_.max_event_exposure_lots) {
             return IntentDecision{
                 .code = IntentDecisionCode::kRejected,
                 .data = RejectedIntent{
@@ -120,15 +122,54 @@ class GlobalRiskManager {
     }
 
     static void on_intent_accepted(const AcceptedIntent& accepted_intent,
-                            GlobalRiskState& state) noexcept {
+                                   GlobalRiskState& state) noexcept {
         ++state.open_orders_global;
-        ++state.open_orders_for_event;
+        ++state.open_orders_for_target_event;
         state.global_exposure_lots += accepted_intent.intent.qty_lots;
-        state.event_exposure_lots += accepted_intent.intent.qty_lots;
+        state.target_event_exposure_lots += accepted_intent.intent.qty_lots;
+    }
+
+    static void on_order_terminal(internal::QtyLots remaining_open_qty_lots,
+                                  GlobalRiskState& state) noexcept {
+        if (state.open_orders_for_target_event > 0) {
+            --state.open_orders_for_target_event;
+        }
+        if (state.open_orders_global > 0) {
+            --state.open_orders_global;
+        }
+
+        if (remaining_open_qty_lots <= 0) {
+            return;
+        }
+
+        state.global_exposure_lots =
+            saturating_subtract(state.global_exposure_lots, remaining_open_qty_lots);
+        state.target_event_exposure_lots =
+            saturating_subtract(state.target_event_exposure_lots, remaining_open_qty_lots);
+    }
+
+    static void on_fill(internal::QtyLots fill_qty_lots, GlobalRiskState& state) noexcept {
+        if (fill_qty_lots <= 0) {
+            return;
+        }
+        state.global_exposure_lots =
+            saturating_subtract(state.global_exposure_lots, fill_qty_lots);
+        state.target_event_exposure_lots =
+            saturating_subtract(state.target_event_exposure_lots, fill_qty_lots);
     }
 
   private:
     GlobalRiskLimits limits_{};
+    static internal::QtyLots saturating_subtract(internal::QtyLots value,
+                                                 internal::QtyLots delta) noexcept {
+        if (delta <= 0) {
+            return value;
+        }
+        if (delta >= value) {
+            return 0;
+        }
+        return value - delta;
+    }
 };
 
 } // namespace predex::core::oms::kalshi

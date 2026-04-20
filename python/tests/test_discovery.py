@@ -369,6 +369,15 @@ class ConfigTests(unittest.TestCase):
         config = build_trader_config(events)
 
         self.assertEqual(config["kalshi"]["market_tickers"], ["MKT-1A", "MKT-1B", "MKT-2A", "MKT-2B"])
+        self.assertEqual(
+            config["oms_transport"],
+            {
+                "enabled": False,
+                "rest_endpoint": "https://api.elections.kalshi.com",
+                "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+                "private_ws_channels": ["user_orders"],
+            },
+        )
         self.assertEqual(len(config["market_routes"]), 4)
         first_event_routes = [
             route

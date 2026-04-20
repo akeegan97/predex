@@ -28,16 +28,6 @@ namespace predex::core::oms::kalshi{
                     .count());
         }
 
-        // Interim in-process latency staging maps keyed by OMS request id.
-        //NOLINTNEXTLINE
-        static std::unordered_map<OmsRequestId, internal::TimestampNs> decision_ts_by_request_id{};
-        //NOLINTNEXTLINE
-        static std::unordered_map<OmsRequestId, internal::TimestampNs> transport_submit_ts_by_request_id{};
-        //NOLINTNEXTLINE
-        static std::unordered_map<OmsRequestId, internal::TimestampNs> first_fill_ts_by_request_id{};
-
-
-
         [[nodiscard]] OmsRequestId extract_oms_request_id(const IntentDecision& decision) {
             if (const auto* accepted = std::get_if<AcceptedIntent>(&decision.data)) {
                 return accepted->oms_request_id;
@@ -141,30 +131,48 @@ namespace predex::core::oms::kalshi{
         }
         OrderState* const tracked_order = find_order_state(event);
         if (tracked_order == nullptr) {
-            return OmsProcessCode::kError;
+            emit_audit(predex::core::audit::AuditEvent{
+                .kind = predex::core::audit::AuditKind::kOmsLifecycle,
+                .ts_ns = event.recv_ts_ns,
+                .shard_id = event.origin.shard_id,
+                .signal_id = event.origin.signal_id,
+                .group_id = event.origin.group_id,
+                .local_intent_id = event.origin.local_intent_id,
+                .oms_request_id = event.oms_request_id,
+                .exchange = internal::ExchangeId::kKalshi,
+                .event_id = event.origin.event_id,
+                .market_id = event.origin.market_id,
+                .side = internal::Side::kUnknown,
+                .leg_index = event.origin.leg_index,
+                .leg_count = event.origin.leg_count,
+                .lifecycle_kind = static_cast<std::uint8_t>(event.kind),
+                .order_status = static_cast<std::uint8_t>(event.status),
+            });
+            ++processed_transport_update_count_;
+            return OmsProcessCode::kProcessedTransportUpdate;
         }
         const OmsRequestId resolved_request_id = tracked_order->oms_request_id;
         const internal::TimestampNs decision_ts_ns =
-            decision_ts_by_request_id.contains(resolved_request_id)
-                ? decision_ts_by_request_id[resolved_request_id]
+            decision_ts_by_request_id_.contains(resolved_request_id)
+                ? decision_ts_by_request_id_[resolved_request_id]
                 : 0;
         const internal::TimestampNs transport_ts_ns =
-            transport_submit_ts_by_request_id.contains(resolved_request_id)
-                ? transport_submit_ts_by_request_id[resolved_request_id]
+            transport_submit_ts_by_request_id_.contains(resolved_request_id)
+                ? transport_submit_ts_by_request_id_[resolved_request_id]
                 : 0;
 
         if (std::holds_alternative<OrderFill>(event.data) &&
-            !first_fill_ts_by_request_id.contains(resolved_request_id)) {
-            first_fill_ts_by_request_id[resolved_request_id] = event.recv_ts_ns;
+            !first_fill_ts_by_request_id_.contains(resolved_request_id)) {
+            first_fill_ts_by_request_id_[resolved_request_id] = event.recv_ts_ns;
         }
 
         emit_audit(predex::core::audit::AuditEvent{
             .kind = predex::core::audit::AuditKind::kOmsLifecycle,
             .ts_ns = event.recv_ts_ns,
-            .shard_id = event.origin.shard_id,
-            .signal_id = event.origin.signal_id,
-            .group_id = event.origin.group_id,
-            .local_intent_id = event.origin.local_intent_id,
+            .shard_id = tracked_order->origin.shard_id,
+            .signal_id = tracked_order->origin.signal_id,
+            .group_id = tracked_order->origin.group_id,
+            .local_intent_id = tracked_order->origin.local_intent_id,
             .oms_request_id = resolved_request_id,
             .tick_recv_ns = tracked_order->origin.tick_recv_ns,
             .signal_ts_ns = tracked_order->origin.signal_ts_ns,
@@ -172,8 +180,8 @@ namespace predex::core::oms::kalshi{
             .oms_decision_ts_ns = decision_ts_ns,
             .transport_submit_ts_ns = transport_ts_ns,
             .first_fill_recv_ns =
-                first_fill_ts_by_request_id.contains(resolved_request_id)
-                    ? first_fill_ts_by_request_id[resolved_request_id]
+                first_fill_ts_by_request_id_.contains(resolved_request_id)
+                    ? first_fill_ts_by_request_id_[resolved_request_id]
                     : 0,
             .terminal_recv_ns =
                 (event.kind == OrderLifecycleEventKind::kReject ||
@@ -183,12 +191,12 @@ namespace predex::core::oms::kalshi{
                     : 0,
             .decision_to_transport_ns = latency_delta_ns(transport_ts_ns, decision_ts_ns),
             .transport_to_first_fill_ns =
-                first_fill_ts_by_request_id.contains(resolved_request_id)
-                    ? latency_delta_ns(first_fill_ts_by_request_id[resolved_request_id], transport_ts_ns)
+                first_fill_ts_by_request_id_.contains(resolved_request_id)
+                    ? latency_delta_ns(first_fill_ts_by_request_id_[resolved_request_id], transport_ts_ns)
                     : 0,
             .tick_to_first_fill_ns =
-                first_fill_ts_by_request_id.contains(resolved_request_id)
-                    ? latency_delta_ns(first_fill_ts_by_request_id[resolved_request_id],
+                first_fill_ts_by_request_id_.contains(resolved_request_id)
+                    ? latency_delta_ns(first_fill_ts_by_request_id_[resolved_request_id],
                                        tracked_order->origin.tick_recv_ns)
                     : 0,
             .tick_to_terminal_ns =
@@ -198,11 +206,11 @@ namespace predex::core::oms::kalshi{
                     ? latency_delta_ns(event.recv_ts_ns, tracked_order->origin.tick_recv_ns)
                     : 0,
             .exchange = internal::ExchangeId::kKalshi,
-            .event_id = event.origin.event_id,
-            .market_id = event.origin.market_id,
+            .event_id = tracked_order->origin.event_id,
+            .market_id = tracked_order->origin.market_id,
             .side = internal::Side::kUnknown,
-            .leg_index = event.origin.leg_index,
-            .leg_count = event.origin.leg_count,
+            .leg_index = tracked_order->origin.leg_index,
+            .leg_count = tracked_order->origin.leg_count,
             .qty_lots = 0,
             .price_ticks = 0,
             .decision_code = 0,
@@ -217,9 +225,9 @@ namespace predex::core::oms::kalshi{
         if (event.kind == OrderLifecycleEventKind::kReject ||
             event.kind == OrderLifecycleEventKind::kCanceled ||
             event.kind == OrderLifecycleEventKind::kFill) {
-            decision_ts_by_request_id.erase(resolved_request_id);
-            transport_submit_ts_by_request_id.erase(resolved_request_id);
-            first_fill_ts_by_request_id.erase(resolved_request_id);
+            decision_ts_by_request_id_.erase(resolved_request_id);
+            transport_submit_ts_by_request_id_.erase(resolved_request_id);
+            first_fill_ts_by_request_id_.erase(resolved_request_id);
         }
 
         if(!emit_lifecycle_event(event)){
@@ -264,6 +272,12 @@ namespace predex::core::oms::kalshi{
             //NOLINTNEXTLINE
             return process_intent(std::move(*intent));
         }
+        if (auto* cancel_intent = std::get_if<CancelIntent>(&submission)) {
+            return process_cancel_intent(std::move(*cancel_intent));
+        }
+        if (auto* modify_intent = std::get_if<ModifyIntent>(&submission)) {
+            return process_modify_intent(std::move(*modify_intent));
+        }
 
         auto* group = std::get_if<GroupOrderIntent>(&submission);
         if (group == nullptr || group->leg_count == 0 ||
@@ -293,6 +307,160 @@ namespace predex::core::oms::kalshi{
         return OmsProcessCode::kProcessedIntent;
     }
 
+    [[nodiscard]] OmsProcessCode Oms::process_cancel_intent( CancelIntent intent) noexcept {
+        const internal::TimestampNs now_ns = monotonic_now_ns();
+        OrderState* const target = find_order_for_action(intent.target_oms_request_id,
+                                                         intent.target_client_order_id,
+                                                         intent.target_exchange_order_id);
+        if (target == nullptr) {
+            OrderLifecycleEvent reject{
+                .origin = intent.origin,
+                .oms_request_id = intent.target_oms_request_id.value_or(0),
+                .kind = OrderLifecycleEventKind::kCancelReject,
+                .status = OmsOrderStatus::kUnknown,
+                .client_order_id = intent.target_client_order_id,
+                .exchange_order_id = intent.target_exchange_order_id,
+                .recv_ts_ns = now_ns,
+                .data = CancelReject{
+                    .reason_code = "unknown_order",
+                    .reason_message = "cancel target order was not found",
+                },
+            };
+            if (!emit_lifecycle_event(reject)) {
+                return OmsProcessCode::kShardBackpressure;
+            }
+            ++processed_transport_update_count_;
+            return OmsProcessCode::kProcessedIntent;
+        }
+
+        CancelOrderCmd cmd{
+            .oms_request_id = target->oms_request_id,
+            .origin = target->origin,
+            .client_order_id = target->client_order_id,
+            .exchange_order_id = target->exchange_order_id,
+            .cmd_ts_ns = now_ns,
+        };
+        if (transport_queues_.cancel_queue == nullptr ||
+            !transport_queues_.cancel_queue->try_push(cmd)) {
+            OrderLifecycleEvent reject{
+                .origin = target->origin,
+                .oms_request_id = target->oms_request_id,
+                .kind = OrderLifecycleEventKind::kCancelReject,
+                .status = target->status,
+                .client_order_id = target->client_order_id,
+                .exchange_order_id = target->exchange_order_id,
+                .recv_ts_ns = now_ns,
+                .data = CancelReject{
+                    .reason_code = "transport_unavailable",
+                    .reason_message = "cancel command enqueue failed",
+                },
+            };
+            if (!emit_lifecycle_event(reject)) {
+                return OmsProcessCode::kShardBackpressure;
+            }
+            ++processed_transport_update_count_;
+            return OmsProcessCode::kProcessedIntent;
+        }
+
+        target->status = OmsOrderStatus::kPendingCancel;
+        target->last_update_ts_ns = now_ns;
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kOmsTransport,
+            .ts_ns = now_ns,
+            .shard_id = target->origin.shard_id,
+            .signal_id = target->origin.signal_id,
+            .group_id = target->origin.group_id,
+            .local_intent_id = target->origin.local_intent_id,
+            .oms_request_id = target->oms_request_id,
+            .exchange = internal::ExchangeId::kKalshi,
+            .event_id = target->origin.event_id,
+            .market_id = target->origin.market_id,
+            .leg_index = target->origin.leg_index,
+            .leg_count = target->origin.leg_count,
+            .order_status = static_cast<std::uint8_t>(target->status),
+        });
+        return OmsProcessCode::kProcessedIntent;
+    }
+
+    [[nodiscard]] OmsProcessCode Oms::process_modify_intent( ModifyIntent intent) noexcept {
+        const internal::TimestampNs now_ns = monotonic_now_ns();
+        OrderState* const target = find_order_for_action(intent.target_oms_request_id,
+                                                         intent.target_client_order_id,
+                                                         intent.target_exchange_order_id);
+        if (target == nullptr) {
+            OrderLifecycleEvent reject{
+                .origin = intent.origin,
+                .oms_request_id = intent.target_oms_request_id.value_or(0),
+                .kind = OrderLifecycleEventKind::kReplaceReject,
+                .status = OmsOrderStatus::kUnknown,
+                .client_order_id = intent.target_client_order_id,
+                .exchange_order_id = intent.target_exchange_order_id,
+                .recv_ts_ns = now_ns,
+                .data = ReplaceReject{
+                    .reason_code = "unknown_order",
+                    .reason_message = "modify target order was not found",
+                },
+            };
+            if (!emit_lifecycle_event(reject)) {
+                return OmsProcessCode::kShardBackpressure;
+            }
+            ++processed_transport_update_count_;
+            return OmsProcessCode::kProcessedIntent;
+        }
+
+        ModifyOrderCmd cmd{
+            .oms_request_id = target->oms_request_id,
+            .replacement_intent = intent.replacement_intent,
+            .client_order_id = target->client_order_id,
+            .exchange_order_id = target->exchange_order_id,
+        };
+        if (transport_queues_.modify_queue == nullptr ||
+            !transport_queues_.modify_queue->try_push(cmd)) {
+            OrderLifecycleEvent reject{
+                .origin = target->origin,
+                .oms_request_id = target->oms_request_id,
+                .kind = OrderLifecycleEventKind::kReplaceReject,
+                .status = target->status,
+                .client_order_id = target->client_order_id,
+                .exchange_order_id = target->exchange_order_id,
+                .recv_ts_ns = now_ns,
+                .data = ReplaceReject{
+                    .reason_code = "transport_unavailable",
+                    .reason_message = "modify command enqueue failed",
+                },
+            };
+            if (!emit_lifecycle_event(reject)) {
+                return OmsProcessCode::kShardBackpressure;
+            }
+            ++processed_transport_update_count_;
+            return OmsProcessCode::kProcessedIntent;
+        }
+
+        target->status = OmsOrderStatus::kPendingModify;
+        target->last_update_ts_ns = now_ns;
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kOmsTransport,
+            .ts_ns = now_ns,
+            .shard_id = target->origin.shard_id,
+            .signal_id = target->origin.signal_id,
+            .group_id = target->origin.group_id,
+            .local_intent_id = target->origin.local_intent_id,
+            .oms_request_id = target->oms_request_id,
+            .exchange = intent.replacement_intent.exchange == internal::ExchangeId::kUnknown
+                ? internal::ExchangeId::kKalshi
+                : intent.replacement_intent.exchange,
+            .event_id = target->origin.event_id,
+            .market_id = target->origin.market_id,
+            .side = intent.replacement_intent.side,
+            .leg_index = target->origin.leg_index,
+            .leg_count = target->origin.leg_count,
+            .qty_lots = intent.replacement_intent.qty_lots,
+            .price_ticks = intent.replacement_intent.limit_price_ticks.value_or(0),
+            .order_status = static_cast<std::uint8_t>(target->status),
+        });
+        return OmsProcessCode::kProcessedIntent;
+    }
+
     [[nodiscard]] OmsProcessCode Oms::process_intent(OrderIntent intent) noexcept{
         const OmsRequestId oms_request_id = next_oms_request_id_++;
         const ClientOrderId client_order_id = make_client_order_id(oms_request_id);
@@ -308,9 +476,12 @@ namespace predex::core::oms::kalshi{
         const std::int64_t submission_to_decision_ns =
             latency_delta_ns(decision_ts_ns, submission_ts_ns);
 
-        IntentDecision decision =
-            global_risk_.evaluate(intent, global_risk_state_, oms_request_id, client_order_id,
-                                  decision_ts_ns);
+        IntentDecision decision = global_risk_.evaluate(intent,
+                                                        make_risk_state_for_event(
+                                                            intent.origin.event_id),
+                                                        oms_request_id,
+                                                        client_order_id,
+                                                        decision_ts_ns);
 
         if (decision.code == IntentDecisionCode::kAccepted) {
             const auto* accepted_intent = std::get_if<AcceptedIntent>(&decision.data);
@@ -329,8 +500,8 @@ namespace predex::core::oms::kalshi{
                 decision = make_transport_reject(intent, decision_ts_ns);
             } else {
                 const internal::TimestampNs transport_submit_ts_ns = monotonic_now_ns();
-                decision_ts_by_request_id[accepted_intent->oms_request_id] = decision_ts_ns;
-                transport_submit_ts_by_request_id[accepted_intent->oms_request_id] =
+                decision_ts_by_request_id_[accepted_intent->oms_request_id] = decision_ts_ns;
+                transport_submit_ts_by_request_id_[accepted_intent->oms_request_id] =
                     transport_submit_ts_ns;
                 emit_audit(predex::core::audit::AuditEvent{
                     .kind = predex::core::audit::AuditKind::kOmsTransport,
@@ -358,7 +529,7 @@ namespace predex::core::oms::kalshi{
                     .qty_lots = accepted_intent->intent.qty_lots,
                     .price_ticks = accepted_intent->intent.limit_price_ticks.value_or(0),
                 });
-                predex::core::oms::kalshi::GlobalRiskManager::on_intent_accepted(*accepted_intent, global_risk_state_);
+                on_intent_accepted_risk(*accepted_intent);
                 insert_live_order(*accepted_intent, decision_ts_ns);
             }
         }
@@ -495,17 +666,24 @@ namespace predex::core::oms::kalshi{
 
         order_state->status = event.status;
         order_state->last_update_ts_ns = event.recv_ts_ns;
+        if (!event.client_order_id.empty() && event.client_order_id != order_state->client_order_id) {
+            request_by_client_order_id_.erase(order_state->client_order_id);
+            order_state->client_order_id = event.client_order_id;
+            request_by_client_order_id_[order_state->client_order_id] = order_state->oms_request_id;
+        }
         if (event.exchange_order_id.has_value()) {
             order_state->exchange_order_id = event.exchange_order_id;
             request_by_exchange_order_id_[*event.exchange_order_id] = order_state->oms_request_id;
         }
 
         if (const auto* fill = std::get_if<OrderFill>(&event.data)) {
-            order_state->cum_fill_qty_lots += fill->fill_qty_lots;
-            order_state->live_qty_lots -= fill->fill_qty_lots;
-            if (order_state->live_qty_lots < 0) {
-                order_state->live_qty_lots = 0;
-            }
+            const internal::QtyLots fill_reduction =
+                fill->fill_qty_lots > order_state->live_qty_lots
+                    ? order_state->live_qty_lots
+                    : fill->fill_qty_lots;
+            order_state->cum_fill_qty_lots += fill_reduction;
+            order_state->live_qty_lots -= fill_reduction;
+            on_fill_risk(order_state->origin.event_id, fill_reduction);
             if (order_state->first_fill_recv_ns == 0) {
                 order_state->first_fill_recv_ns = event.recv_ts_ns;
             }
@@ -517,8 +695,20 @@ namespace predex::core::oms::kalshi{
         if (event.kind == OrderLifecycleEventKind::kReject ||
             event.kind == OrderLifecycleEventKind::kCanceled ||
             event.kind == OrderLifecycleEventKind::kFill) {
+            const internal::QtyLots remaining_open_qty_lots = order_state->live_qty_lots;
             order_state->live_qty_lots = 0;
             order_state->terminal_recv_ns = event.recv_ts_ns;
+            on_order_terminal_risk(order_state->origin.event_id, remaining_open_qty_lots);
+
+            const OmsRequestId request_id = order_state->oms_request_id;
+            const ClientOrderId client_order_id = order_state->client_order_id;
+            const std::optional<ExchangeOrderId> exchange_order_id = order_state->exchange_order_id;
+
+            request_by_client_order_id_.erase(client_order_id);
+            if (exchange_order_id.has_value()) {
+                request_by_exchange_order_id_.erase(*exchange_order_id);
+            }
+            orders_by_request_id_.erase(request_id);
         }
 
         return true;
@@ -548,5 +738,89 @@ namespace predex::core::oms::kalshi{
             }
         }
         return nullptr;
+    }
+
+    [[nodiscard]] OrderState* Oms::find_order_for_action(
+        std::optional<OmsRequestId> oms_request_id,
+        const ClientOrderId& client_order_id,
+        const std::optional<ExchangeOrderId>& exchange_order_id) {
+        if (oms_request_id.has_value()) {
+            auto by_request = orders_by_request_id_.find(*oms_request_id);
+            if (by_request != orders_by_request_id_.end()) {
+                return &by_request->second;
+            }
+        }
+        if (!client_order_id.empty()) {
+            auto by_client = request_by_client_order_id_.find(client_order_id);
+            if (by_client != request_by_client_order_id_.end()) {
+                auto by_request = orders_by_request_id_.find(by_client->second);
+                if (by_request != orders_by_request_id_.end()) {
+                    return &by_request->second;
+                }
+            }
+        }
+        if (exchange_order_id.has_value()) {
+            auto by_exchange = request_by_exchange_order_id_.find(*exchange_order_id);
+            if (by_exchange != request_by_exchange_order_id_.end()) {
+                auto by_request = orders_by_request_id_.find(by_exchange->second);
+                if (by_request != orders_by_request_id_.end()) {
+                    return &by_request->second;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] GlobalRiskState Oms::make_risk_state_for_event(
+        internal::EventId event_id) const noexcept {
+        GlobalRiskState state{
+            .open_orders_global = global_risk_state_.open_orders_global,
+            .open_orders_for_target_event = 0,
+            .global_exposure_lots = global_risk_state_.global_exposure_lots,
+            .target_event_exposure_lots = 0,
+        };
+        const auto event_risk = event_risk_state_by_event_id_.find(event_id);
+        if (event_risk != event_risk_state_by_event_id_.end()) {
+            state.open_orders_for_target_event = event_risk->second.open_orders;
+            state.target_event_exposure_lots = event_risk->second.exposure_lots;
+        }
+        return state;
+    }
+
+    void Oms::on_intent_accepted_risk(const AcceptedIntent& accepted_intent) noexcept {
+        GlobalRiskState state = make_risk_state_for_event(accepted_intent.intent.origin.event_id);
+        GlobalRiskManager::on_intent_accepted(accepted_intent, state);
+        global_risk_state_.open_orders_global = state.open_orders_global;
+        global_risk_state_.global_exposure_lots = state.global_exposure_lots;
+        auto& event_risk = event_risk_state_by_event_id_[accepted_intent.intent.origin.event_id];
+        event_risk.open_orders = state.open_orders_for_target_event;
+        event_risk.exposure_lots = state.target_event_exposure_lots;
+    }
+    //NOLINTNEXTLINE
+    void Oms::on_fill_risk(internal::EventId event_id, internal::QtyLots fill_qty_lots) noexcept {
+        GlobalRiskState state = make_risk_state_for_event(event_id);
+        GlobalRiskManager::on_fill(fill_qty_lots, state);
+        global_risk_state_.global_exposure_lots = state.global_exposure_lots;
+        auto& event_risk = event_risk_state_by_event_id_[event_id];
+        event_risk.open_orders = state.open_orders_for_target_event;
+        event_risk.exposure_lots = state.target_event_exposure_lots;
+    }
+//NOLINTNEXTLINE
+    void Oms::on_order_terminal_risk(internal::EventId event_id,
+                                     internal::QtyLots remaining_open_qty_lots) noexcept {
+        GlobalRiskState state = make_risk_state_for_event(event_id);
+        GlobalRiskManager::on_order_terminal(remaining_open_qty_lots, state);
+        global_risk_state_.open_orders_global = state.open_orders_global;
+        global_risk_state_.global_exposure_lots = state.global_exposure_lots;
+
+        if (state.open_orders_for_target_event == 0 &&
+            state.target_event_exposure_lots == 0) {
+            event_risk_state_by_event_id_.erase(event_id);
+            return;
+        }
+
+        auto& event_risk = event_risk_state_by_event_id_[event_id];
+        event_risk.open_orders = state.open_orders_for_target_event;
+        event_risk.exposure_lots = state.target_event_exposure_lots;
     }
 }

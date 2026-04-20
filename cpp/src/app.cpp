@@ -3,6 +3,7 @@
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/ingest/io_writer.hpp"
 #include "predex/oms/oms.hpp"
+#include "predex/oms/kalshi/private_ws_parser.hpp"
 #include "predex/router/market_registry.hpp"
 #include "predex/router/router.hpp"
 #include "predex/router/shard_dispatch.hpp"
@@ -17,9 +18,11 @@
 #include "predex/websocket/client.hpp"
 #include "predex/websocket/session.hpp"
 #include "predex/websocket/kalshi/auth_signer.hpp"
+#include "predex/websocket/kalshi/rest_client.hpp"
 #include "predex/websocket/kalshi/ws_adapter.hpp"
 #include "predex/utils/spsc_queue.hpp"
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -27,10 +30,40 @@
 #include <unordered_map>
 #include <vector>
 #include <mutex>
+#include <string_view>
+#include <system_error>
 
 
 namespace predex {
     constexpr std::int64_t kDefaultSleepMs = 100;
+    namespace {
+        [[nodiscard]] predex::internal::TimestampNs monotonic_now_ns() {
+            return static_cast<predex::internal::TimestampNs>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+        }
+
+        [[nodiscard]] internal::QtyLots parse_count_fp_to_lots(std::string_view value) {
+            if (value.empty()) {
+                return 0;
+            }
+            const std::size_t dot_pos = value.find('.');
+            const std::string_view integer_part =
+                dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
+            if (integer_part.empty()) {
+                return 0;
+            }
+            std::int64_t parsed = 0;
+            const auto [ptr, ec] =
+                std::from_chars(integer_part.data(), integer_part.data() + integer_part.size(), parsed);
+            if (ec != std::errc() || ptr != integer_part.data() + integer_part.size() || parsed < 0) {
+                return 0;
+            }
+            return static_cast<internal::QtyLots>(parsed);
+        }
+    } // namespace
+
     struct App::Runtime {
         using FrameHandle = predex::core::ingest::kalshi::FrameHandle;
         using FrameQueue = predex::utils::SPSCQueue<FrameHandle>;
@@ -74,6 +107,7 @@ namespace predex {
         std::string last_error;
         std::atomic<bool> running{false};
         std::vector<core::routing::kalshi::MarketRegistryEntry> market_registry_entries;
+        std::unordered_map<internal::MarketId, std::string> market_ticker_by_id_;
         static std::vector<predex::core::routing::kalshi::MarketRegistryEntry>
         build_market_registry_entries(const AppConfig& config) {
             std::vector<predex::core::routing::kalshi::MarketRegistryEntry> entries;
@@ -172,6 +206,11 @@ namespace predex {
         websocket::kalshi::WsAdapter ws_adapter;
         websocket::BoostBeastWsTransport ws_transport;
         websocket::WsSession ws_session;
+        websocket::kalshi::RestClient oms_rest_client;
+        websocket::kalshi::WsAdapter oms_ws_adapter;
+        websocket::BoostBeastWsTransport oms_ws_transport;
+        websocket::WsSession oms_ws_session;
+        core::oms::kalshi::PrivateWsParser oms_private_ws_parser;
 
         core::ingest::kalshi::FramePool frame_pool;
         std::unique_ptr<FrameQueue> io_to_router_queue;
@@ -210,6 +249,8 @@ namespace predex {
         std::jthread router_thread;
         std::vector<std::jthread> shard_threads; // will house strategy & risk eventually on the same thread as shard 
         std::jthread oms_thread;
+        std::jthread oms_rest_thread;
+        std::jthread oms_private_ws_thread;
         std::jthread logger_thread;
         std::jthread audit_thread;
 
@@ -221,6 +262,9 @@ namespace predex {
         void stop();
 
         void io_loop(const std::stop_token& stop_token);
+        void oms_rest_loop(const std::stop_token& stop_token);
+        void oms_private_ws_loop(const std::stop_token& stop_token);
+        [[nodiscard]] bool reconcile_open_orders_from_rest();
         void router_loop(const std::stop_token& stop_token) const;
         void shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const;
         void oms_loop(const std::stop_token& stop_token);
@@ -232,14 +276,22 @@ namespace predex {
     App::Runtime::Runtime(AppConfig config_in)
         : config(std::move(config_in)),
         market_registry_entries(build_market_registry_entries(config)),
+        market_ticker_by_id_(),
         auth_signer(websocket::kalshi::Credentials{
             .key_id = config.kalshi_ws.key_id,
             .private_key_pem = config.kalshi_ws.private_key_pem,
         }),
         ws_adapter(auth_signer, config.kalshi_ws.endpoint),
         ws_session(ws_transport, ws_adapter),
+        oms_rest_client(auth_signer, config.oms_transport.rest_endpoint),
+        oms_ws_adapter(auth_signer, config.oms_transport.private_ws_endpoint),
+        oms_ws_session(oms_ws_transport, oms_ws_adapter),
         frame_pool(config.pipeline.frame_pool_capacity),
         market_registry(market_registry_entries) {
+        market_ticker_by_id_.reserve(market_registry_entries.size());
+        for (const auto& entry : market_registry_entries) {
+            market_ticker_by_id_[entry.market_id_] = entry.ticker_;
+        }
 
         io_to_router_queue =
             std::make_unique<FrameQueue>(config.pipeline.io_to_router_capacity);
@@ -414,6 +466,29 @@ namespace predex {
                 return false;
             }
         }
+
+        if (config.oms_transport.enabled) {
+            if (!oms_ws_session.connect()) {
+                oms_ws_session.close();
+                ws_session.close();
+                set_error(oms_ws_session.last_error());
+                return false;
+            }
+
+            for (const auto& channel : config.oms_transport.private_ws_channels) {
+                if (!oms_ws_session.subscribe(channel)) {
+                    oms_ws_session.close();
+                    ws_session.close();
+                    set_error(oms_ws_session.last_error());
+                    return false;
+                }
+            }
+            if (!reconcile_open_orders_from_rest()) {
+                oms_ws_session.close();
+                ws_session.close();
+                return false;
+            }
+        }
         set_error("");
         running.store(true, std::memory_order_release);
         
@@ -433,6 +508,14 @@ namespace predex {
         oms_thread = std::jthread([this](const std::stop_token& stop_token){
             oms_loop(stop_token);
         });
+        oms_rest_thread = std::jthread([this](const std::stop_token& stop_token){
+            oms_rest_loop(stop_token);
+        });
+        if (config.oms_transport.enabled) {
+            oms_private_ws_thread = std::jthread([this](const std::stop_token& stop_token) {
+                oms_private_ws_loop(stop_token);
+            });
+        }
         logger_thread = std::jthread([this](const std::stop_token& stop_token){
             logger_loop(stop_token);
         });
@@ -472,6 +555,291 @@ namespace predex {
         }
 
         ws_session.close();
+    }
+
+    void App::Runtime::oms_rest_loop(const std::stop_token& stop_token) {
+        std::uint32_t idle_iters = 0;
+        const bool live_transport_enabled = config.oms_transport.enabled;
+        while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
+            bool processed = false;
+
+            predex::core::oms::kalshi::SubmitOrderCmd submit_cmd{};
+            if (oms_submit_queue != nullptr && oms_submit_queue->try_pop(submit_cmd)) {
+                processed = true;
+                predex::core::oms::kalshi::OrderLifecycleEvent event{};
+                if (live_transport_enabled) {
+                    const auto ticker_it =
+                        market_ticker_by_id_.find(submit_cmd.intent.origin.market_id);
+                    const std::string market_ticker =
+                        ticker_it != market_ticker_by_id_.end()
+                        ? ticker_it->second
+                        : std::string{};
+                    const auto result = oms_rest_client.submit_order(submit_cmd, market_ticker);
+                    event = predex::core::oms::kalshi::OrderLifecycleEvent{
+                        .origin = submit_cmd.intent.origin,
+                        .oms_request_id = submit_cmd.oms_request_id,
+                        .kind = result.ok
+                            ? predex::core::oms::kalshi::OrderLifecycleEventKind::kAck
+                            : predex::core::oms::kalshi::OrderLifecycleEventKind::kReject,
+                        .status = result.ok
+                            ? predex::core::oms::kalshi::OmsOrderStatus::kLive
+                            : predex::core::oms::kalshi::OmsOrderStatus::kRejected,
+                        .client_order_id = submit_cmd.client_order_id,
+                        .exchange_order_id = result.exchange_order_id,
+                        .recv_ts_ns = monotonic_now_ns(),
+                    };
+                    if (result.ok) {
+                        event.data = predex::core::oms::kalshi::OrderAck{
+                            .accepted_qty_lots = submit_cmd.intent.qty_lots,
+                        };
+                    } else {
+                        event.data = predex::core::oms::kalshi::OrderReject{
+                            .reason_code = "rest_submit_failed",
+                            .reason_message = result.error,
+                        };
+                    }
+                } else {
+                    event = predex::core::oms::kalshi::OrderLifecycleEvent{
+                        .origin = submit_cmd.intent.origin,
+                        .oms_request_id = submit_cmd.oms_request_id,
+                        .kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kReject,
+                        .status = predex::core::oms::kalshi::OmsOrderStatus::kRejected,
+                        .client_order_id = submit_cmd.client_order_id,
+                        .exchange_order_id = std::nullopt,
+                        .recv_ts_ns = monotonic_now_ns(),
+                        .data = predex::core::oms::kalshi::OrderReject{
+                            .reason_code = "transport_disabled",
+                            .reason_message = "OMS transport disabled: submit dropped",
+                        },
+                    };
+                }
+                if (!oms_transport_update_queue->try_push(std::move(event))) {
+                    set_error("OMS transport update queue backpressured on submit result");
+                    running.store(false, std::memory_order_release);
+                    break;
+                }
+            }
+
+            predex::core::oms::kalshi::CancelOrderCmd cancel_cmd{};
+            if (oms_cancel_queue != nullptr && oms_cancel_queue->try_pop(cancel_cmd)) {
+                processed = true;
+                if (live_transport_enabled) {
+                    const auto result = oms_rest_client.cancel_order(cancel_cmd);
+                    if (!result.ok) {
+                        predex::core::oms::kalshi::OrderLifecycleEvent event{
+                            .origin = cancel_cmd.origin,
+                            .oms_request_id = cancel_cmd.oms_request_id,
+                            .kind =
+                                predex::core::oms::kalshi::OrderLifecycleEventKind::kCancelReject,
+                            .status = predex::core::oms::kalshi::OmsOrderStatus::kPendingCancel,
+                            .client_order_id = cancel_cmd.client_order_id,
+                            .exchange_order_id = cancel_cmd.exchange_order_id,
+                            .recv_ts_ns = monotonic_now_ns(),
+                            .data = predex::core::oms::kalshi::CancelReject{
+                                .reason_code = "rest_cancel_failed",
+                                .reason_message = result.error,
+                            },
+                        };
+                        if (!oms_transport_update_queue->try_push(std::move(event))) {
+                            set_error(
+                                "OMS transport update queue backpressured on cancel result");
+                            running.store(false, std::memory_order_release);
+                            break;
+                        }
+                    }
+                } else {
+                    predex::core::oms::kalshi::OrderLifecycleEvent event{
+                        .origin = cancel_cmd.origin,
+                        .oms_request_id = cancel_cmd.oms_request_id,
+                        .kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kCancelReject,
+                        .status = predex::core::oms::kalshi::OmsOrderStatus::kPendingCancel,
+                        .client_order_id = cancel_cmd.client_order_id,
+                        .exchange_order_id = cancel_cmd.exchange_order_id,
+                        .recv_ts_ns = monotonic_now_ns(),
+                        .data = predex::core::oms::kalshi::CancelReject{
+                            .reason_code = "transport_disabled",
+                            .reason_message = "OMS transport disabled: cancel dropped",
+                        },
+                    };
+                    if (!oms_transport_update_queue->try_push(std::move(event))) {
+                        set_error(
+                            "OMS transport update queue backpressured on cancel result");
+                        running.store(false, std::memory_order_release);
+                        break;
+                    }
+                }
+            }
+
+            predex::core::oms::kalshi::ModifyOrderCmd modify_cmd{};
+            if (oms_modify_queue != nullptr && oms_modify_queue->try_pop(modify_cmd)) {
+                processed = true;
+                if (live_transport_enabled) {
+                    const auto result = oms_rest_client.modify_order(modify_cmd);
+                    if (!result.ok) {
+                        predex::core::oms::kalshi::OrderLifecycleEvent event{
+                            .origin = modify_cmd.replacement_intent.origin,
+                            .oms_request_id = modify_cmd.oms_request_id,
+                            .kind =
+                                predex::core::oms::kalshi::OrderLifecycleEventKind::kReplaceReject,
+                            .status = predex::core::oms::kalshi::OmsOrderStatus::kPendingModify,
+                            .client_order_id = modify_cmd.client_order_id,
+                            .exchange_order_id = modify_cmd.exchange_order_id,
+                            .recv_ts_ns = monotonic_now_ns(),
+                            .data = predex::core::oms::kalshi::ReplaceReject{
+                                .reason_code = "rest_modify_failed",
+                                .reason_message = result.error,
+                            },
+                        };
+                        if (!oms_transport_update_queue->try_push(std::move(event))) {
+                            set_error(
+                                "OMS transport update queue backpressured on modify result");
+                            running.store(false, std::memory_order_release);
+                            break;
+                        }
+                    }
+                } else {
+                    predex::core::oms::kalshi::OrderLifecycleEvent event{
+                        .origin = modify_cmd.replacement_intent.origin,
+                        .oms_request_id = modify_cmd.oms_request_id,
+                        .kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kReplaceReject,
+                        .status = predex::core::oms::kalshi::OmsOrderStatus::kPendingModify,
+                        .client_order_id = modify_cmd.client_order_id,
+                        .exchange_order_id = modify_cmd.exchange_order_id,
+                        .recv_ts_ns = monotonic_now_ns(),
+                        .data = predex::core::oms::kalshi::ReplaceReject{
+                            .reason_code = "transport_disabled",
+                            .reason_message = "OMS transport disabled: modify dropped",
+                        },
+                    };
+                    if (!oms_transport_update_queue->try_push(std::move(event))) {
+                        set_error(
+                            "OMS transport update queue backpressured on modify result");
+                        running.store(false, std::memory_order_release);
+                        break;
+                    }
+                }
+            }
+
+            if (processed) {
+                idle_iters = 0;
+                continue;
+            }
+
+            ++idle_iters;
+            if (idle_iters <= config.pipeline.idle_policy.spin_iters_oms) {
+                continue;
+            }
+            if (config.pipeline.idle_policy.yield_every > 0U &&
+                (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
+                std::this_thread::yield();
+            }
+        }
+    }
+
+    void App::Runtime::oms_private_ws_loop(const std::stop_token& stop_token) {
+        std::vector<predex::core::oms::kalshi::OrderLifecycleEvent> parsed_events;
+        parsed_events.reserve(predex::core::oms::kalshi::kDefaultMaxPrivateWsEventsPerMessage);
+        std::uint32_t reconnect_attempts = 0;
+        while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
+            const auto recv_result = oms_ws_session.recv_text(std::chrono::milliseconds{50});
+            if (recv_result.status == websocket::RecvStatus::kTimeout) {
+                continue;
+            }
+            if (recv_result.status == websocket::RecvStatus::kClosed) {
+                if (!running.load(std::memory_order_acquire)) {
+                    break;
+                }
+                const std::uint32_t backoff_ms =
+                    std::min<std::uint32_t>(5000, 100 * (1U << std::min(reconnect_attempts, 5U)));
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                ++reconnect_attempts;
+                if (!oms_ws_session.connect()) {
+                    continue;
+                }
+                bool subscribe_ok = true;
+                for (const auto& channel : config.oms_transport.private_ws_channels) {
+                    if (!oms_ws_session.subscribe(channel)) {
+                        subscribe_ok = false;
+                        break;
+                    }
+                }
+                if (!subscribe_ok) {
+                    oms_ws_session.close();
+                    continue;
+                }
+                if (!reconcile_open_orders_from_rest()) {
+                    running.store(false, std::memory_order_release);
+                    break;
+                }
+                reconnect_attempts = 0;
+                continue;
+            }
+            if (recv_result.status == websocket::RecvStatus::kError) {
+                oms_ws_session.close();
+                continue;
+            }
+
+            reconnect_attempts = 0;
+            const auto parse_status =
+                oms_private_ws_parser.parse_message(recv_result.payload, parsed_events);
+            if (parse_status == predex::core::oms::kalshi::PrivateWsParseStatus::kInvalidJson) {
+                continue;
+            }
+            if (parse_status ==
+                predex::core::oms::kalshi::PrivateWsParseStatus::kTooManyEvents) {
+                set_error("OMS private websocket parser exceeded per-message event cap");
+                running.store(false, std::memory_order_release);
+                continue;
+            }
+            for (auto& event : parsed_events) {
+                if (!oms_transport_update_queue->try_push(std::move(event))) {
+                    set_error("OMS transport update queue backpressured from private websocket");
+                    running.store(false, std::memory_order_release);
+                    break;
+                }
+            }
+        }
+        oms_ws_session.close();
+    }
+
+    [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest() {
+        const auto snapshot = oms_rest_client.fetch_open_orders();
+        if (!snapshot.ok) {
+            set_error("Failed to reconcile open orders from REST: " + snapshot.error);
+            return false;
+        }
+
+        for (const auto& order : snapshot.orders) {
+            const auto now_ns = static_cast<predex::internal::TimestampNs>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+            predex::core::oms::kalshi::OrderLifecycleEvent event{
+                .origin = {},
+                .oms_request_id = 0,
+                .kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kAck,
+                .status = predex::core::oms::kalshi::OmsOrderStatus::kLive,
+                .client_order_id = order.client_order_id,
+                .exchange_order_id = order.order_id,
+                .recv_ts_ns = now_ns,
+                .data = predex::core::oms::kalshi::OrderAck{
+                    .accepted_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
+                },
+            };
+            if (order.status == "canceled") {
+                event.kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kCanceled;
+                event.status = predex::core::oms::kalshi::OmsOrderStatus::kCanceled;
+            } else if (order.status == "executed") {
+                event.kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kFill;
+                event.status = predex::core::oms::kalshi::OmsOrderStatus::kFilled;
+            }
+            if (!oms_transport_update_queue->try_push(std::move(event))) {
+                set_error("OMS transport update queue backpressured during reconciliation");
+                return false;
+            }
+        }
+
+        return true;
     }
 
     void App::Runtime::router_loop(const std::stop_token& stop_token) const {
@@ -640,6 +1008,14 @@ namespace predex {
         if(oms_thread.joinable()){
             oms_thread.request_stop();
             oms_thread.join();
+        }
+        if (oms_rest_thread.joinable()) {
+            oms_rest_thread.request_stop();
+            oms_rest_thread.join();
+        }
+        if (oms_private_ws_thread.joinable()) {
+            oms_private_ws_thread.request_stop();
+            oms_private_ws_thread.join();
         }
         if(logger_thread.joinable()){
             logger_thread.request_stop();

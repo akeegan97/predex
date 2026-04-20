@@ -63,5 +63,13 @@
   },
   "audit": {
     "output_path": "predex_audit.jsonl"
+  },
+  "oms_transport": {
+    "enabled": false,
+    "rest_endpoint": "https://api.elections.kalshi.com",
+    "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+    "private_ws_channels": [
+      "user_orders"
+    ]
   }
 }

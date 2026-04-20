@@ -3,9 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "predex/audit/audit_types.hpp"
@@ -66,8 +64,14 @@ class Oms {
 
     [[nodiscard]] std::uint64_t rejected_intent_count() const noexcept;
   private:
+    struct EventRiskState {
+        std::size_t open_orders{0};
+        internal::QtyLots exposure_lots{0};
+    };
+
     GlobalRiskManager global_risk_;
     GlobalRiskState global_risk_state_{};
+    std::unordered_map<internal::EventId, EventRiskState> event_risk_state_by_event_id_;
 
     std::vector<SubmissionQueue*> shard_intent_queues_;
     std::vector<DecisionQueue*> shard_decision_queues_;
@@ -78,6 +82,9 @@ class Oms {
     std::unordered_map<OmsRequestId, OrderState> orders_by_request_id_;
     std::unordered_map<ClientOrderId, OmsRequestId> request_by_client_order_id_;
     std::unordered_map<ExchangeOrderId, OmsRequestId> request_by_exchange_order_id_;
+    std::unordered_map<OmsRequestId, internal::TimestampNs> decision_ts_by_request_id_;
+    std::unordered_map<OmsRequestId, internal::TimestampNs> transport_submit_ts_by_request_id_;
+    std::unordered_map<OmsRequestId, internal::TimestampNs> first_fill_ts_by_request_id_;
 
     std::size_t next_shard_index_{0};
     OmsRequestId next_oms_request_id_{1};
@@ -94,6 +101,10 @@ class Oms {
     [[nodiscard]] OmsProcessCode process_submission(OmsSubmission submission) noexcept;
 
     [[nodiscard]] OmsProcessCode process_intent(OrderIntent intent) noexcept;
+
+    [[nodiscard]] OmsProcessCode process_cancel_intent(CancelIntent intent) noexcept;
+
+    [[nodiscard]] OmsProcessCode process_modify_intent(ModifyIntent intent) noexcept;
 
     [[nodiscard]] IntentDecision make_transport_reject(
         const OrderIntent& intent,
@@ -118,6 +129,21 @@ class Oms {
     [[nodiscard]] bool apply_transport_update(const OrderLifecycleEvent& event);
 
     [[nodiscard]] OrderState* find_order_state(const OrderLifecycleEvent& event);
+
+    [[nodiscard]] OrderState* find_order_for_action(std::optional<OmsRequestId> oms_request_id,
+                                                    const ClientOrderId& client_order_id,
+                                                    const std::optional<ExchangeOrderId>&
+                                                        exchange_order_id);
+
+    [[nodiscard]] GlobalRiskState make_risk_state_for_event(
+        internal::EventId event_id) const noexcept;
+
+    void on_intent_accepted_risk(const AcceptedIntent& accepted_intent) noexcept;
+
+    void on_fill_risk(internal::EventId event_id, internal::QtyLots fill_qty_lots) noexcept;
+
+    void on_order_terminal_risk(internal::EventId event_id,
+                                internal::QtyLots remaining_open_qty_lots) noexcept;
 };
 
 } // namespace predex::core::oms::kalshi

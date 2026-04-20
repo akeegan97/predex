@@ -99,6 +99,14 @@ std::int64_t read_int64(const nlohmann::json& parent,
     return iterator->get<std::int64_t>();
 }
 
+bool read_bool(const nlohmann::json& parent, std::string_view key, bool fallback) {
+    const auto iterator = parent.find(std::string(key));
+    if (iterator == parent.end() || !iterator->is_boolean()) {
+        return fallback;
+    }
+    return iterator->get<bool>();
+}
+
 std::string read_string(const nlohmann::json& parent,
                         std::string_view key,
                         std::string fallback = {}) {
@@ -249,6 +257,23 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
     const auto tape_it = root.find("tape");
     if (tape_it != root.end() && tape_it->is_object()) {
         config.tape.output_path = read_string(*tape_it, "output_path", config.tape.output_path);
+    }
+
+    const auto oms_transport_it = root.find("oms_transport");
+    if (oms_transport_it != root.end() && oms_transport_it->is_object()) {
+        const auto& oms_transport = *oms_transport_it;
+        config.oms_transport.enabled =
+            read_bool(oms_transport, "enabled", config.oms_transport.enabled);
+        config.oms_transport.rest_endpoint = read_string(
+            oms_transport, "rest_endpoint", config.oms_transport.rest_endpoint);
+        config.oms_transport.private_ws_endpoint = read_string(
+            oms_transport, "private_ws_endpoint", config.oms_transport.private_ws_endpoint);
+        config.oms_transport.private_ws_channels =
+            read_string_array(oms_transport, "private_ws_channels");
+        if (config.oms_transport.enabled &&
+            config.oms_transport.private_ws_channels.empty()) {
+            config.oms_transport.private_ws_channels = {"user_orders"};
+        }
     }
 
     if (config.kalshi_ws.channels.empty()) {

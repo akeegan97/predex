@@ -56,6 +56,22 @@ class DiscoverySettings:
         }
 
 
+@dataclass(slots=True)
+class OmsTransportSettings:
+    enabled: bool = False
+    rest_endpoint: str = "https://api.elections.kalshi.com"
+    private_ws_endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    private_ws_channels: tuple[str, ...] = ("user_orders",)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "rest_endpoint": self.rest_endpoint,
+            "private_ws_endpoint": self.private_ws_endpoint,
+            "private_ws_channels": list(self.private_ws_channels),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class GeneratedEventConfig:
     event_ticker: str
@@ -152,6 +168,7 @@ def build_trader_config_result(
     *,
     discovery: DiscoverySettings | None = None,
     pipeline: PipelineSettings | None = None,
+    oms_transport: OmsTransportSettings | None = None,
     tape_output_path: str = "predex_tape.bin",
     audit_output_path: str = "predex_audit.jsonl",
     include_topologies: Iterable[TopologyKind | str] | None = None,
@@ -165,6 +182,7 @@ def build_trader_config_result(
 
     discovery = discovery or DiscoverySettings()
     pipeline = pipeline or PipelineSettings()
+    oms_transport = oms_transport or OmsTransportSettings()
     included_filter = _normalize_topology_set(include_topologies)
     excluded_filter = _normalize_topology_set(exclude_topologies) or set()
 
@@ -283,6 +301,7 @@ def build_trader_config_result(
         "pipeline": pipeline.to_dict(),
         "tape": {"output_path": tape_output_path},
         "audit": {"output_path": audit_output_path},
+        "oms_transport": oms_transport.to_dict(),
     }
     return TraderConfigBuildResult(
         config=config,
@@ -297,6 +316,7 @@ def build_trader_config(
     *,
     discovery: DiscoverySettings | None = None,
     pipeline: PipelineSettings | None = None,
+    oms_transport: OmsTransportSettings | None = None,
     tape_output_path: str = "predex_tape.bin",
     audit_output_path: str = "predex_audit.jsonl",
     include_topologies: Iterable[TopologyKind | str] | None = None,
@@ -307,6 +327,7 @@ def build_trader_config(
         events,
         discovery=discovery,
         pipeline=pipeline,
+        oms_transport=oms_transport,
         tape_output_path=tape_output_path,
         audit_output_path=audit_output_path,
         include_topologies=include_topologies,

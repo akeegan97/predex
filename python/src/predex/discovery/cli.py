@@ -9,6 +9,7 @@ from predex.env import load_repo_dotenv
 from .config import (
     CredentialSettings,
     DiscoverySettings,
+    OmsTransportSettings,
     PipelineSettings,
     build_trader_config_result,
 )
@@ -172,6 +173,27 @@ def build_parser() -> argparse.ArgumentParser:
         default="predex_audit.jsonl",
         help="Audit output path written into the config.",
     )
+    parser.add_argument(
+        "--oms-enabled",
+        action="store_true",
+        help="Enable live OMS transport wiring in generated config (default: disabled).",
+    )
+    parser.add_argument(
+        "--oms-rest-endpoint",
+        default="https://api.elections.kalshi.com",
+        help="OMS REST endpoint written into generated config.",
+    )
+    parser.add_argument(
+        "--oms-private-ws-endpoint",
+        default="wss://api.elections.kalshi.com/trade-api/ws/v2",
+        help="OMS private websocket endpoint written into generated config.",
+    )
+    parser.add_argument(
+        "--oms-private-ws-channel",
+        action="append",
+        default=[],
+        help="OMS private WS channel to include. Repeat for multiple channels. Default: user_orders.",
+    )
     return parser
 
 
@@ -197,6 +219,14 @@ def main(argv: list[str] | None = None) -> int:
         shard_input_capacity=args.shard_input_capacity,
         shard_to_logger_capacity=args.shard_to_logger_capacity,
     )
+    oms_transport = OmsTransportSettings(
+        enabled=args.oms_enabled,
+        rest_endpoint=args.oms_rest_endpoint,
+        private_ws_endpoint=args.oms_private_ws_endpoint,
+        private_ws_channels=tuple(args.oms_private_ws_channel)
+        if args.oms_private_ws_channel
+        else ("user_orders",),
+    )
 
     event_limit = None if args.all_events else args.event_limit
 
@@ -214,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         events,
         discovery=discovery,
         pipeline=pipeline,
+        oms_transport=oms_transport,
         tape_output_path=args.tape_output,
         audit_output_path=args.audit_output,
         include_topologies=args.include_topology or None,

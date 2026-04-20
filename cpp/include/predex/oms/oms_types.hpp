@@ -95,7 +95,25 @@ struct GroupOrderIntent {
     internal::TimestampNs intent_ts_ns{0};
 };
 
-using OmsSubmission = std::variant<OrderIntent, GroupOrderIntent>;
+struct CancelIntent {
+    IntentOrigin origin{};
+    std::optional<OmsRequestId> target_oms_request_id;
+    ClientOrderId target_client_order_id;
+    std::optional<ExchangeOrderId> target_exchange_order_id;
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+struct ModifyIntent {
+    IntentOrigin origin{};
+    std::optional<OmsRequestId> target_oms_request_id;
+    ClientOrderId target_client_order_id;
+    std::optional<ExchangeOrderId> target_exchange_order_id;
+    OrderIntent replacement_intent{};
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+using OmsSubmission =
+    std::variant<OrderIntent, GroupOrderIntent, CancelIntent, ModifyIntent>;
 
 enum class IntentDecisionCode : std::uint8_t {
     kAccepted = 1,

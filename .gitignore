@@ -22,3 +22,5 @@ docs/replay/*.summary.json
 docs/replay/*.png
 docs/replay/*.xlsx
 docs/replay/*.jsonl
+docs/rest_schemas/*
+docs/private_ws_schemas/*

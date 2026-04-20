@@ -70,11 +70,19 @@ namespace predex{
         std::string output_path{"predex_audit.jsonl"};
     };
 
+    struct OmsTransportConfig {
+        bool enabled{false};
+        std::string rest_endpoint{"https://api.elections.kalshi.com"};
+        std::string private_ws_endpoint{"wss://api.elections.kalshi.com/trade-api/ws/v2"};
+        std::vector<std::string> private_ws_channels;
+    };
+
     struct AppConfig{
         KalshiWsConfig kalshi_ws;
         PipelineConfig pipeline;
         TapeConfig tape;
         AuditConfig audit;
+        OmsTransportConfig oms_transport;
         std::vector<MarketRouteConfig> market_routes;
         
     };

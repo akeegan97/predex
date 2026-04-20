@@ -18,8 +18,14 @@ bool ExecutionTransport::try_modify(const ModifyOrderCmd& cmd) noexcept {
 }
 
 bool ExecutionTransport::try_pop_lifecycle_event(OrderLifecycleEvent& event_out) noexcept {
-    return queues_.inbound_update_queue != nullptr &&
-           queues_.inbound_update_queue->try_pop(event_out);
+    // Round-robin between the two producer queues so neither starves the other.
+    auto* first  = drain_rest_next_ ? queues_.rest_update_queue : queues_.ws_update_queue;
+    auto* second = drain_rest_next_ ? queues_.ws_update_queue   : queues_.rest_update_queue;
+    drain_rest_next_ = !drain_rest_next_;
+    if (first != nullptr && first->try_pop(event_out)) {
+        return true;
+    }
+    return second != nullptr && second->try_pop(event_out);
 }
 
 bool ExecutionTransport::submit_available() const noexcept {
@@ -35,7 +41,7 @@ bool ExecutionTransport::modify_available() const noexcept {
 }
 
 bool ExecutionTransport::inbound_available() const noexcept {
-    return queues_.inbound_update_queue != nullptr;
+    return queues_.rest_update_queue != nullptr || queues_.ws_update_queue != nullptr;
 }
 
 } // namespace predex::core::oms::kalshi

@@ -233,7 +233,8 @@ namespace predex {
         std::unique_ptr<SubmitOrderQueue> oms_submit_queue;
         std::unique_ptr<CancelOrderQueue> oms_cancel_queue;
         std::unique_ptr<ModifyOrderQueue> oms_modify_queue;
-        std::unique_ptr<OmsLifecycleQueue> oms_transport_update_queue;
+        std::unique_ptr<OmsLifecycleQueue> oms_rest_update_queue;
+        std::unique_ptr<OmsLifecycleQueue> oms_ws_update_queue;
         std::unique_ptr<AuditQueue> oms_audit_queue;
 
         core::routing::kalshi::MarketRegistry market_registry;
@@ -349,7 +350,9 @@ namespace predex {
             std::make_unique<CancelOrderQueue>(config.pipeline.shard_input_capacity);
         oms_modify_queue =
             std::make_unique<ModifyOrderQueue>(config.pipeline.shard_input_capacity);
-        oms_transport_update_queue =
+        oms_rest_update_queue =
+            std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity);
+        oms_ws_update_queue =
             std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity);
         oms_audit_queue =
             std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
@@ -428,7 +431,8 @@ namespace predex {
                 .submit_queue = oms_submit_queue.get(),
                 .cancel_queue = oms_cancel_queue.get(),
                 .modify_queue = oms_modify_queue.get(),
-                .inbound_update_queue = oms_transport_update_queue.get(),
+                .rest_update_queue = oms_rest_update_queue.get(),
+                .ws_update_queue = oms_ws_update_queue.get(),
             },
             predex::core::oms::kalshi::GlobalRiskManager{},
             oms_audit_queue.get(),
@@ -675,7 +679,7 @@ namespace predex {
                         },
                     };
                 }
-                if (!oms_transport_update_queue->try_push(std::move(event))) {
+                if (!oms_rest_update_queue->try_push(std::move(event))) {
                     set_error("OMS transport update queue backpressured on submit result");
                     running.store(false, std::memory_order_release);
                     break;
@@ -702,7 +706,7 @@ namespace predex {
                                 .reason_message = result.error,
                             },
                         };
-                        if (!oms_transport_update_queue->try_push(std::move(event))) {
+                        if (!oms_rest_update_queue->try_push(std::move(event))) {
                             set_error(
                                 "OMS transport update queue backpressured on cancel result");
                             running.store(false, std::memory_order_release);
@@ -723,7 +727,7 @@ namespace predex {
                             .reason_message = "OMS transport disabled: cancel dropped",
                         },
                     };
-                    if (!oms_transport_update_queue->try_push(std::move(event))) {
+                    if (!oms_rest_update_queue->try_push(std::move(event))) {
                         set_error(
                             "OMS transport update queue backpressured on cancel result");
                         running.store(false, std::memory_order_release);
@@ -752,7 +756,7 @@ namespace predex {
                                 .reason_message = result.error,
                             },
                         };
-                        if (!oms_transport_update_queue->try_push(std::move(event))) {
+                        if (!oms_rest_update_queue->try_push(std::move(event))) {
                             set_error(
                                 "OMS transport update queue backpressured on modify result");
                             running.store(false, std::memory_order_release);
@@ -773,7 +777,7 @@ namespace predex {
                             .reason_message = "OMS transport disabled: modify dropped",
                         },
                     };
-                    if (!oms_transport_update_queue->try_push(std::move(event))) {
+                    if (!oms_rest_update_queue->try_push(std::move(event))) {
                         set_error(
                             "OMS transport update queue backpressured on modify result");
                         running.store(false, std::memory_order_release);
@@ -854,7 +858,7 @@ namespace predex {
                 continue;
             }
             for (auto& event : parsed_events) {
-                if (!oms_transport_update_queue->try_push(std::move(event))) {
+                if (!oms_ws_update_queue->try_push(std::move(event))) {
                     set_error("OMS transport update queue backpressured from private websocket");
                     running.store(false, std::memory_order_release);
                     break;
@@ -944,7 +948,7 @@ namespace predex {
                     .accepted_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
                 },
             };
-            if (!oms_transport_update_queue->try_push(std::move(event))) {
+            if (!oms_ws_update_queue->try_push(std::move(event))) {
                 set_error("OMS transport update queue backpressured during reconciliation");
                 return false;
             }

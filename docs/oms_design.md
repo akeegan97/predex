@@ -146,7 +146,7 @@ The OMS coordinator enqueues commands to three separate queues consumed by the O
 | `CancelOrderCmd` | `oms_cancel_queue` | cancel intent or `cancel_all_live_orders()` |
 | `ModifyOrderCmd` | `oms_modify_queue` | modify intent |
 
-The REST thread executes blocking HTTP calls and pushes the resulting `OrderLifecycleEvent` to `oms_transport_update_queue`.
+The REST thread executes blocking HTTP calls and pushes the resulting `OrderLifecycleEvent` to `oms_rest_update_queue`. The private WS thread pushes fill and lifecycle events to `oms_ws_update_queue`. The OMS coordinator drains both round-robin via `ExecutionTransport::try_pop_lifecycle_event()`.
 
 ## Pump Loop
 

@@ -96,16 +96,17 @@ OMS coordinator thread
   -> oms_cancel_queue
   -> oms_modify_queue
   -> oms_audit_queue
-  <- oms_transport_update_queue     (two producers: REST + private WS threads)
+  <- oms_rest_update_queue          (REST thread only)
+  <- oms_ws_update_queue            (private WS thread only)
 
 OMS REST thread
   <- oms_submit_queue
   <- oms_cancel_queue
   <- oms_modify_queue
-  -> oms_transport_update_queue
+  -> oms_rest_update_queue
 
 OMS private WS thread
-  -> oms_transport_update_queue
+  -> oms_ws_update_queue
 
 Logger thread
   <- router_to_logger_queue
@@ -120,7 +121,7 @@ IO thread
   <- recycle_queue
 ```
 
-Note: `oms_transport_update_queue` has two producers (REST thread and private WS thread). This is the only queue in the design that deviates from strict SPSC.
+All queues are strict SPSC. The OMS coordinator drains `oms_rest_update_queue` and `oms_ws_update_queue` round-robin via `ExecutionTransport::try_pop_lifecycle_event()`.
 
 ## Frame Lifecycle
 

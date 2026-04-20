@@ -100,6 +100,7 @@ Supporting docs:
 - [Design Decisions](docs/design_decisions.md)
 - [Ownership and Invariants](docs/ownership_invariants.md)
 - [Data Contract](docs/data_contract.md)
+- [Python Toolchain](docs/predex-python.md)
 - [Performance Backlog](docs/perf_backlog.md)
 - [Replay Roadmap](docs/replay_matrix.md)
 

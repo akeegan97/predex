@@ -146,9 +146,9 @@ The originating shard uses decisions to update `LocalRiskState` (open intent cou
 
 ## 9. Order Lifecycle Contract
 
-`OrderLifecycleEvent` is pushed to `oms_transport_update_queue` by two producers:
-- OMS REST thread (REST API response)
-- OMS private WS thread (exchange push via private websocket)
+`OrderLifecycleEvent` is pushed to two separate SPSC queues, one per producer:
+- `oms_rest_update_queue` — written by the OMS REST thread (REST API responses)
+- `oms_ws_update_queue` — written by the OMS private WS thread (exchange push events)
 
 The OMS coordinator drains the queue, applies the event to `OrderStore`, updates `RiskEngine`, and fans the event to `oms_to_shard_lifecycle_queue[i]` for the originating shard.
 

@@ -11,7 +11,11 @@ struct OmsTransportQueues {
     utils::SPSCQueue<SubmitOrderCmd>* submit_queue{nullptr};
     utils::SPSCQueue<CancelOrderCmd>* cancel_queue{nullptr};
     utils::SPSCQueue<ModifyOrderCmd>* modify_queue{nullptr};
-    utils::SPSCQueue<OrderLifecycleEvent>* inbound_update_queue{nullptr};
+    // Two separate SPSC queues — one per producer — to preserve the SPSC invariant.
+    // rest_update_queue: written by the OMS REST thread only.
+    // ws_update_queue:   written by the OMS private WS thread only.
+    utils::SPSCQueue<OrderLifecycleEvent>* rest_update_queue{nullptr};
+    utils::SPSCQueue<OrderLifecycleEvent>* ws_update_queue{nullptr};
 };
 
 // Thin adapter over OmsTransportQueues. Encapsulates all outbound command
@@ -39,6 +43,7 @@ class ExecutionTransport {
 
   private:
     OmsTransportQueues queues_{};
+    bool drain_rest_next_{true};
 };
 
 } // namespace predex::core::oms::kalshi

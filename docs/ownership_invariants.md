@@ -87,11 +87,15 @@ Each queue has exactly one producer and one consumer (SPSC), except where noted.
 
 **Transport → OMS coordinator:**
 
-- `oms_transport_update_queue` — **MPSC deviation**: two producers
-  - producers: OMS REST thread AND OMS private WS thread
+- `oms_rest_update_queue`
+  - producer: OMS REST thread only
   - consumer: OMS coordinator thread
 
-This is the only queue that deviates from strict SPSC. The two transport threads write independently; the OMS coordinator drains both through the same queue.
+- `oms_ws_update_queue`
+  - producer: OMS private WS thread only (including post-reconnect reconciliation)
+  - consumer: OMS coordinator thread
+
+`ExecutionTransport::try_pop_lifecycle_event()` round-robins between the two queues on each call so neither starves the other. All queues are strict SPSC.
 
 **Audit:**
 

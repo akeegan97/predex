@@ -65,8 +65,9 @@ namespace predex::core::routing::kalshi{
         if(!get_string(obj, "type", obj_type)){
             return RouteDecision::kToLogger; 
         }
-        if(obj_type != "orderbook_delta" && obj_type != "trade" && obj_type != "orderbook_snapshot"){
-            return RouteDecision::kToLogger; 
+        if(obj_type != "orderbook_delta" && obj_type != "trade" &&
+           obj_type != "orderbook_snapshot" && obj_type != "market_lifecycle"){
+            return RouteDecision::kToLogger;
         }
         if(obj_type == "orderbook_delta"){
             handle.event_type_ = predex::core::ingest::kalshi::KalshiEventType::kDelta;
@@ -76,6 +77,9 @@ namespace predex::core::routing::kalshi{
         }
         if(obj_type == "orderbook_snapshot"){
             handle.event_type_ = predex::core::ingest::kalshi::KalshiEventType::kSnapshot;
+        }
+        if(obj_type == "market_lifecycle"){
+            handle.event_type_ = predex::core::ingest::kalshi::KalshiEventType::kLifecycle;
         }
 
         std::uint64_t sid = 0;
@@ -97,10 +101,15 @@ namespace predex::core::routing::kalshi{
             return RouteDecision::kToLogger; 
         }
         if(!lookup_route(handle, market_ticker)){
+            if (handle.event_type_ == predex::core::ingest::kalshi::KalshiEventType::kLifecycle) {
+                return RouteDecision::kDrop;
+            }
             return RouteDecision::kToLogger;
         }
-        if(!check_sequence(handle)){
-            return RouteDecision::kToLogger; 
+        if(handle.event_type_ != predex::core::ingest::kalshi::KalshiEventType::kLifecycle){
+            if(!check_sequence(handle)){
+                return RouteDecision::kToLogger;
+            }
         }
         return RouteDecision::kToShard;
         
@@ -186,6 +195,10 @@ namespace predex::core::routing::kalshi{
         }
         return processed;
     }
+    void Router::reset_sequence_state() noexcept {
+        last_seq_by_sid_.clear();
+    }
+
     std::uint64_t Router::monotonic_now_ns() noexcept{
         //TODO check compared to using a lower latency clock source like __rdtsc with cpu frequency calibration
         auto now = std::chrono::steady_clock::now();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -43,7 +44,15 @@ class Shard {
           event_store_(event_store),
           bundle_(std::move(bundle)) {}
 
+    // Thread-safe: may be called from any thread (e.g. io_loop on reconnect).
+    void request_reset() noexcept {
+        reset_requested_.store(true, std::memory_order_release);
+    }
+
     [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept {
+        if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
+            event_store_.reset_all_books();
+        }
         std::size_t processed = bundle_.drain_oms_updates(max_batch_size);
         while (processed < max_batch_size) {
             const ProcessOneResult result = process_one();
@@ -75,6 +84,8 @@ class Shard {
     parsers::kalshi::Parser parser_;
     EventStore& event_store_;
     Bundle bundle_;
+
+    std::atomic<bool> reset_requested_{false};
 
     std::uint64_t processed_count_{0};
     std::uint64_t failed_count_{0};
@@ -159,6 +170,14 @@ class Shard {
             ++apply_fail_count_;
             return ProcessOneResult{
                 .code = ProcessCode::kApplyFail,
+                .apply_code = apply_result,
+                .pipeline_code = PipelineDecisionCode::kDeclined,
+            };
+        }
+
+        if (event.type == internal::EventType::kLifecycle) {
+            return ProcessOneResult{
+                .code = ProcessCode::kProcessed,
                 .apply_code = apply_result,
                 .pipeline_code = PipelineDecisionCode::kDeclined,
             };

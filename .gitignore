@@ -24,3 +24,4 @@ docs/replay/*.xlsx
 docs/replay/*.jsonl
 docs/rest_schemas/*
 docs/private_ws_schemas/*
+.claude/settings.local.json

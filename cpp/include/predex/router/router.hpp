@@ -33,6 +33,9 @@ namespace predex::core::routing::kalshi{
 
             [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
 
+            [[nodiscard]] const RouterTelemetry& telemetry() const noexcept { return telemetry_; }
+            void reset_sequence_state() noexcept;
+
         private:
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& ingress_queue_; // IOWriter producer, Router consumer
             predex::core::ingest::kalshi::FramePool& frame_pool_;

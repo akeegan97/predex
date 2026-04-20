@@ -120,7 +120,8 @@ class MonotonicArbStrategy {
         const ChainEntry& harder,
         const AppliedEventUpdate& update) noexcept {
         if (!easier.market.has_book || !harder.market.has_book ||
-            easier.market.desynced || harder.market.desynced) {
+            easier.market.desynced || harder.market.desynced ||
+            !easier.market.lifecycle.tradeable || !harder.market.lifecycle.tradeable) {
             return std::nullopt;
         }
 

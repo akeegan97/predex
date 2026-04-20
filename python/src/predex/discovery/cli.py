@@ -86,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Subscription channel to include in the config. Repeat for multiple channels.",
     )
     parser.add_argument(
+        "--lifecycle-channel",
+        action="append",
+        default=[],
+        help="Global lifecycle channel to subscribe without market_ticker filters. Default: market_lifecycle_v2.",
+    )
+    parser.add_argument(
         "--shard-count",
         type=int,
         default=4,
@@ -203,9 +209,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     channels = tuple(args.channel) if args.channel else ("trade", "orderbook_delta")
+    lifecycle_channels = tuple(args.lifecycle_channel) if args.lifecycle_channel else ("market_lifecycle_v2",)
     discovery = DiscoverySettings(
         endpoint=args.ws_endpoint,
         channels=channels,
+        lifecycle_channels=lifecycle_channels,
         credentials=CredentialSettings(
             key_id_env=args.key_id_env,
             private_key_pem_env=args.private_key_env,

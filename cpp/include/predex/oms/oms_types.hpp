@@ -128,6 +128,7 @@ enum class IntentRejectReason : std::uint8_t {
     kRateLimited = 3,
     kOmsDisabled = 4,
     kVenueUnavailable = 5,
+    kHalted = 6,
 };
 
 struct AcceptedIntent {

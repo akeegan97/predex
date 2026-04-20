@@ -36,12 +36,19 @@ struct DepthView {
     std::array<SideDepthLevel, Depth> asks{};
 };
 
+struct MarketLifecycleState {
+    std::uint64_t open_ts_s{0};
+    std::uint64_t close_ts_s{0};
+    bool tradeable{false};
+};
+
 struct EventMarketView {
     internal::MarketId market_id{0};
     bool has_book{false};
     bool desynced{false};
     DepthView<kMaxDepth> depth{};
     std::optional<internal::TradeData> last_trade;
+    MarketLifecycleState lifecycle{};
 };
 
 struct ChainEntry {
@@ -52,6 +59,8 @@ struct ChainEntry {
 struct EventMarketDefinition {
     internal::MarketId market_id{0};
     std::int64_t strike_key{0};
+    std::uint64_t close_time_s{0};
+    bool tradeable{false};
 };
 
 struct EventDefinition {
@@ -131,6 +140,9 @@ struct Event {
     internal::TimestampNs last_update_ns{0};
 
     EventApplyCode apply_market_update(const internal::NormalizedEvent& event);
+
+    [[nodiscard]] const EventMarketView* find_market_view(
+        internal::MarketId market_id) const noexcept;
 };
 
 class EventStore {
@@ -155,6 +167,14 @@ class EventStore {
 
     [[nodiscard]] std::size_t size() const noexcept { return events_.size(); }
     [[nodiscard]] bool empty() const noexcept { return events_.empty(); }
+
+    // Resets all BookState entries so that the next snapshot from a reconnected
+    // session is treated as the first snapshot. Call from the shard thread only.
+    void reset_all_books() noexcept;
+
+    // Approximate count of events whose derived state is currently desynced.
+    // Safe to read from any thread as a best-effort monitoring value.
+    [[nodiscard]] std::size_t desynced_event_count() const noexcept;
 
   private:
     std::unordered_map<internal::EventId, Event> events_;

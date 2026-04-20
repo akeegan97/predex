@@ -75,6 +75,8 @@ enum class RiskRejectReason : std::uint8_t {
     kStrategyDisabled = 4,
     kInvalidSignal = 5,
     kInvalidIntent = 6,
+    kNetPositionLimit = 7,
+    kMarketCloseSoon = 8,
 };
 
 struct RiskDecision {

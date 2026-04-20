@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cstdio>
+#include <ctime>
 #include <memory>
 #include <thread>
 #include <atomic>
@@ -108,6 +110,7 @@ namespace predex {
         std::atomic<bool> running{false};
         std::vector<core::routing::kalshi::MarketRegistryEntry> market_registry_entries;
         std::unordered_map<internal::MarketId, std::string> market_ticker_by_id_;
+        std::unordered_map<std::string, std::size_t> registry_index_by_ticker_;
         static std::vector<predex::core::routing::kalshi::MarketRegistryEntry>
         build_market_registry_entries(const AppConfig& config) {
             std::vector<predex::core::routing::kalshi::MarketRegistryEntry> entries;
@@ -126,7 +129,7 @@ namespace predex {
         }
         static bool
         build_event_definitions_by_shard(
-            const std::vector<predex::core::routing::kalshi::MarketRegistryEntry>& entries,
+            const std::vector<MarketRouteConfig>& routes,
             std::size_t shard_count,
             std::vector<std::vector<core::shards::kalshi::EventDefinition>>& definitions_by_shard,
             std::string& error_out) {
@@ -146,46 +149,51 @@ namespace predex {
             };
 
             std::unordered_map<std::uint32_t, EventAccumulator> grouped_events;
-            grouped_events.reserve(entries.size());
+            grouped_events.reserve(routes.size());
 
-            for (const auto& entry : entries) {
-                if (entry.market_id_ == 0 || entry.event_id_ == 0) {
+            for (const auto& route : routes) {
+                if (route.market_id == 0 || route.event_id == 0) {
                     error_out = "market route entries must define non-zero market_id and event_id";
                     return false;
                 }
-                if (entry.topology_kind_ == predex::internal::EventTopologyKind::kUnknown) {
+                if (route.topology_kind == predex::internal::EventTopologyKind::kUnknown) {
                     error_out = "market route entries must define a non-unknown topology_kind";
                     return false;
                 }
-                auto& accumulator = grouped_events[entry.event_id_];
+                const auto event_id32 = static_cast<std::uint32_t>(route.event_id);
+                const auto affinity_key16 = static_cast<std::uint16_t>(route.affinity_key);
+                auto& accumulator = grouped_events[event_id32];
                 if (!accumulator.affinity_initialized) {
-                    accumulator.affinity_key = entry.affinity_key_;
+                    accumulator.affinity_key = affinity_key16;
                     accumulator.affinity_initialized = true;
-                    accumulator.topology_kind = entry.topology_kind_;
-                } else if (accumulator.affinity_key != entry.affinity_key_) {
-                    error_out = "event " + std::to_string(entry.event_id_) +
+                    accumulator.topology_kind = route.topology_kind;
+                } else if (accumulator.affinity_key != affinity_key16) {
+                    error_out = "event " + std::to_string(event_id32) +
                         " has inconsistent affinity_key values in config";
                     return false;
-                } else if (accumulator.topology_kind != entry.topology_kind_) {
-                    error_out = "event " + std::to_string(entry.event_id_) +
+                } else if (accumulator.topology_kind != route.topology_kind) {
+                    error_out = "event " + std::to_string(event_id32) +
                         " has inconsistent topology_kind values in config";
                     return false;
                 }
+                const auto market_id32 = static_cast<std::uint32_t>(route.market_id);
                 const auto duplicate_market = std::find_if(
                     accumulator.markets.begin(),
                     accumulator.markets.end(),
-                    [&entry](const core::shards::kalshi::EventMarketDefinition& market) {
-                        return market.market_id == entry.market_id_;
+                    [market_id32](const core::shards::kalshi::EventMarketDefinition& market) {
+                        return market.market_id == market_id32;
                     });
                 if (duplicate_market != accumulator.markets.end()) {
-                    error_out = "event " + std::to_string(entry.event_id_) +
-                        " contains duplicate market_id " + std::to_string(entry.market_id_) +
+                    error_out = "event " + std::to_string(event_id32) +
+                        " contains duplicate market_id " + std::to_string(market_id32) +
                         " in config";
                     return false;
                 }
                 accumulator.markets.push_back(core::shards::kalshi::EventMarketDefinition{
-                    .market_id = entry.market_id_,
-                    .strike_key = entry.strike_key_,
+                    .market_id = market_id32,
+                    .strike_key = route.strike_key,
+                    .close_time_s = route.close_time_s,
+                    .tradeable = route.tradeable,
                 });
             }
 
@@ -264,7 +272,7 @@ namespace predex {
         void io_loop(const std::stop_token& stop_token);
         void oms_rest_loop(const std::stop_token& stop_token);
         void oms_private_ws_loop(const std::stop_token& stop_token);
-        [[nodiscard]] bool reconcile_open_orders_from_rest();
+        [[nodiscard]] bool reconcile_open_orders_from_rest(bool is_startup);
         void router_loop(const std::stop_token& stop_token) const;
         void shard_loop(std::size_t shard_index, const std::stop_token& stop_token) const;
         void oms_loop(const std::stop_token& stop_token);
@@ -272,6 +280,7 @@ namespace predex {
         void audit_loop(const std::stop_token& stop_token) const;
         void set_error(std::string message);
         std::string_view last_error_view() const noexcept;
+        void print_health_status() const noexcept;
     };
     App::Runtime::Runtime(AppConfig config_in)
         : config(std::move(config_in)),
@@ -289,8 +298,11 @@ namespace predex {
         frame_pool(config.pipeline.frame_pool_capacity),
         market_registry(market_registry_entries) {
         market_ticker_by_id_.reserve(market_registry_entries.size());
-        for (const auto& entry : market_registry_entries) {
+        registry_index_by_ticker_.reserve(market_registry_entries.size());
+        for (std::size_t i = 0; i < market_registry_entries.size(); ++i) {
+            const auto& entry = market_registry_entries[i];
             market_ticker_by_id_[entry.market_id_] = entry.ticker_;
+            registry_index_by_ticker_[entry.ticker_] = i;
         }
 
         io_to_router_queue =
@@ -345,7 +357,7 @@ namespace predex {
         std::vector<std::vector<core::shards::kalshi::EventDefinition>> event_definitions_by_shard;
         std::string event_definition_error;
         if (!build_event_definitions_by_shard(
-                market_registry_entries,
+                config.market_routes,
                 config.pipeline.shard_count,
                 event_definitions_by_shard,
                 event_definition_error)) {
@@ -419,7 +431,16 @@ namespace predex {
                 .inbound_update_queue = oms_transport_update_queue.get(),
             },
             predex::core::oms::kalshi::GlobalRiskManager{},
-            oms_audit_queue.get());
+            oms_audit_queue.get(),
+            config.oms_transport.max_session_loss_ticks);
+
+        predex::core::shards::kalshi::LocalRiskLimits local_risk_limits{};
+        if (config.local_risk.max_net_position_lots_per_market > 0) {
+            local_risk_limits.max_net_position_lots_per_market =
+                config.local_risk.max_net_position_lots_per_market;
+        }
+        local_risk_limits.min_seconds_to_close = config.local_risk.min_seconds_to_close;
+        local_risk_limits.trading_enabled = config.local_risk.trading_enabled;
 
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
             shards.push_back(std::make_unique<Shard>(
@@ -429,7 +450,7 @@ namespace predex {
                 event_stores[i],
                 ShardPipeline{
                     static_cast<std::uint16_t>(i),
-                    LocalRiskManager{},
+                    LocalRiskManager{local_risk_limits},
                     shard_to_oms_intent_queues[i].get(),
                     oms_to_shard_decision_queues[i].get(),
                     oms_to_shard_lifecycle_queues[i].get(),
@@ -466,6 +487,13 @@ namespace predex {
                 return false;
             }
         }
+        for (const auto& channel : config.kalshi_ws.lifecycle_channels) {
+            if (!ws_session.subscribe(channel, {})) {
+                ws_session.close();
+                set_error(ws_session.last_error());
+                return false;
+            }
+        }
 
         if (config.oms_transport.enabled) {
             if (!oms_ws_session.connect()) {
@@ -483,7 +511,7 @@ namespace predex {
                     return false;
                 }
             }
-            if (!reconcile_open_orders_from_rest()) {
+            if (!reconcile_open_orders_from_rest(/*is_startup=*/true)) {
                 oms_ws_session.close();
                 ws_session.close();
                 return false;
@@ -526,6 +554,7 @@ namespace predex {
     }
 
     void App::Runtime::io_loop(const std::stop_token& stop_token) {
+        std::uint32_t reconnect_attempts = 0;
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             const auto recv_result = ws_session.recv_text(std::chrono::milliseconds{50});
 
@@ -534,11 +563,43 @@ namespace predex {
             }
 
             if (recv_result.status == websocket::RecvStatus::kClosed) {
-                if (running.load(std::memory_order_acquire)) {
-                    set_error("Websocket connection closed unexpectedly");
-                    running.store(false, std::memory_order_release);
+                if (!running.load(std::memory_order_acquire) || stop_token.stop_requested()) {
+                    break;
                 }
-                break;
+                // Reconnect with exponential backoff.
+                const std::uint32_t backoff_ms = std::min<std::uint32_t>(
+                    5000U, 100U * (1U << std::min(reconnect_attempts, 5U)));
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                ++reconnect_attempts;
+
+                if (!ws_session.connect()) {
+                    continue;
+                }
+                bool subscribe_ok = true;
+                for (const auto& channel : config.kalshi_ws.channels) {
+                    if (!ws_session.subscribe(channel, config.kalshi_ws.market_tickers)) {
+                        subscribe_ok = false;
+                        break;
+                    }
+                }
+                for (const auto& channel : config.kalshi_ws.lifecycle_channels) {
+                    if (!ws_session.subscribe(channel, {})) {
+                        subscribe_ok = false;
+                        break;
+                    }
+                }
+                if (!subscribe_ok) {
+                    ws_session.close();
+                    continue;
+                }
+                // Reset sequence state so fresh SIDs from the new session are accepted,
+                // and signal each shard to drop its stale book state.
+                router->reset_sequence_state();
+                for (const auto& shard : shards) {
+                    shard->request_reset();
+                }
+                reconnect_attempts = 0;
+                continue;
             }
 
             if (recv_result.status == websocket::RecvStatus::kError) {
@@ -547,6 +608,7 @@ namespace predex {
                 break;
             }
 
+            reconnect_attempts = 0;
             if (!io_writer->on_wire_message(recv_result.payload)) {
                 set_error("Failed to enqueue message into IOWriter");
                 running.store(false, std::memory_order_release);
@@ -767,7 +829,7 @@ namespace predex {
                     oms_ws_session.close();
                     continue;
                 }
-                if (!reconcile_open_orders_from_rest()) {
+                if (!reconcile_open_orders_from_rest(/*is_startup=*/false)) {
                     running.store(false, std::memory_order_release);
                     break;
                 }
@@ -802,18 +864,74 @@ namespace predex {
         oms_ws_session.close();
     }
 
-    [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest() {
+    [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest(bool is_startup) {
         const auto snapshot = oms_rest_client.fetch_open_orders();
         if (!snapshot.ok) {
             set_error("Failed to reconcile open orders from REST: " + snapshot.error);
             return false;
         }
 
+        const auto now_ns = static_cast<predex::internal::TimestampNs>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+
         for (const auto& order : snapshot.orders) {
-            const auto now_ns = static_cast<predex::internal::TimestampNs>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count());
+            // fetch_open_orders returns only open orders, but guard against terminal status.
+            if (order.status == "canceled" || order.status == "executed") {
+                continue;
+            }
+
+            if (is_startup) {
+                // Startup path: orders are from a prior session. Adopt them into OMS with
+                // synthetic tracking so the kill switch can reach them and fills are
+                // accounted for in session P&L.
+                const auto reg_it = registry_index_by_ticker_.find(order.ticker);
+                if (reg_it == registry_index_by_ticker_.end()) {
+                    std::fprintf(stdout,
+                        "[reconcile] orphaned order on unrecognized ticker=%s, "
+                        "skipping: client_order_id=%s exchange_order_id=%s\n",
+                        order.ticker.c_str(),
+                        order.client_order_id.c_str(), order.order_id.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                const auto& reg_entry = market_registry_entries[reg_it->second];
+                const auto shard_id = static_cast<std::uint16_t>(
+                    reg_entry.affinity_key_ % config.pipeline.shard_count);
+                predex::core::oms::kalshi::OrderState state{
+                    .origin = predex::core::oms::kalshi::IntentOrigin{
+                        .shard_id = shard_id,
+                        .affinity_key = reg_entry.affinity_key_,
+                        .event_id = reg_entry.event_id_,
+                        .market_id = reg_entry.market_id_,
+                    },
+                    .oms_request_id = 0,
+                    .status = predex::core::oms::kalshi::OmsOrderStatus::kLive,
+                    .client_order_id = order.client_order_id,
+                    .exchange_order_id = order.order_id,
+                    .original_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
+                    .live_qty_lots = parse_count_fp_to_lots(order.remaining_count_fp),
+                    .cum_fill_qty_lots = parse_count_fp_to_lots(order.fill_count_fp),
+                    .last_update_ts_ns = now_ns,
+                };
+                const auto side = order.side == "yes" ? predex::internal::Side::kBuy
+                                : order.side == "no"  ? predex::internal::Side::kSell
+                                                      : predex::internal::Side::kUnknown;
+                const auto assigned_id = oms->seed_orphaned_order(std::move(state), side);
+                std::fprintf(stdout,
+                    "[reconcile] adopted orphaned order: ticker=%s "
+                    "client_order_id=%s exchange_order_id=%s "
+                    "assigned_oms_request_id=%llu\n",
+                    order.ticker.c_str(),
+                    order.client_order_id.c_str(), order.order_id.c_str(),
+                    static_cast<unsigned long long>(assigned_id));
+                std::fflush(stdout);
+                continue;
+            }
+
+            // Reconnect path: orders may belong to the current session and are already tracked
+            // in the OMS by client_order_id. Push a lifecycle event so the OMS can reconcile.
             predex::core::oms::kalshi::OrderLifecycleEvent event{
                 .origin = {},
                 .oms_request_id = 0,
@@ -826,13 +944,6 @@ namespace predex {
                     .accepted_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
                 },
             };
-            if (order.status == "canceled") {
-                event.kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kCanceled;
-                event.status = predex::core::oms::kalshi::OmsOrderStatus::kCanceled;
-            } else if (order.status == "executed") {
-                event.kind = predex::core::oms::kalshi::OrderLifecycleEventKind::kFill;
-                event.status = predex::core::oms::kalshi::OmsOrderStatus::kFilled;
-            }
             if (!oms_transport_update_queue->try_push(std::move(event))) {
                 set_error("OMS transport update queue backpressured during reconciliation");
                 return false;
@@ -922,6 +1033,17 @@ namespace predex {
                 }
             }
         }
+        // Tail drain: cancel all live orders (enqueue cancel cmds), then drain remaining
+        // intents — halted_ rejects them so no new orders are submitted.
+        oms->cancel_all_live_orders();
+        predex::core::oms::kalshi::OmsProcessCode tail_code{};
+        do {
+            const auto result = oms->pump(
+                config.pipeline.shard_input_capacity,
+                config.pipeline.shard_input_capacity);
+            tail_code = result.code;
+        } while (tail_code != predex::core::oms::kalshi::OmsProcessCode::kIdle &&
+                 tail_code != predex::core::oms::kalshi::OmsProcessCode::kError);
     }
 
     void App::Runtime::logger_loop(const std::stop_token& stop_token) const {
@@ -982,22 +1104,79 @@ namespace predex {
             set_error("Attempted to run App that is not started");
             return;
         }
+        constexpr std::int64_t kHealthDumpIntervalMs = 30'000;
+        std::int64_t ms_since_last_dump = kHealthDumpIntervalMs; // dump immediately on start
         while(running.load(std::memory_order_acquire)){
             std::this_thread::sleep_for(std::chrono::milliseconds(kDefaultSleepMs));
+            ms_since_last_dump += kDefaultSleepMs;
+            if (ms_since_last_dump >= kHealthDumpIntervalMs) {
+                ms_since_last_dump = 0;
+                print_health_status();
+            }
         }
-        // stop();
+    }
+
+    void App::Runtime::print_health_status() const noexcept {
+        const auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        char time_buf[32];
+        std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S UTC",
+                      std::gmtime(&now_t));
+
+        const bool halted = oms && oms->is_halted();
+        const std::int64_t net_ticks = oms ? oms->session_net_ticks() : 0;
+        const std::size_t live_orders = oms ? oms->live_order_count() : 0;
+        const std::uint64_t intents = oms ? oms->processed_intent_count() : 0;
+        const std::uint64_t transport_updates = oms ? oms->processed_transport_update_count() : 0;
+        const std::uint64_t rejected = oms ? oms->rejected_intent_count() : 0;
+
+        std::size_t desynced_events = 0;
+        for (const auto& event_store : event_stores) {
+            desynced_events += event_store.desynced_event_count();
+        }
+
+        const auto& telem = router ? router->telemetry()
+                                   : predex::core::routing::kalshi::RouterTelemetry{};
+
+        std::fprintf(stdout,
+            "[%s] STATUS | halted=%s | pnl_ticks=%+lld"
+            " | live_orders=%zu | intents=%llu | rejected=%llu | transport_updates=%llu"
+            " | router_frames=%zu | router_drops=%zu | desynced_events=%zu\n",
+            time_buf,
+            halted ? "true" : "false",
+            static_cast<long long>(net_ticks),
+            live_orders,
+            static_cast<unsigned long long>(intents),
+            static_cast<unsigned long long>(rejected),
+            static_cast<unsigned long long>(transport_updates),
+            telem.processed_frames_,
+            telem.dropped_frames_,
+            desynced_events);
+        std::fflush(stdout);
     }
 
     void App::Runtime::stop(){
+        // Hard halt: blocks new submission and schedules cancel-all on the OMS thread.
+        if (oms) {
+            oms->request_hard_halt();
+        }
         running.store(false, std::memory_order_release);
+
+        // Stop inbound data flow.
         if(io_thread.joinable()){
             io_thread.request_stop();
             io_thread.join();
         }
+
+        // Stop and join router, then drain remaining frames into shard queues.
         if(router_thread.joinable()){
             router_thread.request_stop();
             router_thread.join();
         }
+        if (router) {
+            while (router->pump(config.pipeline.io_to_router_capacity) > 0) {}
+        }
+
+        // Stop and join shards, then drain remaining frames from shard input queues.
         for(auto& thread : shard_threads){
             if(thread.joinable()){
                 thread.request_stop();
@@ -1005,10 +1184,27 @@ namespace predex {
             }
         }
         shard_threads.clear();
+        for (const auto& shard : shards) {
+            while (shard->pump(config.pipeline.shard_input_capacity) > 0) {}
+        }
+
+        // Stop OMS thread: its tail drain calls cancel_all_live_orders + pumps remaining.
         if(oms_thread.joinable()){
             oms_thread.request_stop();
             oms_thread.join();
         }
+
+        // After OMS tail drain, flush any cancel commands directly via REST client.
+        // (oms_rest_loop may have already exited due to running=false.)
+        {
+            predex::core::oms::kalshi::CancelOrderCmd cancel_cmd{};
+            while (oms_cancel_queue != nullptr && oms_cancel_queue->try_pop(cancel_cmd)) {
+                if (config.oms_transport.enabled) {
+                    oms_rest_client.cancel_order(cancel_cmd);
+                }
+            }
+        }
+
         if (oms_rest_thread.joinable()) {
             oms_rest_thread.request_stop();
             oms_rest_thread.join();
@@ -1017,15 +1213,23 @@ namespace predex {
             oms_private_ws_thread.request_stop();
             oms_private_ws_thread.join();
         }
+
+        // Drain tape logger and audit queues before joining those threads.
+        if (tape_logger) {
+            while (tape_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {}
+        }
         if(logger_thread.joinable()){
             logger_thread.request_stop();
             logger_thread.join();
+        }
+
+        if (audit_logger) {
+            while (audit_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {}
         }
         if(audit_thread.joinable()){
             audit_thread.request_stop();
             audit_thread.join();
         }
-
     }
 
     App::App(AppConfig config)

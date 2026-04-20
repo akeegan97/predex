@@ -25,6 +25,19 @@ enum class EventType : std::uint8_t {
     kTrade = 3,
     kHeartbeat = 4,
     kStatus = 5,
+    kLifecycle = 6,
+};
+
+enum class MarketLifecycleStatus : std::uint8_t {
+    kUnknown = 0,
+    kCreated = 1,
+    kActivated = 2,
+    kDeactivated = 3,
+    kCloseDateUpdated = 4,
+    kDetermined = 5,
+    kSettled = 6,
+    kFractionalTradingUpdated = 7,
+    kPriceLevelStructureUpdated = 8,
 };
 
 enum class Side : std::uint8_t {

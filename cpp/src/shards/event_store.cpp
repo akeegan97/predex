@@ -1,4 +1,5 @@
 #include "predex/shards/event_store.hpp"
+#include "predex/internal/normalized_event.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -227,6 +228,10 @@ namespace predex::core::shards::kalshi{
                 static_cast<void>(iterator);
                 markets.push_back(EventMarketView{
                     .market_id = definition.market_id,
+                    .lifecycle = MarketLifecycleState{
+                        .close_time_s = definition.close_time_s,
+                        .tradeable = definition.tradeable,
+                    },
                 });
             }
             return true;
@@ -264,6 +269,10 @@ namespace predex::core::shards::kalshi{
                         state.markets.push_back(ChainEntry{
                             .market = EventMarketView{
                                 .market_id = market_definition.market_id,
+                                .lifecycle = MarketLifecycleState{
+                                    .close_time_s = market_definition.close_time_s,
+                                    .tradeable = market_definition.tradeable,
+                                },
                             },
                             .strike_key = market_definition.strike_key,
                         });
@@ -293,6 +302,10 @@ namespace predex::core::shards::kalshi{
                     SingleMarketState state{};
                     state.market = EventMarketView{
                         .market_id = definition.markets.front().market_id,
+                        .lifecycle = MarketLifecycleState{
+                            .close_time_s = definition.markets.front().close_time_s,
+                            .tradeable = definition.markets.front().tradeable,
+                        },
                     };
                     return EventDerivedState{std::move(state)};
                 }
@@ -300,6 +313,43 @@ namespace predex::core::shards::kalshi{
                 default:
                     return std::nullopt;
             }
+        }
+
+        bool is_tradeable(internal::MarketLifecycleStatus status) noexcept {
+            switch (status) {
+                case internal::MarketLifecycleStatus::kActivated:
+                case internal::MarketLifecycleStatus::kCloseDateUpdated:
+                case internal::MarketLifecycleStatus::kFractionalTradingUpdated:
+                case internal::MarketLifecycleStatus::kPriceLevelStructureUpdated:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        EventMarketView* find_market_view(EventDerivedState& state,
+                                          internal::MarketId market_id) noexcept {
+            if (auto* chain = std::get_if<MonotonicChainState>(&state)) {
+                auto it = chain->market_index_by_id.find(market_id);
+                if (it != chain->market_index_by_id.end()) {
+                    return &chain->markets[it->second].market;
+                }
+            } else if (auto* exclusive = std::get_if<MutuallyExclusiveState>(&state)) {
+                auto it = exclusive->market_index_by_id.find(market_id);
+                if (it != exclusive->market_index_by_id.end()) {
+                    return &exclusive->markets[it->second];
+                }
+            } else if (auto* group = std::get_if<UnorderedGroupState>(&state)) {
+                auto it = group->market_index_by_id.find(market_id);
+                if (it != group->market_index_by_id.end()) {
+                    return &group->markets[it->second];
+                }
+            } else if (auto* single = std::get_if<SingleMarketState>(&state)) {
+                if (single->market.has_value() && single->market->market_id == market_id) {
+                    return &(*single->market);
+                }
+            }
+            return nullptr;
         }
 
         std::optional<Event> build_event(const EventDefinition& definition) {
@@ -358,6 +408,22 @@ namespace predex::core::shards::kalshi{
         if (event.meta.topology_kind != internal::EventTopologyKind::kUnknown &&
             event.meta.topology_kind != topology_kind) {
             return EventApplyCode::kRejected;
+        }
+
+        if (event.type == internal::EventType::kLifecycle) {
+            const auto* lifecycle = std::get_if<internal::MarketLifecycleData>(&event.data);
+            if (lifecycle == nullptr) {
+                return EventApplyCode::kParseFail;
+            }
+            auto* view = find_market_view(derived_state, event.meta.market_id);
+            if (view == nullptr) {
+                return EventApplyCode::kRejected;
+            }
+            view->lifecycle.open_ts_s = lifecycle->open_ts_s;
+            view->lifecycle.close_ts_s = lifecycle->close_ts_s;
+            view->lifecycle.tradeable = is_tradeable(lifecycle->status);
+            last_update_ns = event.meta.recv_ns;
+            return EventApplyCode::kApplied;
         }
 
         auto apply_result = book_store.apply_with_result(event);
@@ -426,6 +492,46 @@ namespace predex::core::shards::kalshi{
         }
         return EventApplyCode::kRejected;
     }
-    
+
+    void EventStore::reset_all_books() noexcept {
+        for (auto& [event_id, event] : events_) {
+            event.book_store.reset_all();
+        }
+    }
+
+    std::size_t EventStore::desynced_event_count() const noexcept {
+        std::size_t count = 0;
+        for (const auto& [event_id, event] : events_) {
+            if (event.desynced) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    const EventMarketView* Event::find_market_view(
+        internal::MarketId market_id) const noexcept {
+        if (const auto* chain = std::get_if<MonotonicChainState>(&derived_state)) {
+            const auto it = chain->market_index_by_id.find(market_id);
+            if (it != chain->market_index_by_id.end()) {
+                return &chain->markets[it->second].market;
+            }
+        } else if (const auto* exclusive = std::get_if<MutuallyExclusiveState>(&derived_state)) {
+            const auto it = exclusive->market_index_by_id.find(market_id);
+            if (it != exclusive->market_index_by_id.end()) {
+                return &exclusive->markets[it->second];
+            }
+        } else if (const auto* unordered = std::get_if<UnorderedGroupState>(&derived_state)) {
+            const auto it = unordered->market_index_by_id.find(market_id);
+            if (it != unordered->market_index_by_id.end()) {
+                return &unordered->markets[it->second];
+            }
+        } else if (const auto* single = std::get_if<SingleMarketState>(&derived_state)) {
+            if (single->market.has_value() && single->market->market_id == market_id) {
+                return &*single->market;
+            }
+        }
+        return nullptr;
+    }
 
 }

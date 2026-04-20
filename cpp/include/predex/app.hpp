@@ -27,6 +27,8 @@ namespace predex{
         std::uint64_t affinity_key{0};
         internal::EventTopologyKind topology_kind{internal::EventTopologyKind::kUnknown};
         std::int64_t strike_key{0};
+        std::uint64_t close_time_s{0};
+        bool tradeable{false};
     };
 
     struct KalshiWsConfig{
@@ -34,7 +36,8 @@ namespace predex{
         std::string key_id;
         std::string private_key_pem;
         std::vector<std::string> channels;
-        std::vector<std::string> market_tickers;  
+        std::vector<std::string> lifecycle_channels;
+        std::vector<std::string> market_tickers;
     };
 
     struct IdlePolicyConfig{
@@ -75,6 +78,15 @@ namespace predex{
         std::string rest_endpoint{"https://api.elections.kalshi.com"};
         std::string private_ws_endpoint{"wss://api.elections.kalshi.com/trade-api/ws/v2"};
         std::vector<std::string> private_ws_channels;
+        std::int64_t max_session_loss_ticks{0};
+    };
+
+    struct LocalRiskConfig {
+        // Maximum absolute net filled position (long or short) per market. 0 = disabled.
+        std::int64_t max_net_position_lots_per_market{0};
+        // Reject intents for markets closing within this many seconds. 0 = disabled.
+        std::uint64_t min_seconds_to_close{0};
+        bool trading_enabled{true};
     };
 
     struct AppConfig{
@@ -83,8 +95,8 @@ namespace predex{
         TapeConfig tape;
         AuditConfig audit;
         OmsTransportConfig oms_transport;
+        LocalRiskConfig local_risk;
         std::vector<MarketRouteConfig> market_routes;
-        
     };
 
     class App{

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .affinity import stable_affinity_key, stable_event_id, stable_market_id
@@ -45,12 +46,14 @@ class CredentialSettings:
 class DiscoverySettings:
     endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     channels: tuple[str, ...] = ("trade", "orderbook_delta")
+    lifecycle_channels: tuple[str, ...] = ("market_lifecycle_v2",)
     credentials: CredentialSettings = field(default_factory=CredentialSettings)
 
     def to_kalshi_dict(self, market_tickers: list[str]) -> dict[str, Any]:
         return {
             "endpoint": self.endpoint,
             "channels": list(self.channels),
+            "lifecycle_channels": list(self.lifecycle_channels),
             "market_tickers": market_tickers,
             "credentials": self.credentials.to_dict(),
         }
@@ -62,6 +65,7 @@ class OmsTransportSettings:
     rest_endpoint: str = "https://api.elections.kalshi.com"
     private_ws_endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     private_ws_channels: tuple[str, ...] = ("user_orders",)
+    max_session_loss_ticks: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +73,23 @@ class OmsTransportSettings:
             "rest_endpoint": self.rest_endpoint,
             "private_ws_endpoint": self.private_ws_endpoint,
             "private_ws_channels": list(self.private_ws_channels),
+            "max_session_loss_ticks": self.max_session_loss_ticks,
+        }
+
+
+@dataclass(slots=True)
+class LocalRiskSettings:
+    # Maximum absolute net filled position (long or short) per market. 0 = disabled.
+    max_net_position_lots_per_market: int = 0
+    # Reject intents for markets closing within this many seconds. 0 = disabled.
+    min_seconds_to_close: int = 0
+    trading_enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_net_position_lots_per_market": self.max_net_position_lots_per_market,
+            "min_seconds_to_close": self.min_seconds_to_close,
+            "trading_enabled": self.trading_enabled,
         }
 
 
@@ -132,6 +153,19 @@ class TraderConfigBuildResult:
         }
 
 
+def _parse_iso_to_unix_seconds(time_str: str) -> int:
+    if not time_str:
+        return 0
+    try:
+        normalized = time_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (ValueError, OSError):
+        return 0
+
+
 def _normalize_topology_set(
     values: Iterable[TopologyKind | str] | None,
 ) -> set[TopologyKind] | None:
@@ -169,6 +203,7 @@ def build_trader_config_result(
     discovery: DiscoverySettings | None = None,
     pipeline: PipelineSettings | None = None,
     oms_transport: OmsTransportSettings | None = None,
+    local_risk: LocalRiskSettings | None = None,
     tape_output_path: str = "predex_tape.bin",
     audit_output_path: str = "predex_audit.jsonl",
     include_topologies: Iterable[TopologyKind | str] | None = None,
@@ -183,6 +218,7 @@ def build_trader_config_result(
     discovery = discovery or DiscoverySettings()
     pipeline = pipeline or PipelineSettings()
     oms_transport = oms_transport or OmsTransportSettings()
+    local_risk = local_risk or LocalRiskSettings()
     included_filter = _normalize_topology_set(include_topologies)
     excluded_filter = _normalize_topology_set(exclude_topologies) or set()
 
@@ -274,6 +310,8 @@ def build_trader_config_result(
                     "affinity_key": affinity_key,
                     "topology_kind": topology.value,
                     "strike_key": classified_market.strike_key,
+                    "close_time_s": _parse_iso_to_unix_seconds(market.primary_time_reference()),
+                    "tradeable": market.status == "active",
                 }
             )
 
@@ -302,6 +340,7 @@ def build_trader_config_result(
         "tape": {"output_path": tape_output_path},
         "audit": {"output_path": audit_output_path},
         "oms_transport": oms_transport.to_dict(),
+        "local_risk": local_risk.to_dict(),
     }
     return TraderConfigBuildResult(
         config=config,
@@ -317,6 +356,7 @@ def build_trader_config(
     discovery: DiscoverySettings | None = None,
     pipeline: PipelineSettings | None = None,
     oms_transport: OmsTransportSettings | None = None,
+    local_risk: LocalRiskSettings | None = None,
     tape_output_path: str = "predex_tape.bin",
     audit_output_path: str = "predex_audit.jsonl",
     include_topologies: Iterable[TopologyKind | str] | None = None,
@@ -328,6 +368,7 @@ def build_trader_config(
         discovery=discovery,
         pipeline=pipeline,
         oms_transport=oms_transport,
+        local_risk=local_risk,
         tape_output_path=tape_output_path,
         audit_output_path=audit_output_path,
         include_topologies=include_topologies,

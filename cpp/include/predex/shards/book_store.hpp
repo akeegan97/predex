@@ -78,6 +78,7 @@ class BookStore {
     [[nodiscard]] BookApplyResult apply_with_result(const internal::NormalizedEvent& event);
     [[nodiscard]] const BookState* find(internal::MarketId market_id) const;
     [[nodiscard]] std::size_t size() const;
+    void reset_all() noexcept;
 
   private:
     std::unordered_map<internal::MarketId, BookState> books_;

@@ -40,7 +40,10 @@ add_library(
   src/audit/audit_logger.cpp
   src/ingest/frame_pool.cpp
   src/ingest/io_writer.cpp
+  src/oms/execution_transport.cpp
+  src/oms/order_store.cpp
   src/oms/oms.cpp
+  src/oms/risk_engine.cpp
   src/oms/kalshi/private_ws_parser.cpp
   src/router/market_registry.cpp
   src/router/shard_dispatch.cpp

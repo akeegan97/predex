@@ -157,6 +157,8 @@ std::optional<std::vector<predex::MarketRouteConfig>> build_market_routes(
         route.event_id = read_size(route_json, "event_id", 0);
         route.affinity_key = read_size(route_json, "affinity_key", 0);
         route.strike_key = read_int64(route_json, "strike_key", 0);
+        route.close_time_s = read_size(route_json, "close_time_s", 0);
+        route.tradeable = read_bool(route_json, "tradeable", false);
 
         const auto topology_value = read_string(route_json, "topology_kind");
         if (!topology_value.empty()) {
@@ -194,6 +196,7 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
     config.kalshi_ws.endpoint = read_string(
         kalshi, "endpoint", "wss://api.elections.kalshi.com/trade-api/ws/v2");
     config.kalshi_ws.channels = read_string_array(kalshi, "channels");
+    config.kalshi_ws.lifecycle_channels = read_string_array(kalshi, "lifecycle_channels");
 
     config.kalshi_ws.market_tickers = read_string_array(kalshi, "market_tickers");
     if (config.kalshi_ws.market_tickers.empty()) {
@@ -274,6 +277,22 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
             config.oms_transport.private_ws_channels.empty()) {
             config.oms_transport.private_ws_channels = {"user_orders"};
         }
+        config.oms_transport.max_session_loss_ticks =
+            read_int64(oms_transport, "max_session_loss_ticks",
+                       config.oms_transport.max_session_loss_ticks);
+    }
+
+    const auto local_risk_it = root.find("local_risk");
+    if (local_risk_it != root.end() && local_risk_it->is_object()) {
+        const auto& local_risk = *local_risk_it;
+        config.local_risk.max_net_position_lots_per_market = read_int64(
+            local_risk, "max_net_position_lots_per_market",
+            config.local_risk.max_net_position_lots_per_market);
+        config.local_risk.min_seconds_to_close = read_size(
+            local_risk, "min_seconds_to_close",
+            config.local_risk.min_seconds_to_close);
+        config.local_risk.trading_enabled =
+            read_bool(local_risk, "trading_enabled", config.local_risk.trading_enabled);
     }
 
     if (config.kalshi_ws.channels.empty()) {

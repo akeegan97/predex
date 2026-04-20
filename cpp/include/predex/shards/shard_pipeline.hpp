@@ -628,6 +628,13 @@ class DefaultShardPipeline {
         if (const auto* fill =
                 std::get_if<predex::core::oms::kalshi::OrderFill>(&event.data)) {
             reduce_open_qty(*tracked, fill->fill_qty_lots);
+            const std::int64_t fill_delta = static_cast<std::int64_t>(fill->fill_qty_lots);
+            if (fill->side == internal::Side::kBuy || fill->side == internal::Side::kBid) {
+                risk_state_.net_position_lots_by_market[event.origin.market_id] += fill_delta;
+            } else if (fill->side == internal::Side::kSell ||
+                       fill->side == internal::Side::kAsk) {
+                risk_state_.net_position_lots_by_market[event.origin.market_id] -= fill_delta;
+            }
             if (tracked->first_lifecycle_ts_ns == 0) {
                 tracked->first_lifecycle_ts_ns = event.recv_ts_ns;
             }

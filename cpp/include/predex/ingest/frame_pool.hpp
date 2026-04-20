@@ -22,6 +22,7 @@ namespace predex::core::ingest::kalshi{
     kDelta = 1,
     kSnapshot = 2,
     kSubscribed = 3,
+    kLifecycle = 4,
     kUnknown = 255
   };
 

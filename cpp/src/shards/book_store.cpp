@@ -183,5 +183,11 @@ std::size_t BookStore::size() const {
     return books_.size();
 }
 
+void BookStore::reset_all() noexcept {
+    for (auto& [market_id, book] : books_) {
+        book = BookState{.market_id = market_id};
+    }
+}
+
 }
 

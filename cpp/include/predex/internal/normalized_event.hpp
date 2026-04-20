@@ -49,7 +49,13 @@ struct TradeData {
     std::optional<std::string> trade_id;
 };
 
-using EventData = std::variant<std::monostate, SnapshotData, DeltaData, TradeData>;
+struct MarketLifecycleData {
+    MarketLifecycleStatus status{MarketLifecycleStatus::kUnknown};
+    std::uint64_t open_ts_s{0};
+    std::uint64_t close_ts_s{0};
+};
+
+using EventData = std::variant<std::monostate, SnapshotData, DeltaData, TradeData, MarketLifecycleData>;
 
 struct NormalizedEvent {
     EventType type{EventType::kUnknown};

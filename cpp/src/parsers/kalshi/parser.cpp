@@ -23,6 +23,7 @@ std::int64_t reciprocal_price(std::int64_t price){
 constexpr std::string_view kTypeOrderbook = "orderbook_snapshot";
 constexpr std::string_view kTypeOrderbookDelta = "orderbook_delta";
 constexpr std::string_view kTypeTrade = "trade";
+constexpr std::string_view kTypeLifecycle = "market_lifecycle";
 constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 constexpr auto kScale = 10000U;
 bool get_string(simdjson::ondemand::object& obj, std::string_view key, std::string_view& out) noexcept {
@@ -328,6 +329,43 @@ bool get_array(simdjson::ondemand::object& obj,
     return true;
 }
 
+bool get_uint64_field(simdjson::ondemand::object& obj, std::string_view key, std::uint64_t& out) noexcept {
+    auto result = obj.find_field_unordered(key).get_uint64();
+    if (result.error() == simdjson::SUCCESS) {
+        out = result.value_unsafe();
+        return true;
+    }
+    return false;
+}
+
+internal::MarketLifecycleStatus parse_lifecycle_status(std::string_view event_type) noexcept {
+    if (event_type == "activated") return internal::MarketLifecycleStatus::kActivated;
+    if (event_type == "deactivated") return internal::MarketLifecycleStatus::kDeactivated;
+    if (event_type == "close_date_updated") return internal::MarketLifecycleStatus::kCloseDateUpdated;
+    if (event_type == "determined") return internal::MarketLifecycleStatus::kDetermined;
+    if (event_type == "settled") return internal::MarketLifecycleStatus::kSettled;
+    if (event_type == "created") return internal::MarketLifecycleStatus::kCreated;
+    if (event_type == "fractional_trading_updated") return internal::MarketLifecycleStatus::kFractionalTradingUpdated;
+    if (event_type == "price_level_structure_updated") return internal::MarketLifecycleStatus::kPriceLevelStructureUpdated;
+    return internal::MarketLifecycleStatus::kUnknown;
+}
+
+ParseResult<internal::NormalizedEvent>
+parse_lifecycle(simdjson::ondemand::object& msg, internal::NormalizedEvent event) {
+    event.type = internal::EventType::kLifecycle;
+
+    internal::MarketLifecycleData lifecycle{};
+    std::string_view event_type_sv;
+    if (get_string(msg, "event_type", event_type_sv)) {
+        lifecycle.status = parse_lifecycle_status(event_type_sv);
+    }
+    get_uint64_field(msg, "open_time", lifecycle.open_ts_s);
+    get_uint64_field(msg, "close_time", lifecycle.close_ts_s);
+
+    event.data = lifecycle;
+    return ParseResult<internal::NormalizedEvent>::success(std::move(event));
+}
+
 internal::Side parse_book_side(std::string_view side_token) {
     if (side_token == "yes" || side_token == "bid") {
         return internal::Side::kBid;
@@ -622,7 +660,8 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     simdjson::ondemand::object msg;
     if ((type_sv == kTypeOrderbook ||
         type_sv == kTypeOrderbookDelta ||
-        type_sv == kTypeTrade) &&
+        type_sv == kTypeTrade ||
+        type_sv == kTypeLifecycle) &&
         !get_object(obj, "msg", msg)) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
     }
@@ -635,7 +674,10 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     }
     if (type_sv == kTypeTrade) {
         return parse_trade(msg, std::move(event), /*strict_field_validation=*/true);
-    } 
+    }
+    if (type_sv == kTypeLifecycle) {
+        return parse_lifecycle(msg, std::move(event));
+    }
     return ParseResult<internal::NormalizedEvent>::failure(ParseError::kUnsupportedMessageType);
     }
 }// namespace predex::core::parsers::kalshi

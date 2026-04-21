@@ -251,7 +251,12 @@ namespace predex {
         core::ingest::kalshi::FramePool frame_pool;
         std::unique_ptr<FrameQueue> io_to_router_queue;
         std::unique_ptr<FrameQueue> router_to_logger_queue;
-        std::unique_ptr<FrameQueue> recycle_queue;
+        // Per-producer SPSC recycle queues fanning into IOWriter. Each producer thread owns
+        // exactly one of these; IOWriter is the sole consumer across all of them.
+        std::unique_ptr<FrameQueue> recycle_from_logger;
+        std::unique_ptr<FrameQueue> recycle_from_router;
+        std::vector<std::unique_ptr<FrameQueue>> recycle_from_shards;
+        std::vector<FrameQueue*> recycle_input_queue_ptrs;
         std::vector<std::unique_ptr<FrameQueue>> shard_input_queues;
         std::vector<std::unique_ptr<FrameQueue>> shard_to_logger_queues;
         std::vector<std::unique_ptr<OmsIntentQueue>> shard_to_oms_intent_queues;
@@ -338,8 +343,12 @@ namespace predex {
             std::make_unique<FrameQueue>(config.pipeline.io_to_router_capacity);
         router_to_logger_queue =
             std::make_unique<FrameQueue>(config.pipeline.router_to_logger_capacity);
-        recycle_queue =
+        recycle_from_logger =
             std::make_unique<FrameQueue>(config.pipeline.frame_pool_capacity);
+        recycle_from_router =
+            std::make_unique<FrameQueue>(config.pipeline.frame_pool_capacity);
+        recycle_from_shards.reserve(config.pipeline.shard_count);
+        recycle_input_queue_ptrs.reserve(config.pipeline.shard_count + 2);
 
         shard_input_queues.reserve(config.pipeline.shard_count);
         shard_to_logger_queues.reserve(config.pipeline.shard_count);
@@ -369,6 +378,8 @@ namespace predex {
                 std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity));
             shard_audit_queues.push_back(
                 std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity));
+            recycle_from_shards.push_back(
+                std::make_unique<FrameQueue>(config.pipeline.frame_pool_capacity));
             event_stores.emplace_back();
         }
 
@@ -427,6 +438,15 @@ namespace predex {
             logger_input_queue_ptrs.push_back(queue.get());
         }
 
+        // Assemble the per-producer recycle fan-in for IOWriter. Order here does not matter —
+        // IOWriter round-robins, but we list logger first since it is the highest-volume
+        // producer (every tape-written frame).
+        recycle_input_queue_ptrs.push_back(recycle_from_logger.get());
+        recycle_input_queue_ptrs.push_back(recycle_from_router.get());
+        for (const auto& queue : recycle_from_shards) {
+            recycle_input_queue_ptrs.push_back(queue.get());
+        }
+
         shard_dispatch =
             std::make_unique<core::routing::kalshi::ShardDispatch>(shard_input_queue_ptrs);
 
@@ -435,17 +455,18 @@ namespace predex {
             frame_pool,
             market_registry,
             *shard_dispatch,
-            *router_to_logger_queue);
+            *router_to_logger_queue,
+            *recycle_from_router);
 
         io_writer = std::make_unique<core::ingest::kalshi::IOWriter>(
             frame_pool,
             *io_to_router_queue,
-            *recycle_queue);
+            recycle_input_queue_ptrs);
 
         tape_logger = std::make_unique<core::tape::kalshi::Logger>(
             logger_input_queue_ptrs,
             frame_pool,
-            *recycle_queue,
+            *recycle_from_logger,
             config.tape.output_path);
         audit_logger = std::make_unique<AuditLogger>(
             audit_input_queue_ptrs,
@@ -483,6 +504,7 @@ namespace predex {
                 *shard_input_queues[i],
                 frame_pool,
                 *shard_to_logger_queues[i],
+                *recycle_from_shards[i],
                 event_stores[i],
                 ShardPipeline{
                     static_cast<std::uint16_t>(i),
@@ -985,10 +1007,31 @@ namespace predex {
                         .cum_fill_qty_lots = parse_count_fp_to_lots(order.fill_count_fp),
                         .last_update_ts_ns = now_ns,
                     };
-                    const auto side = order.side == "yes" ? predex::internal::Side::kBuy
-                                    : order.side == "no"  ? predex::internal::Side::kSell
-                                                          : predex::internal::Side::kUnknown;
-                    const auto assigned_id = oms->seed_orphaned_order(std::move(state), side);
+                    // Kalshi reports two orthogonal fields: `action` = {buy,sell} (direction)
+                    // and `side` = {yes,no} (binary-contract outcome). The prior code collapsed
+                    // them into a single Side, which mistranslated sell-YES as sell-NO on
+                    // reconciliation — the exact bug the new Outcome field exists to prevent.
+                    const auto side = order.action == "buy"  ? predex::internal::Side::kBuy
+                                    : order.action == "sell" ? predex::internal::Side::kSell
+                                                             : predex::internal::Side::kUnknown;
+                    const auto outcome =
+                        order.side == "yes" ? predex::core::oms::kalshi::Outcome::kYes
+                      : order.side == "no"  ? predex::core::oms::kalshi::Outcome::kNo
+                                            : predex::core::oms::kalshi::Outcome::kUnknown;
+                    if (side == predex::internal::Side::kUnknown ||
+                        outcome == predex::core::oms::kalshi::Outcome::kUnknown) {
+                        std::fprintf(stderr,
+                            "[reconcile] skipping orphaned order with unparseable "
+                            "action/side: ticker=%s client_order_id=%s "
+                            "exchange_order_id=%s action=%s side=%s\n",
+                            order.ticker.c_str(), order.client_order_id.c_str(),
+                            order.order_id.c_str(), order.action.c_str(),
+                            order.side.c_str());
+                        std::fflush(stderr);
+                        continue;
+                    }
+                    const auto assigned_id =
+                        oms->seed_orphaned_order(std::move(state), side, outcome);
                     std::fprintf(stdout,
                         "[reconcile] adopted orphaned order: ticker=%s "
                         "client_order_id=%s exchange_order_id=%s "
@@ -1221,7 +1264,8 @@ namespace predex {
             "[%s] STATUS | halted=%s | pnl_ticks=%+lld"
             " | live_orders=%zu | intents=%llu | rejected=%llu | transport_updates=%llu"
             " | unknown_fill_side=%llu"
-            " | router_frames=%zu | router_drops=%zu | desynced_events=%zu\n",
+            " | router_frames=%zu | router_drop_bp=%zu | router_drop_lifecycle=%zu"
+            " | router_drop_invalid=%zu | desynced_events=%zu\n",
             time_buf,
             halted ? "true" : "false",
             static_cast<long long>(net_ticks),
@@ -1231,7 +1275,9 @@ namespace predex {
             static_cast<unsigned long long>(transport_updates),
             static_cast<unsigned long long>(unknown_fill_side),
             telem.processed_frames_,
-            telem.dropped_frames_,
+            telem.dropped_backpressure_,
+            telem.dropped_unknown_ticker_lifecycle_,
+            telem.dropped_invalid_,
             desynced_events);
         std::fflush(stdout);
     }

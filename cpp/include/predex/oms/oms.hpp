@@ -59,7 +59,9 @@ class Oms {
     // Seeds an order from a prior session's REST snapshot into the OMS tracking state.
     // Must be called before the OMS thread is started.
     // Returns the assigned synthetic oms_request_id.
-    OmsRequestId seed_orphaned_order(OrderState state, internal::Side side) noexcept;
+    OmsRequestId seed_orphaned_order(OrderState state,
+                                     internal::Side side,
+                                     Outcome outcome) noexcept;
 
     // Thread-safe: may be called from any thread.
     // Soft halt blocks new order submission; existing orders survive to fill/settle.

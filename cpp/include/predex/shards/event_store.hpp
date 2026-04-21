@@ -40,6 +40,16 @@ struct MarketLifecycleState {
     std::uint64_t open_ts_s{0};
     std::uint64_t close_ts_s{0};
     bool tradeable{false};
+
+    // Kalshi emits no WS event at the natural active → closed transition that happens
+    // when close_ts_s passes in wall-clock time; the `tradeable` flag on its own will
+    // stay true past close_ts_s forever. Callers must route all "is this market
+    // tradeable right now?" checks through this helper, not a direct .tradeable read.
+    [[nodiscard]] bool is_tradeable_at(std::uint64_t now_s) const noexcept {
+        return tradeable
+            && (open_ts_s == 0 || now_s >= open_ts_s)
+            && (close_ts_s == 0 || now_s < close_ts_s);
+    }
 };
 
 struct EventMarketView {

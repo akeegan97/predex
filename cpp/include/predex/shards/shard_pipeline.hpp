@@ -354,6 +354,7 @@ class DefaultShardPipeline {
                 ? update.update.meta.exchange
                 : signal.exchange,
             .side = signal.side,
+            .outcome = signal.outcome,
             .qty_lots = signal.target_qty_lots,
             .limit_price_ticks = signal.reference_price_ticks,
             .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kGtc,
@@ -387,7 +388,9 @@ class DefaultShardPipeline {
 
         for (std::size_t leg_index = 0; leg_index < group_signal.leg_count; ++leg_index) {
             const SubmissionLeg& leg = group_signal.legs[leg_index];
-            if (leg.market_id == 0 || leg.qty_lots <= 0 || leg.side == internal::Side::kUnknown) {
+            if (leg.market_id == 0 || leg.qty_lots <= 0 ||
+                leg.side == internal::Side::kUnknown ||
+                leg.outcome == predex::core::oms::kalshi::Outcome::kUnknown) {
                 return std::nullopt;
             }
 
@@ -408,6 +411,7 @@ class DefaultShardPipeline {
                 },
                 .exchange = exchange,
                 .side = leg.side,
+                .outcome = leg.outcome,
                 .qty_lots = leg.qty_lots,
                 .limit_price_ticks = leg.limit_price_ticks,
                 .time_in_force = leg.time_in_force,

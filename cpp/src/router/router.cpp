@@ -36,12 +36,14 @@ namespace predex::core::routing::kalshi{
         predex::core::ingest::kalshi::FramePool& frame_pool,
         const predex::core::routing::kalshi::MarketRegistry &market_registry,
         predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue) noexcept
+        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
+        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
         : ingress_queue_(ingress_queue),
           frame_pool_(frame_pool),
           market_registry_(market_registry),
           shard_dispatch_(shard_dispatch),
-          logger_queue_(logger_queue) {}
+          logger_queue_(logger_queue),
+          recycle_queue_(recycle_queue) {}
     RouteDecision Router::classify(predex::core::ingest::kalshi::FrameHandle& handle, const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept{
         //Framehandle at this point is only stamped with iowriter timestamp,
         //need to extract market ticker, sid, seq, lookup/attach affinity key before we can make routing decision
@@ -161,28 +163,41 @@ namespace predex::core::routing::kalshi{
         }
         const auto *const frame = frame_pool_.frame(handle);
         if(frame == nullptr){
-            ++telemetry_.dropped_frames_;
-            return false; //invalid frame handle, drop it
+            // Gen mismatch or out-of-range idx — handle does not reference any live frame,
+            // so there is nothing to recycle.
+            ++telemetry_.dropped_invalid_;
+            return false;
         }
-        auto decision = classify(handle, *frame);
+        const auto decision = classify(handle, *frame);
         if(decision == RouteDecision::kToShard){
-            auto shard_id = compute_shard_id(handle.affinity_key_, shard_dispatch_.shard_count());
-            if(!shard_dispatch_.try_dispatch(shard_id, handle)){
-                ++telemetry_.dropped_frames_;
-                return forward_to_logger(handle); //failed to dispatch to shard, forward to logger for troubleshooting
+            const auto shard_id = compute_shard_id(handle.affinity_key_, shard_dispatch_.shard_count());
+            if(shard_dispatch_.try_dispatch(shard_id, handle)){
+                ++telemetry_.processed_frames_;
+                return true;
             }
+            // Shard queue full; fall back to logger so the frame is still captured for tape.
+            if(forward_to_logger(handle)){
+                ++telemetry_.processed_frames_;
+                return true;
+            }
+            // Both downstream paths full — recycle the handle so the frame pool does not bleed.
+            ++telemetry_.dropped_backpressure_;
+            (void)recycle_queue_.try_push(handle);
+            return false;
         }
         if(decision == RouteDecision::kToLogger){
-            if(!forward_to_logger(handle)){
-                ++telemetry_.dropped_frames_;
-                return false; //failed to forward to logger, drop the message
+            if(forward_to_logger(handle)){
+                ++telemetry_.processed_frames_;
+                return true;
             }
+            ++telemetry_.dropped_backpressure_;
+            (void)recycle_queue_.try_push(handle);
+            return false;
         }
-        if(decision == RouteDecision::kDrop){
-            ++telemetry_.dropped_frames_;
-            return false; //explicitly classified as drop
-        }
-        ++telemetry_.processed_frames_;
+        // kDrop: explicit benign drop (e.g. lifecycle for unregistered ticker). Recycle and
+        // keep pumping so the startup shotgun blast drains quickly.
+        ++telemetry_.dropped_unknown_ticker_lifecycle_;
+        (void)recycle_queue_.try_push(handle);
         return true;
     }
     std::size_t Router::pump(size_t max_batch_size) noexcept{

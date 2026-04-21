@@ -61,14 +61,26 @@ class LocalRiskManager {
                 .reason = RiskRejectReason::kInvalidIntent,
             };
         }
-        if (limits_.min_seconds_to_close > 0) {
+        // Kalshi emits no WS event at natural close_time, so we cannot wait for a
+        // deactivation message — every intent must be compared against wall-clock now.
+        // The hard post-close reject fires unconditionally; the margin reject is only
+        // active when min_seconds_to_close is configured > 0.
+        {
             const auto* market_view = update.event.find_market_view(intent.origin.market_id);
-            if (market_view != nullptr && market_view->lifecycle.close_ts_s > 0) {
+            if (market_view != nullptr) {
                 const auto now_s = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::system_clock::now().time_since_epoch())
                         .count());
-                if (market_view->lifecycle.close_ts_s <= now_s + limits_.min_seconds_to_close) {
+                if (!market_view->lifecycle.is_tradeable_at(now_s)) {
+                    return RiskDecision{
+                        .code = RiskDecisionCode::kRejected,
+                        .reason = RiskRejectReason::kMarketClosed,
+                    };
+                }
+                if (limits_.min_seconds_to_close > 0 &&
+                    market_view->lifecycle.close_ts_s > 0 &&
+                    market_view->lifecycle.close_ts_s <= now_s + limits_.min_seconds_to_close) {
                     return RiskDecision{
                         .code = RiskDecisionCode::kRejected,
                         .reason = RiskRejectReason::kMarketCloseSoon,

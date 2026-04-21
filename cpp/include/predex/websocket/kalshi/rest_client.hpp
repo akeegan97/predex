@@ -20,7 +20,11 @@ struct OpenOrderSnapshot {
     std::string client_order_id;
     std::string ticker;
     std::string status;
+    // Kalshi `side` is the binary-contract outcome: "yes" or "no". Orthogonal to
+    // `action` ("buy"/"sell"), which carries the buy/sell direction. Keeping both
+    // fields prevents the prior mistranslation where sell-YES reconciled as sell-NO.
     std::string side;
+    std::string action;
     std::string fill_count_fp;
     std::string remaining_count_fp;
     std::string initial_count_fp;

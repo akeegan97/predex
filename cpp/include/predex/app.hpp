@@ -10,7 +10,7 @@
 
 //might make each a separate constant but for now just using a single global default capacity
 namespace predex{
-    inline constexpr std::size_t kDefaultCapacity = 4096;
+    inline constexpr std::size_t kDefaultCapacity = 8192;
     inline constexpr std::uint32_t kSpinItersRouter = 20000;
     inline constexpr std::uint32_t kSpinItersShard = 20000;
     inline constexpr std::uint32_t kSpinItersOms = 10000;

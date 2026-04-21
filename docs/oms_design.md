@@ -116,7 +116,7 @@ enum class HaltMode : std::uint8_t {
 
 1. Looks up the `market_ticker` in the market registry to resolve `market_id`, `event_id`, `shard_id`, `affinity_key`.
 2. Builds an `OrderState` with status `kLive`, `original_qty_lots` and `live_qty_lots` from `remaining_count`, `exchange_order_id` and `client_order_id` from the REST response.
-3. Calls `Oms::seed_orphaned_order(state, side)` which:
+3. Calls `Oms::seed_orphaned_order(state, side, outcome)` which:
    - Assigns a synthetic `oms_request_id` from `next_oms_request_id_++`
    - Calls `risk_engine_.on_intent_accepted(...)` with `live_qty_lots` so event exposure counts are accurate
    - Calls `order_store_.adopt_orphaned(state)`

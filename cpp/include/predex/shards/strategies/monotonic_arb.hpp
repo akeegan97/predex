@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 
 #include "predex/internal/market_types.hpp"
@@ -43,13 +45,22 @@ class MonotonicArbStrategy {
             return;
         }
 
+        // Kalshi emits no WS event at natural close_time; tradeable checks must compare
+        // against wall-clock now, not wait for a deactivation message that never arrives.
+        const auto now_s = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+
         std::optional<GroupSignal> best_signal;
         const std::size_t index = market_index->second;
         if (index > 0) {
-            best_signal = evaluate_pair(chain->markets[index - 1], chain->markets[index], update);
+            best_signal = evaluate_pair(chain->markets[index - 1], chain->markets[index],
+                                        update, now_s);
         }
         if (index + 1 < chain->markets.size()) {
-            auto candidate = evaluate_pair(chain->markets[index], chain->markets[index + 1], update);
+            auto candidate = evaluate_pair(chain->markets[index], chain->markets[index + 1],
+                                           update, now_s);
             if (candidate.has_value() &&
                 (!best_signal.has_value() || candidate->score > best_signal->score)) {
                 //NOLINTNEXTLINE(performance-move-const-arg)
@@ -118,10 +129,12 @@ class MonotonicArbStrategy {
     [[nodiscard]] std::optional<GroupSignal> evaluate_pair(
         const ChainEntry& easier,
         const ChainEntry& harder,
-        const AppliedEventUpdate& update) noexcept {
+        const AppliedEventUpdate& update,
+        std::uint64_t now_s) noexcept {
         if (!easier.market.has_book || !harder.market.has_book ||
             easier.market.desynced || harder.market.desynced ||
-            !easier.market.lifecycle.tradeable || !harder.market.lifecycle.tradeable) {
+            !easier.market.lifecycle.is_tradeable_at(now_s) ||
+            !harder.market.lifecycle.is_tradeable_at(now_s)) {
             return std::nullopt;
         }
 
@@ -168,9 +181,15 @@ class MonotonicArbStrategy {
         signal.edge_ticks = net_edge_ticks;
         signal.score = net_edge_ticks;
 
+        // Both legs trade the YES contract: we buy YES on the easier (underpriced) market at
+        // its ask, and sell YES on the harder (overpriced) market at its bid. easier_ask and
+        // harder_bid are both YES-side quotes, so the Outcome here must be kYes — encoding
+        // the sell leg as an NO order (the prior Side-only mistranslation) would change the
+        // trade entirely and get 400-rejected by Kalshi.
         signal.legs[0] = SubmissionLeg{
             .market_id = easier.market.market_id,
             .side = internal::Side::kBuy,
+            .outcome = predex::core::oms::kalshi::Outcome::kYes,
             .qty_lots = executable_qty,
             .limit_price_ticks = easier_ask,
             .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kIoc,
@@ -178,6 +197,7 @@ class MonotonicArbStrategy {
         signal.legs[1] = SubmissionLeg{
             .market_id = harder.market.market_id,
             .side = internal::Side::kSell,
+            .outcome = predex::core::oms::kalshi::Outcome::kYes,
             .qty_lots = executable_qty,
             .limit_price_ticks = harder_bid,
             .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kIoc,

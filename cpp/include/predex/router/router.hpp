@@ -15,7 +15,12 @@
 namespace predex::core::routing::kalshi{
     struct RouterTelemetry{
         std::size_t processed_frames_{0};
-        std::size_t dropped_frames_{0};
+        // Downstream shard AND logger queues both full — operator alert.
+        std::size_t dropped_backpressure_{0};
+        // Lifecycle messages for tickers not in our registry — expected at startup (shotgun blast).
+        std::size_t dropped_unknown_ticker_lifecycle_{0};
+        // Frame pool returned nullptr (corrupt handle, gen mismatch). Should be ~0.
+        std::size_t dropped_invalid_{0};
     };
 
     enum class RouteDecision:std::uint8_t{
@@ -29,7 +34,8 @@ namespace predex::core::routing::kalshi{
                 predex::core::ingest::kalshi::FramePool& frame_pool,
                 const predex::core::routing::kalshi::MarketRegistry &market_registry,
                 predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
-                predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue) noexcept;
+                predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
+                predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept;
 
             [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
 
@@ -43,6 +49,7 @@ namespace predex::core::routing::kalshi{
             const predex::core::routing::kalshi::MarketRegistry& market_registry_;
             predex::core::routing::kalshi::ShardDispatch &shard_dispatch_;
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue_; // Router producer, logger consumer
+            predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue_; // Router producer on drop paths
 
             std::unordered_map<std::uint32_t, std::uint64_t> last_seq_by_sid_; //global checker for messages
 

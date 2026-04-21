@@ -148,7 +148,9 @@ std::uint64_t Oms::unknown_fill_side_count() const noexcept {
     return unknown_fill_side_count_;
 }
 
-OmsRequestId Oms::seed_orphaned_order(OrderState state, internal::Side side) noexcept {
+OmsRequestId Oms::seed_orphaned_order(OrderState state,
+                                      internal::Side side,
+                                      Outcome outcome) noexcept {
     const OmsRequestId request_id = next_oms_request_id_++;
     state.oms_request_id = request_id;
     const AcceptedIntent accepted{
@@ -156,6 +158,7 @@ OmsRequestId Oms::seed_orphaned_order(OrderState state, internal::Side side) noe
             .origin = state.origin,
             .exchange = internal::ExchangeId::kKalshi,
             .side = side,
+            .outcome = outcome,
             .qty_lots = state.live_qty_lots,
             .time_in_force = OmsTimeInForce::kGtc,
         },

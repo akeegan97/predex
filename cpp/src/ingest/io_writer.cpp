@@ -4,11 +4,11 @@
 #include <chrono>
 namespace predex::core::ingest::kalshi{
 
-  IOWriter::IOWriter(predex::core::ingest::kalshi::FramePool& frame_pool, 
+  IOWriter::IOWriter(predex::core::ingest::kalshi::FramePool& frame_pool,
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
                      predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& router_queue,
-                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
-    : frame_pool_(frame_pool), router_queue_(router_queue), recycle_queue_(recycle_queue) {}
+                     std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*> recycle_queues) noexcept
+    : frame_pool_(frame_pool), router_queue_(router_queue), recycle_queues_(std::move(recycle_queues)) {}
 
     bool IOWriter::on_wire_message(std::string_view payload) noexcept{
         ++received_count_;
@@ -54,8 +54,25 @@ namespace predex::core::ingest::kalshi{
 
     std::size_t IOWriter::drain_recycled(std::size_t max_batch_size) noexcept{
         std::size_t recycled_count = 0;
-        predex::core::ingest::kalshi::FrameHandle handle{};
-        while(recycled_count < max_batch_size && recycle_queue_.try_pop(handle)){
+        if(recycle_queues_.empty()){
+            return 0;
+        }
+        // Round-robin across the per-producer SPSC queues. Each visit pops at most one handle
+        // so a hot producer can't starve the others when the budget is tight.
+        std::size_t consecutive_empty = 0;
+        while(recycled_count < max_batch_size && consecutive_empty < recycle_queues_.size()){
+            auto* queue = recycle_queues_[next_recycle_queue_];
+            next_recycle_queue_ = (next_recycle_queue_ + 1) % recycle_queues_.size();
+            if(queue == nullptr){
+                ++consecutive_empty;
+                continue;
+            }
+            predex::core::ingest::kalshi::FrameHandle handle{};
+            if(!queue->try_pop(handle)){
+                ++consecutive_empty;
+                continue;
+            }
+            consecutive_empty = 0;
             if(frame_pool_.recycle(handle)){
                 ++recycled_count;
             } else {

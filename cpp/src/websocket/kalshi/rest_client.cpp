@@ -101,14 +101,44 @@ void join_path_into(std::string& out, const std::string& base, const std::string
     out.append(path);
 }
 
-[[nodiscard]] std::string side_to_string(predex::internal::Side side) {
+// Kalshi order REST payloads use four orthogonal fields: `action` (buy/sell) and `side`
+// (yes/no). `action` comes from the OrderIntent's OrderSide; `side` comes from the Outcome.
+// Conflating the two is exactly the bug this client used to have: Side::kSell → "no" meant
+// every sell intent was mistranslated from sell-YES into sell-NO.
+[[nodiscard]] std::string_view action_from_side(predex::internal::Side side) noexcept {
     switch (side) {
         case predex::internal::Side::kBuy:
-            return "yes";
+            return "buy";
         case predex::internal::Side::kSell:
+            return "sell";
+        default:
+            return {};
+    }
+}
+
+[[nodiscard]] std::string_view outcome_to_string(predex::core::oms::kalshi::Outcome outcome) noexcept {
+    switch (outcome) {
+        case predex::core::oms::kalshi::Outcome::kYes:
+            return "yes";
+        case predex::core::oms::kalshi::Outcome::kNo:
             return "no";
         default:
-            return "unknown";
+            return {};
+    }
+}
+
+// Kalshi's accepted TIF strings. Anything else must fail client-side rather than silently
+// default to GTC, which was the historical bug on IoC legs of the arb strategy.
+[[nodiscard]] std::string_view tif_to_string(predex::core::oms::kalshi::OmsTimeInForce tif) noexcept {
+    switch (tif) {
+        case predex::core::oms::kalshi::OmsTimeInForce::kGtc:
+            return "good_til_cancelled";
+        case predex::core::oms::kalshi::OmsTimeInForce::kIoc:
+            return "immediate_or_cancel";
+        case predex::core::oms::kalshi::OmsTimeInForce::kFok:
+            return "fill_or_kill";
+        default:
+            return {};
     }
 }
 
@@ -144,6 +174,8 @@ void build_submit_order_body(const predex::core::oms::kalshi::SubmitOrderCmd& co
                              std::string_view market_ticker,
                              std::string_view action,
                              std::string_view side,
+                             std::string_view time_in_force,
+                             std::string_view price_field,
                              std::string& body) {
     body.clear();
     body.reserve(192 + market_ticker.size() + command.client_order_id.size());
@@ -158,10 +190,12 @@ void build_submit_order_body(const predex::core::oms::kalshi::SubmitOrderCmd& co
     append_json_escaped(body, side);
     body.append(",\"count\":");
     body.append(std::to_string(command.intent.qty_lots));
-    //NOLINTNEXTLINE
-    body.append(",\"time_in_force\":\"good_til_cancelled\"");
+    body.append(",\"time_in_force\":");
+    append_json_escaped(body, time_in_force);
     if (command.intent.limit_price_ticks.has_value()) {
-        body.append(",\"yes_price\":");
+        body.push_back(',');
+        append_json_escaped(body, price_field);
+        body.push_back(':');
         body.append(std::to_string(*command.intent.limit_price_ticks));
     }
     body.push_back('}');
@@ -172,6 +206,7 @@ void build_modify_order_body(const predex::core::oms::kalshi::ModifyOrderCmd& co
     //NOLINTNEXTLINE
                              std::string_view action,
                              std::string_view side,
+                             std::string_view price_field,
                              std::string& body) {
     body.clear();
     body.reserve(192 + command.client_order_id.size() + updated_client_order_id.size());
@@ -187,7 +222,9 @@ void build_modify_order_body(const predex::core::oms::kalshi::ModifyOrderCmd& co
     body.append(",\"count\":");
     body.append(std::to_string(command.replacement_intent.qty_lots));
     if (command.replacement_intent.limit_price_ticks.has_value()) {
-        body.append(",\"yes_price\":");
+        body.push_back(',');
+        append_json_escaped(body, price_field);
+        body.push_back(':');
         body.append(std::to_string(*command.replacement_intent.limit_price_ticks));
     }
     body.push_back('}');
@@ -265,12 +302,24 @@ RestCallResult RestClient::submit_order(
         return {.ok = false, .error = "market ticker is required for submit_order"};
     }
 
-    const std::string action = command.intent.side == predex::internal::Side::kBuy
-        ? "buy"
-        : (command.intent.side == predex::internal::Side::kSell ? "sell" : "buy");
-    const std::string side = side_to_string(command.intent.side);
+    const auto action = action_from_side(command.intent.side);
+    if (action.empty()) {
+        return {.ok = false, .error = "submit_order: order side must be Buy or Sell"};
+    }
+    const auto side = outcome_to_string(command.intent.outcome);
+    if (side.empty()) {
+        return {.ok = false, .error = "submit_order: outcome must be Yes or No"};
+    }
+    const auto tif = tif_to_string(command.intent.time_in_force);
+    if (tif.empty()) {
+        return {.ok = false, .error = "submit_order: time_in_force must be GTC, IOC, or FOK"};
+    }
+    const std::string_view price_field =
+        command.intent.outcome == predex::core::oms::kalshi::Outcome::kYes
+            ? "yes_price"
+            : "no_price";
     thread_local std::string body_scratch;
-    build_submit_order_body(command, market_ticker, action, side, body_scratch);
+    build_submit_order_body(command, market_ticker, action, side, tif, price_field, body_scratch);
 
     RestCallResult result =
         call_json_api("POST", "/trade-api/v2/portfolio/orders", body_scratch);
@@ -307,15 +356,23 @@ RestCallResult RestClient::modify_order(
     if (!command.exchange_order_id.has_value() || command.exchange_order_id->empty()) {
         return {.ok = false, .error = "exchange order id required for amend"};
     }
-    const std::string action = command.replacement_intent.side == predex::internal::Side::kBuy
-        ? "buy"
-        : (command.replacement_intent.side == predex::internal::Side::kSell ? "sell" : "buy");
-    const std::string side = side_to_string(command.replacement_intent.side);
+    const auto action = action_from_side(command.replacement_intent.side);
+    if (action.empty()) {
+        return {.ok = false, .error = "modify_order: order side must be Buy or Sell"};
+    }
+    const auto side = outcome_to_string(command.replacement_intent.outcome);
+    if (side.empty()) {
+        return {.ok = false, .error = "modify_order: outcome must be Yes or No"};
+    }
+    const std::string_view price_field =
+        command.replacement_intent.outcome == predex::core::oms::kalshi::Outcome::kYes
+            ? "yes_price"
+            : "no_price";
     const std::string updated_client_order_id =
         build_updated_client_order_id(command.client_order_id);
     thread_local std::string body_scratch;
     build_modify_order_body(
-        command, updated_client_order_id, action, side, body_scratch);
+        command, updated_client_order_id, action, side, price_field, body_scratch);
     thread_local std::string target_scratch;
     build_order_target(target_scratch, *command.exchange_order_id, "/amend");
     return call_json_api("POST", target_scratch, body_scratch);
@@ -347,6 +404,7 @@ OpenOrdersResult RestClient::fetch_open_orders(
                 .ticker = order.value("ticker", ""),
                 .status = order.value("status", ""),
                 .side = order.value("side", ""),
+                .action = order.value("action", ""),
                 .fill_count_fp = order.value("fill_count_fp", "0.00"),
                 .remaining_count_fp = order.value("remaining_count_fp", "0.00"),
                 .initial_count_fp = order.value("initial_count_fp", "0.00"),

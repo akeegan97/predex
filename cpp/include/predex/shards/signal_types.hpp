@@ -29,6 +29,8 @@ struct Signal {
     internal::MarketId market_id{0};
     SignalKind kind{SignalKind::kUnknown};
     internal::Side side{internal::Side::kUnknown};
+    predex::core::oms::kalshi::Outcome outcome{
+        predex::core::oms::kalshi::Outcome::kUnknown};
     internal::QtyLots target_qty_lots{0};
     std::optional<internal::PriceTicks> reference_price_ticks;
     internal::TimestampNs signal_ts_ns{0};
@@ -39,6 +41,8 @@ struct Signal {
 struct SubmissionLeg {
     internal::MarketId market_id{0};
     internal::Side side{internal::Side::kUnknown};
+    predex::core::oms::kalshi::Outcome outcome{
+        predex::core::oms::kalshi::Outcome::kUnknown};
     internal::QtyLots qty_lots{0};
     std::optional<internal::PriceTicks> limit_price_ticks;
     predex::core::oms::kalshi::OmsTimeInForce time_in_force{
@@ -77,6 +81,7 @@ enum class RiskRejectReason : std::uint8_t {
     kInvalidIntent = 6,
     kNetPositionLimit = 7,
     kMarketCloseSoon = 8,
+    kMarketClosed = 9,
 };
 
 struct RiskDecision {

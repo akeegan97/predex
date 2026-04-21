@@ -32,6 +32,16 @@ enum class OmsTimeInForce : std::uint8_t {
     kFok = 3,
 };
 
+// Binary-contract outcome the order is expressed against. Distinct from internal::Side, which
+// carries only the buy/sell direction. On Kalshi a single action can be (buy, yes), (buy, no),
+// (sell, yes), or (sell, no); overloading Side for both dimensions silently mistranslates
+// sell-YES intents into sell-NO orders, which is the bug this field exists to prevent.
+enum class Outcome : std::uint8_t {
+    kUnknown = 0,
+    kYes = 1,
+    kNo = 2,
+};
+
 enum class OmsLiquidity : std::uint8_t {
     kUnknown = 0,
     kMaker = 1,
@@ -76,6 +86,7 @@ struct OrderIntent {
     IntentOrigin origin{};
     internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
     internal::Side side{internal::Side::kUnknown};
+    Outcome outcome{Outcome::kUnknown};
     internal::QtyLots qty_lots{0};
     std::optional<internal::PriceTicks> limit_price_ticks;
     OmsTimeInForce time_in_force{OmsTimeInForce::kUnknown};

@@ -36,11 +36,13 @@ class Shard {
     explicit Shard(utils::SPSCQueue<ingest::kalshi::FrameHandle>& input_queue,
                    ingest::kalshi::FramePool& frame_pool,
                    utils::SPSCQueue<ingest::kalshi::FrameHandle>& logger_queue,
+                   utils::SPSCQueue<ingest::kalshi::FrameHandle>& recycle_queue,
                    EventStore& event_store,
                    Bundle bundle)
         : input_queue_(input_queue),
           frame_pool_(frame_pool),
           logger_queue_(logger_queue),
+          recycle_queue_(recycle_queue),
           event_store_(event_store),
           bundle_(std::move(bundle)) {}
 
@@ -81,6 +83,7 @@ class Shard {
     utils::SPSCQueue<ingest::kalshi::FrameHandle>& input_queue_;
     ingest::kalshi::FramePool& frame_pool_;
     utils::SPSCQueue<ingest::kalshi::FrameHandle>& logger_queue_;
+    utils::SPSCQueue<ingest::kalshi::FrameHandle>& recycle_queue_;
     parsers::kalshi::Parser parser_;
     EventStore& event_store_;
     Bundle bundle_;
@@ -112,6 +115,10 @@ class Shard {
         ProcessOneResult result = apply_event(handle, *frame);
         if (!forward_to_logger(handle)) {
             ++logger_fail_count_;
+            // Logger queue full — recycle the handle so the frame pool is not bled. Any book
+            // state mutations performed by apply_event already succeeded; losing the tape entry
+            // is the only consequence here.
+            (void)recycle_queue_.try_push(handle);
             result.code = ProcessCode::kLoggerBackpressure;
             return result;
         }

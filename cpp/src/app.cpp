@@ -893,7 +893,45 @@ namespace predex {
         std::vector<predex::core::oms::kalshi::OrderLifecycleEvent> parsed_events;
         parsed_events.reserve(predex::core::oms::kalshi::kDefaultMaxPrivateWsEventsPerMessage);
         std::uint32_t reconnect_attempts = 0;
+
+        // OMS WS liveness watchdog. Kalshi pings every ~10s (see memory file
+        // project_kalshi_heartbeat) and has no documented pong-timeout; without this
+        // tripwire, a silent half-open TCP (peer crash, NAT drop, LB rotation) would
+        // leave us blind to our own fills indefinitely because we never send on this
+        // channel. 15s grace from a fresh connect protects against false trips during
+        // handshake; the 25s stale threshold tolerates ~2 missed pings before forcing
+        // a reconnect. Market-data WS intentionally does not share this tripwire — its
+        // outages are loud (frame counters drop) and have a smaller blast radius.
+        constexpr std::uint64_t kWsGraceNs = 15'000'000'000ULL;
+        constexpr std::uint64_t kWsStaleThresholdNs = 25'000'000'000ULL;
+
+        // First connect happened in start() before this thread spawned; seed here.
+        std::uint64_t connection_established_ns =
+            static_cast<std::uint64_t>(monotonic_now_ns());
+
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
+            // Liveness check: if no pings observed for longer than the threshold (and
+            // past the grace period), force-close so the kClosed branch reconnects.
+            {
+                const auto now_ns = static_cast<std::uint64_t>(monotonic_now_ns());
+                if (now_ns - connection_established_ns > kWsGraceNs) {
+                    const auto last_ping_ns = oms_ws_transport.last_ping_recv_ns();
+                    if (last_ping_ns != 0 &&
+                        now_ns - last_ping_ns > kWsStaleThresholdNs) {
+                        std::fprintf(stderr,
+                            "[oms_ws] ping watchdog tripped: no ping for %llu ms, "
+                            "forcing reconnect\n",
+                            static_cast<unsigned long long>(
+                                (now_ns - last_ping_ns) / 1'000'000ULL));
+                        std::fflush(stderr);
+                        oms_ws_session.close();
+                        // recv_text will report kClosed on the next iteration and the
+                        // existing reconnect branch takes over (including reconcile).
+                        continue;
+                    }
+                }
+            }
+
             const auto recv_result = oms_ws_session.recv_text(std::chrono::milliseconds{50});
             if (recv_result.status == websocket::RecvStatus::kTimeout) {
                 continue;
@@ -932,6 +970,9 @@ namespace predex {
                         });
                 }
                 reconnect_attempts = 0;
+                // Reset the liveness grace window so the watchdog doesn't trip on a
+                // brand-new connection that hasn't had time to receive its first ping.
+                connection_established_ns = static_cast<std::uint64_t>(monotonic_now_ns());
                 continue;
             }
             if (recv_result.status == websocket::RecvStatus::kError) {

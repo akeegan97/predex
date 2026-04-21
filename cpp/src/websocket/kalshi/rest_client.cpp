@@ -374,7 +374,12 @@ RestCallResult RestClient::call_json_api(const std::string& method,
     thread_local std::string request_target_scratch;
     join_path_into(request_target_scratch, endpoint_base_path_, target);
     const auto& request_target = request_target_scratch;
-    const auto auth_headers = signer_.make_auth_headers(method, request_target);
+    // Kalshi REST signing expects path-only canonicalization (without query string).
+    const auto query_pos = request_target.find('?');
+    const std::string signing_path = query_pos == std::string::npos
+        ? request_target
+        : request_target.substr(0, query_pos);
+    const auto auth_headers = signer_.make_auth_headers(method, signing_path);
 
     try {
         net::io_context io_context;

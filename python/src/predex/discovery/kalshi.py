@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 from typing import Any
 from urllib.error import HTTPError
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -32,14 +33,15 @@ class KalshiPublicClient:
         if self.progress_callback is not None:
             self.progress_callback(message)
 
-    def _retry_delay(self, attempt: int, error: HTTPError) -> float:
-        headers = error.headers or {}
-        retry_after = str(headers.get("Retry-After", "")).strip()
-        if retry_after:
-            try:
-                return max(0.0, float(retry_after))
-            except ValueError:
-                pass
+    def _retry_delay(self, attempt: int, error: HTTPError | None = None) -> float:
+        if error is not None:
+            headers = error.headers or {}
+            retry_after = str(headers.get("Retry-After", "")).strip()
+            if retry_after:
+                try:
+                    return max(0.0, float(retry_after))
+                except ValueError:
+                    pass
 
         delay = self.initial_backoff_seconds * (2 ** attempt)
         return min(delay, self.max_backoff_seconds)
@@ -51,12 +53,23 @@ class KalshiPublicClient:
                 with self._urlopen(request) as response:
                     return json.loads(response.read().decode("utf-8"))
             except HTTPError as error:
-                if error.code != 429 or attempt >= self.max_retries:
+                retriable = error.code in (408, 429, 500, 502, 503, 504)
+                if not retriable or attempt >= self.max_retries:
                     raise
                 delay = self._retry_delay(attempt, error)
                 self._report_progress(
-                    f"rate limited on {request.full_url}; retrying in {delay:.1f}s "
+                    f"http {error.code} on {request.full_url}; retrying in {delay:.1f}s "
                     f"({attempt + 1}/{self.max_retries})"
+                )
+                self._sleep(delay)
+                attempt += 1
+            except URLError as error:
+                if attempt >= self.max_retries:
+                    raise
+                delay = self._retry_delay(attempt)
+                self._report_progress(
+                    f"network error on {request.full_url}: {error.reason}; "
+                    f"retrying in {delay:.1f}s ({attempt + 1}/{self.max_retries})"
                 )
                 self._sleep(delay)
                 attempt += 1
@@ -155,5 +168,10 @@ class KalshiPublicClient:
         total = len(ordered_unique_tickers)
         for index, event_ticker in enumerate(ordered_unique_tickers, start=1):
             self._report_progress(f"fetching event {index}/{total}: {event_ticker}")
-            events.append(self.get_event(event_ticker))
+            try:
+                events.append(self.get_event(event_ticker))
+            except (HTTPError, URLError, TimeoutError, ValueError) as error:
+                self._report_progress(
+                    f"skipping event {event_ticker} after repeated fetch failure: {error}"
+                )
         return events

@@ -279,6 +279,22 @@ struct OrderState {
     internal::TimestampNs terminal_recv_ns{0};
 };
 
+// Reconcile requests flow from the private-WS thread (producer) to the REST thread
+// (consumer) so that the persistent REST connection is owned by a single thread. Issued
+// when the WS connection reconnects or a seq-gap is detected; on delivery the REST thread
+// pages through GET /portfolio/orders and synthesises OrderLifecycleEvent acks for each
+// still-open order. Coalescing is fine — a dropped duplicate reconcile is covered by the
+// one already in flight.
+enum class ReconcileReason : std::uint8_t {
+    kReconnect = 1,
+    kSeqGap = 2,
+};
+
+struct ReconcileRequest {
+    ReconcileReason reason{ReconcileReason::kReconnect};
+    internal::TimestampNs requested_ts_ns{0};
+};
+
 struct ExecutionRecord {
     IntentOrigin origin{};
     OmsRequestId oms_request_id{0};

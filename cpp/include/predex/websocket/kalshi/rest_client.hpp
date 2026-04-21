@@ -1,5 +1,8 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -37,24 +40,42 @@ struct OpenOrdersResult {
     std::string error;
 };
 
+// RestClient owns a persistent HTTPS keep-alive session to Kalshi. Holding the TLS
+// connection open between calls replaces a ~100ms first-call handshake cliff with
+// ~20-30ms steady-state latency. NOT thread-safe: single-owner. Today the owner is
+// the OMS thread; PR B will hand ownership to a dedicated RestThread.
 class RestClient {
   public:
     explicit RestClient(AuthSigner signer,
                         std::string endpoint = "https://api.elections.kalshi.com");
+    ~RestClient();
+
+    RestClient(const RestClient&) = delete;
+    RestClient& operator=(const RestClient&) = delete;
+    RestClient(RestClient&&) = delete;
+    RestClient& operator=(RestClient&&) = delete;
 
     [[nodiscard]] RestCallResult
     submit_order(const predex::core::oms::kalshi::SubmitOrderCmd& command,
-                 const std::string& market_ticker) const;
+                 const std::string& market_ticker);
 
     [[nodiscard]] RestCallResult
-    cancel_order(const predex::core::oms::kalshi::CancelOrderCmd& command) const;
+    cancel_order(const predex::core::oms::kalshi::CancelOrderCmd& command);
 
     [[nodiscard]] RestCallResult
-    modify_order(const predex::core::oms::kalshi::ModifyOrderCmd& command) const;
+    modify_order(const predex::core::oms::kalshi::ModifyOrderCmd& command);
 
     [[nodiscard]] OpenOrdersResult
     fetch_open_orders(std::size_t limit = kOpenOrderFetchLimit,
-                      std::optional<std::string> cursor = std::nullopt) const;
+                      std::optional<std::string> cursor = std::nullopt);
+
+    // If the persistent connection has been idle longer than threshold_seconds,
+    // fires an unauthenticated GET /exchange/status to keep the TLS session warm
+    // (HTTP/1.1 keep-alive idle timeouts on AWS infra are typically ~60s, so
+    // 30-45s is the safe cadence). Cheap: 3-field response, no auth, does not
+    // count against write-rate-limit. No-op if not connected or within threshold.
+    // Intended to be called from whatever thread owns the RestClient's idle loop.
+    void check_and_keep_warm(std::uint64_t threshold_seconds);
 
   private:
     AuthSigner signer_;
@@ -65,9 +86,18 @@ class RestClient {
     bool endpoint_valid_{false};
     std::string endpoint_parse_error_;
 
+    // Persistent connection state — Boost types kept out of this header via PIMPL.
+    struct ConnectionState;
+    std::unique_ptr<ConnectionState> connection_;
+    std::chrono::steady_clock::time_point last_call_ts_{};
+
+    [[nodiscard]] bool ensure_connected_();
+    void close_connection_() noexcept;
+
     [[nodiscard]] RestCallResult call_json_api(const std::string& method,
                                                const std::string& target,
-                                               const std::string& body) const;
+                                               const std::string& body,
+                                               bool authenticate = true);
 };
 
 } // namespace predex::websocket::kalshi

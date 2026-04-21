@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 
 #include <string_view>
 #include <utility>
@@ -284,8 +285,19 @@ void build_open_orders_target(std::string& target,
 
 } // namespace
 
+struct RestClient::ConnectionState {
+    net::io_context io_context;
+    ssl::context ssl_context{ssl::context::tls_client};
+    std::optional<beast::ssl_stream<beast::tcp_stream>> stream;
+    bool connected{false};
+};
+
 RestClient::RestClient(AuthSigner signer, std::string endpoint)
-    : signer_(std::move(signer)), endpoint_(std::move(endpoint)) {
+    : signer_(std::move(signer)),
+      endpoint_(std::move(endpoint)),
+      connection_(std::make_unique<ConnectionState>()) {
+    connection_->ssl_context.set_default_verify_paths();
+
     EndpointParts endpoint_parts;
     endpoint_valid_ = parse_endpoint(endpoint_, endpoint_parts, endpoint_parse_error_);
     if (endpoint_valid_) {
@@ -295,9 +307,69 @@ RestClient::RestClient(AuthSigner signer, std::string endpoint)
     }
 }
 
+RestClient::~RestClient() {
+    close_connection_();
+}
+
+bool RestClient::ensure_connected_() {
+    if (!endpoint_valid_) {
+        return false;
+    }
+    if (connection_->connected) {
+        return true;
+    }
+
+    try {
+        connection_->stream.emplace(connection_->io_context, connection_->ssl_context);
+        auto& stream = *connection_->stream;
+
+        if (!SSL_set_tlsext_host_name(stream.native_handle(), endpoint_host_.c_str())) {
+            connection_->stream.reset();
+            return false;
+        }
+
+        tcp::resolver resolver{connection_->io_context};
+        auto results = resolver.resolve(endpoint_host_, endpoint_port_);
+        auto& lowest = beast::get_lowest_layer(stream);
+        lowest.connect(results);
+
+        // SO_KEEPALIVE catches half-open sockets at the TCP layer without requiring an
+        // application-level heartbeat. Windows' default 2h keepalive is too long, but
+        // enabling it still helps on Linux defaults and behind NATs that drop silent
+        // flows. Cheap insurance that pairs with the keep-warm idle ping.
+        lowest.socket().set_option(net::socket_base::keep_alive{true});
+
+        stream.handshake(ssl::stream_base::client);
+        connection_->connected = true;
+        return true;
+    } catch (const std::exception&) {
+        connection_->stream.reset();
+        connection_->connected = false;
+        return false;
+    }
+}
+
+void RestClient::close_connection_() noexcept {
+    if (connection_ == nullptr || !connection_->connected) {
+        if (connection_ != nullptr) {
+            connection_->stream.reset();
+        }
+        return;
+    }
+    try {
+        beast::error_code ignored;
+        //NOLINTNEXTLINE
+        (void)connection_->stream->shutdown(ignored);
+    } catch (...) {
+        // swallow: shutdown failures on an already-dead socket are expected
+    }
+    connection_->stream.reset();
+    connection_->connected = false;
+}
+
 RestCallResult RestClient::submit_order(
     const predex::core::oms::kalshi::SubmitOrderCmd& command,
-    const std::string& market_ticker) const {
+    const std::string& market_ticker) {
     if (market_ticker.empty()) {
         return {.ok = false, .error = "market ticker is required for submit_order"};
     }
@@ -342,7 +414,7 @@ RestCallResult RestClient::submit_order(
 }
 
 RestCallResult RestClient::cancel_order(
-    const predex::core::oms::kalshi::CancelOrderCmd& command) const {
+    const predex::core::oms::kalshi::CancelOrderCmd& command) {
     if (!command.exchange_order_id.has_value() || command.exchange_order_id->empty()) {
         return {.ok = false, .error = "exchange order id required for cancel"};
     }
@@ -352,7 +424,7 @@ RestCallResult RestClient::cancel_order(
 }
 
 RestCallResult RestClient::modify_order(
-    const predex::core::oms::kalshi::ModifyOrderCmd& command) const {
+    const predex::core::oms::kalshi::ModifyOrderCmd& command) {
     if (!command.exchange_order_id.has_value() || command.exchange_order_id->empty()) {
         return {.ok = false, .error = "exchange order id required for amend"};
     }
@@ -380,7 +452,7 @@ RestCallResult RestClient::modify_order(
 
 OpenOrdersResult RestClient::fetch_open_orders(
     std::size_t limit,
-    std::optional<std::string> cursor) const {
+    std::optional<std::string> cursor) {
     thread_local std::string target_scratch;
     build_open_orders_target(target_scratch, limit, cursor);
     RestCallResult result = call_json_api("GET", target_scratch, "");
@@ -424,7 +496,8 @@ OpenOrdersResult RestClient::fetch_open_orders(
 //NOLINTNEXTLINE
 RestCallResult RestClient::call_json_api(const std::string& method,
                                          const std::string& target,
-                                         const std::string& body) const {
+                                         const std::string& body,
+                                         bool authenticate) {
     if (!endpoint_valid_) {
         return {.ok = false, .error = endpoint_parse_error_};
     }
@@ -432,81 +505,113 @@ RestCallResult RestClient::call_json_api(const std::string& method,
     thread_local std::string request_target_scratch;
     join_path_into(request_target_scratch, endpoint_base_path_, target);
     const auto& request_target = request_target_scratch;
+
     // Kalshi REST signing expects path-only canonicalization (without query string).
-    const auto query_pos = request_target.find('?');
-    const std::string signing_path = query_pos == std::string::npos
-        ? request_target
-        : request_target.substr(0, query_pos);
-    const auto auth_headers = signer_.make_auth_headers(method, signing_path);
-
-    try {
-        net::io_context io_context;
-        ssl::context ssl_context{ssl::context::tls_client};
-        ssl_context.set_default_verify_paths();
-
-        tcp::resolver resolver{io_context};
-        beast::ssl_stream<beast::tcp_stream> stream{io_context, ssl_context};
-
-        if (!SSL_set_tlsext_host_name(stream.native_handle(), endpoint_host_.c_str())) {
-            return {.ok = false, .error = "failed to set TLS SNI host"};
-        }
-
-        auto results = resolver.resolve(endpoint_host_, endpoint_port_);
-        beast::get_lowest_layer(stream).connect(results);
-        stream.handshake(ssl::stream_base::client);
-
-        http::request<http::string_body> request;
-        request.version(kRequestVersion);
-        if (method == "POST") {
-            request.method(http::verb::post);
-        } else if (method == "GET") {
-            request.method(http::verb::get);
-        } else if (method == "DELETE") {
-            request.method(http::verb::delete_);
-        } else {
-            return {.ok = false, .error = "unsupported HTTP method"};
-        }
-
-        request.target(request_target);
-        request.set(http::field::host, endpoint_host_);
-        request.set(http::field::user_agent, "predex-rest-client");
-        if (method != "GET") {
-            request.set(http::field::content_type, "application/json");
-        }
-        request.set("KALSHI-ACCESS-KEY", auth_headers.key_id);
-        request.set("KALSHI-ACCESS-TIMESTAMP", auth_headers.timestamp_ms);
-        request.set("KALSHI-ACCESS-SIGNATURE", auth_headers.signature_base64);
-        //NOLINTNEXTLINE
-        if (method != "GET" && method != "DELETE") {
-            request.body() = body;
-            request.prepare_payload();
-        } else if (!body.empty()) {
-            request.body() = body;
-            request.prepare_payload();
-        }
-
-        http::write(stream, request);
-
-        beast::flat_buffer buffer;
-        http::response<http::string_body> response;
-        http::read(stream, buffer, response);
-
-        beast::error_code shutdown_error;
-        //NOLINTNEXTLINE
-        (void)stream.shutdown(shutdown_error);
-
-        const bool okay = response.result_int() >= 200 && response.result_int() < 300;
-        if (!okay) {
-            return {
-                .ok = false,
-                .error = "HTTP " + std::to_string(response.result_int()) +
-                    " body=" + response.body(),
-            };
-        }
-        return {.ok = true, .error = response.body()};
-    } catch (const std::exception& exception) {
-        return {.ok = false, .error = exception.what()};
+    std::string signing_path;
+    if (authenticate) {
+        const auto query_pos = request_target.find('?');
+        signing_path = query_pos == std::string::npos
+            ? request_target
+            : request_target.substr(0, query_pos);
     }
+
+    // Single-flight retry: on transport failure, tear down the stream, reconnect,
+    // and replay the request exactly once. Kalshi deduplicates on client_order_id,
+    // so a retry that reaches them twice is safe for submit_order; cancel/modify
+    // are idempotent by construction.
+    auto attempt = [&]() -> std::optional<RestCallResult> {
+        if (!ensure_connected_()) {
+            return RestCallResult{.ok = false, .error = "transport_disconnected"};
+        }
+
+        try {
+            http::request<http::string_body> request;
+            request.version(kRequestVersion);
+            if (method == "POST") {
+                request.method(http::verb::post);
+            } else if (method == "GET") {
+                request.method(http::verb::get);
+            } else if (method == "DELETE") {
+                request.method(http::verb::delete_);
+            } else {
+                return RestCallResult{.ok = false, .error = "unsupported HTTP method"};
+            }
+
+            request.target(request_target);
+            request.set(http::field::host, endpoint_host_);
+            request.set(http::field::user_agent, "predex-rest-client");
+            if (method != "GET") {
+                request.set(http::field::content_type, "application/json");
+            }
+            if (authenticate) {
+                const auto auth_headers = signer_.make_auth_headers(method, signing_path);
+                request.set("KALSHI-ACCESS-KEY", auth_headers.key_id);
+                request.set("KALSHI-ACCESS-TIMESTAMP", auth_headers.timestamp_ms);
+                request.set("KALSHI-ACCESS-SIGNATURE", auth_headers.signature_base64);
+            }
+            //NOLINTNEXTLINE
+            if (method != "GET" && method != "DELETE") {
+                request.body() = body;
+                request.prepare_payload();
+            } else if (!body.empty()) {
+                request.body() = body;
+                request.prepare_payload();
+            }
+
+            auto& stream = *connection_->stream;
+            http::write(stream, request);
+
+            beast::flat_buffer buffer;
+            http::response<http::string_body> response;
+            http::read(stream, buffer, response);
+
+            last_call_ts_ = std::chrono::steady_clock::now();
+
+            // If the server signals Connection: close, tear down now so the next
+            // call reconnects instead of trying to write to a socket Kalshi is
+            // about to close.
+            if (!response.keep_alive()) {
+                close_connection_();
+            }
+
+            const bool okay = response.result_int() >= 200 && response.result_int() < 300;
+            if (!okay) {
+                return RestCallResult{
+                    .ok = false,
+                    .error = "HTTP " + std::to_string(response.result_int()) +
+                        " body=" + response.body(),
+                };
+            }
+            return RestCallResult{.ok = true, .error = response.body()};
+        } catch (const std::exception&) {
+            close_connection_();
+            return std::nullopt;  // signal retry
+        }
+    };
+
+    if (auto result = attempt()) {
+        return *result;
+    }
+    if (auto result = attempt()) {
+        return *result;
+    }
+    return {.ok = false, .error = "transport_retry_failed"};
+}
+
+void RestClient::check_and_keep_warm(std::uint64_t threshold_seconds) {
+    if (!endpoint_valid_ || connection_ == nullptr || !connection_->connected) {
+        return;
+    }
+    const auto elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - last_call_ts_).count();
+    if (elapsed_s < static_cast<std::int64_t>(threshold_seconds)) {
+        return;
+    }
+    // GET /exchange/status: unauthenticated, 3-field response (exchange_active,
+    // trading_active, exchange_estimated_resume_time), does not consume the write-rate
+    // budget. Side effect we care about: last_call_ts_ is refreshed and the TLS session
+    // stays warm so the next real order avoids the ~100ms handshake cliff.
+    (void)call_json_api("GET", "/trade-api/v2/exchange/status", "", /*authenticate=*/false);
 }
 
 } // namespace predex::websocket::kalshi

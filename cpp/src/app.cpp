@@ -126,6 +126,8 @@ namespace predex {
             predex::utils::SPSCQueue<predex::core::oms::kalshi::CancelOrderCmd>;
         using ModifyOrderQueue =
             predex::utils::SPSCQueue<predex::core::oms::kalshi::ModifyOrderCmd>;
+        using ReconcileRequestQueue =
+            predex::utils::SPSCQueue<predex::core::oms::kalshi::ReconcileRequest>;
         using AuditLogger = predex::core::audit::AuditLogger;
 
         explicit Runtime(AppConfig config_in);
@@ -268,6 +270,9 @@ namespace predex {
         std::unique_ptr<ModifyOrderQueue> oms_modify_queue;
         std::unique_ptr<OmsLifecycleQueue> oms_rest_update_queue;
         std::unique_ptr<OmsLifecycleQueue> oms_ws_update_queue;
+        // Private-WS thread is the sole producer; REST thread is the sole consumer.
+        // Preserves the SPSC invariant while keeping all RestClient mutations on one thread.
+        std::unique_ptr<ReconcileRequestQueue> oms_reconcile_request_queue;
         std::unique_ptr<AuditQueue> oms_audit_queue;
 
         core::routing::kalshi::MarketRegistry market_registry;
@@ -393,6 +398,9 @@ namespace predex {
             std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity);
         oms_ws_update_queue =
             std::make_unique<OmsLifecycleQueue>(config.pipeline.shard_input_capacity);
+        // Small queue: reconcile requests coalesce — one in-flight covers any that would
+        // have followed it. Capacity 2 so a WS-thread push never blocks the reconnect path.
+        oms_reconcile_request_queue = std::make_unique<ReconcileRequestQueue>(2);
         oms_audit_queue =
             std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
 
@@ -681,8 +689,29 @@ namespace predex {
     void App::Runtime::oms_rest_loop(const std::stop_token& stop_token) {
         std::uint32_t idle_iters = 0;
         const bool live_transport_enabled = config.oms_transport.enabled;
+        // Connection keep-warm cadence. 30s is well inside the typical AWS keep-alive idle
+        // cap (~60s) and avoids the ~100ms TLS handshake tail when the next order lands
+        // after a quiet period. check_and_keep_warm() is a no-op if we haven't actually
+        // been idle long enough.
+        constexpr std::uint64_t kKeepWarmThresholdSeconds = 30;
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             bool processed = false;
+
+            // Reconcile requests arrive here from the private-WS thread on reconnect /
+            // seq-gap. Running the multi-page fetch on this thread keeps the persistent
+            // RestClient single-owner — any cross-thread use of the stream would be UB now
+            // that it is no longer a per-call scratch connection.
+            predex::core::oms::kalshi::ReconcileRequest reconcile_req{};
+            if (oms_reconcile_request_queue != nullptr &&
+                oms_reconcile_request_queue->try_pop(reconcile_req)) {
+                processed = true;
+                if (live_transport_enabled) {
+                    if (!reconcile_open_orders_from_rest(/*is_startup=*/false)) {
+                        running.store(false, std::memory_order_release);
+                        break;
+                    }
+                }
+            }
 
             predex::core::oms::kalshi::SubmitOrderCmd submit_cmd{};
             if (oms_submit_queue != nullptr && oms_submit_queue->try_pop(submit_cmd)) {
@@ -850,6 +879,9 @@ namespace predex {
             if (idle_iters <= config.pipeline.idle_policy.spin_iters_oms) {
                 continue;
             }
+            if (live_transport_enabled) {
+                oms_rest_client.check_and_keep_warm(kKeepWarmThresholdSeconds);
+            }
             if (config.pipeline.idle_policy.yield_every > 0U &&
                 (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
                 std::this_thread::yield();
@@ -889,9 +921,15 @@ namespace predex {
                     oms_ws_session.close();
                     continue;
                 }
-                if (!reconcile_open_orders_from_rest(/*is_startup=*/false)) {
-                    running.store(false, std::memory_order_release);
-                    break;
+                // Hand reconciliation to the REST thread: it owns the persistent
+                // RestClient, and a direct fetch_open_orders() call from here would race
+                // the REST thread on the shared TLS stream.
+                if (oms_reconcile_request_queue != nullptr) {
+                    (void)oms_reconcile_request_queue->try_push(
+                        predex::core::oms::kalshi::ReconcileRequest{
+                            .reason = predex::core::oms::kalshi::ReconcileReason::kReconnect,
+                            .requested_ts_ns = monotonic_now_ns(),
+                        });
                 }
                 reconnect_attempts = 0;
                 continue;
@@ -915,9 +953,15 @@ namespace predex {
                                 continue;
                             }
                             if (*seq != last_seq + 1) {
-                                if (!reconcile_open_orders_from_rest(/*is_startup=*/false)) {
-                                    running.store(false, std::memory_order_release);
-                                    break;
+                                // Same rationale as the reconnect branch: reconcile runs
+                                // on the REST thread to keep the RestClient single-owner.
+                                if (oms_reconcile_request_queue != nullptr) {
+                                    (void)oms_reconcile_request_queue->try_push(
+                                        predex::core::oms::kalshi::ReconcileRequest{
+                                            .reason = predex::core::oms::kalshi::
+                                                ReconcileReason::kSeqGap,
+                                            .requested_ts_ns = monotonic_now_ns(),
+                                        });
                                 }
                             }
                             it->second = *seq;
@@ -1057,7 +1101,10 @@ namespace predex {
                         .accepted_qty_lots = parse_count_fp_to_lots(order.initial_count_fp),
                     },
                 };
-                if (!oms_ws_update_queue->try_push(std::move(event))) {
+                // Post-startup reconciliation runs on the REST thread (the sole producer
+                // of oms_rest_update_queue), which preserves the SPSC invariant now that
+                // the RestClient is only touched from one thread.
+                if (!oms_rest_update_queue->try_push(std::move(event))) {
                     set_error("OMS transport update queue backpressured during reconciliation");
                     return false;
                 }
@@ -1322,8 +1369,16 @@ namespace predex {
             oms_thread.join();
         }
 
-        // After OMS tail drain, flush any cancel commands directly via REST client.
-        // (oms_rest_loop may have already exited due to running=false.)
+        // Join the REST thread BEFORE the main thread touches oms_rest_client. The
+        // RestClient owns a persistent TLS stream that is not safe to share across
+        // threads; prior to this join, oms_rest_loop may still be mid-request.
+        if (oms_rest_thread.joinable()) {
+            oms_rest_thread.request_stop();
+            oms_rest_thread.join();
+        }
+
+        // After OMS tail drain + REST thread join, flush any cancel commands directly
+        // via the now-idle RestClient.
         {
             predex::core::oms::kalshi::CancelOrderCmd cancel_cmd{};
             while (oms_cancel_queue != nullptr && oms_cancel_queue->try_pop(cancel_cmd)) {
@@ -1351,10 +1406,6 @@ namespace predex {
             }
         }
 
-        if (oms_rest_thread.joinable()) {
-            oms_rest_thread.request_stop();
-            oms_rest_thread.join();
-        }
         if (oms_private_ws_thread.joinable()) {
             oms_private_ws_thread.request_stop();
             oms_private_ws_thread.join();

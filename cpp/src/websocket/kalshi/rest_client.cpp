@@ -331,6 +331,7 @@ bool RestClient::ensure_connected_() {
         tcp::resolver resolver{connection_->io_context};
         auto results = resolver.resolve(endpoint_host_, endpoint_port_);
         auto& lowest = beast::get_lowest_layer(stream);
+        lowest.expires_after(kConnectTimeout);
         lowest.connect(results);
 
         // SO_KEEPALIVE catches half-open sockets at the TCP layer without requiring an
@@ -339,7 +340,9 @@ bool RestClient::ensure_connected_() {
         // flows. Cheap insurance that pairs with the keep-warm idle ping.
         lowest.socket().set_option(net::socket_base::keep_alive{true});
 
+        lowest.expires_after(kConnectTimeout);
         stream.handshake(ssl::stream_base::client);
+        lowest.expires_never();
         connection_->connected = true;
         return true;
     } catch (const std::exception&) {
@@ -480,6 +483,8 @@ OpenOrdersResult RestClient::fetch_open_orders(
                 .fill_count_fp = order.value("fill_count_fp", "0.00"),
                 .remaining_count_fp = order.value("remaining_count_fp", "0.00"),
                 .initial_count_fp = order.value("initial_count_fp", "0.00"),
+                .yes_price_dollars = order.value("yes_price_dollars", ""),
+                .no_price_dollars = order.value("no_price_dollars", ""),
             });
         }
         if (parsed.contains("cursor") && parsed["cursor"].is_string()) {
@@ -559,11 +564,15 @@ RestCallResult RestClient::call_json_api(const std::string& method,
             }
 
             auto& stream = *connection_->stream;
+            auto& lowest = beast::get_lowest_layer(stream);
+            lowest.expires_after(kIoTimeout);
             http::write(stream, request);
 
             beast::flat_buffer buffer;
             http::response<http::string_body> response;
+            lowest.expires_after(kIoTimeout);
             http::read(stream, buffer, response);
+            lowest.expires_never();
 
             last_call_ts_ = std::chrono::steady_clock::now();
 

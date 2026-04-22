@@ -20,6 +20,7 @@ void RiskEngine::on_intent_accepted(const AcceptedIntent& accepted_intent) noexc
     GlobalRiskManager::on_intent_accepted(accepted_intent, state);
     global_state_.open_orders_global = state.open_orders_global;
     global_state_.global_exposure_lots = state.global_exposure_lots;
+    global_state_.locked_capital_ticks = state.locked_capital_ticks;
     auto& event_risk = event_state_[accepted_intent.intent.origin.event_id];
     event_risk.open_orders = state.open_orders_for_target_event;
     event_risk.exposure_lots = state.target_event_exposure_lots;

@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "trader_app (gdb)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/dev/cpp/trader_app",
+      "args": ["--config", "${workspaceFolder}/docs/generated_config.json"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "externalConsole": false,
+      "console": "integratedTerminal",
+      "stopAtEntry": false,
+      "logging": {
+        "engineLogging": true,
+        "trace": true,
+        "programOutput": true
+      },
+      "setupCommands": [
+        { "text": "set pagination off" },
+        { "text": "handle SIGINT pass nostop noprint" }
+      ]
+    },
+    {
+      "name": "trader_app (attach gdb)",
+      "type": "cppdbg",
+      "request": "attach",
+      "program": "${workspaceFolder}/build/dev/cpp/trader_app",
+      "processId": "${command:pickProcess}",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "setupCommands": [
+        { "text": "set pagination off" }
+      ]
+    }
+  ]
+}

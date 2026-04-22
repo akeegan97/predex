@@ -31,6 +31,8 @@ struct OpenOrderSnapshot {
     std::string fill_count_fp;
     std::string remaining_count_fp;
     std::string initial_count_fp;
+    std::string yes_price_dollars;
+    std::string no_price_dollars;
 };
 
 struct OpenOrdersResult {
@@ -78,6 +80,9 @@ class RestClient {
     void check_and_keep_warm(std::uint64_t threshold_seconds);
 
   private:
+    static constexpr std::chrono::seconds kConnectTimeout{3};
+    static constexpr std::chrono::seconds kIoTimeout{5};
+
     AuthSigner signer_;
     std::string endpoint_;
     std::string endpoint_host_;

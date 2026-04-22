@@ -1,0 +1,602 @@
+{
+  "included_event_count": 3,
+  "included_market_count": 18,
+  "skipped_event_count": 77,
+  "topology_counts": {
+    "monotonic_chain": 3
+  },
+  "included_events": [
+    {
+      "event_ticker": "KXFUSION",
+      "series_ticker": "KXFUSION",
+      "topology_kind": "monotonic_chain",
+      "market_count": 3,
+      "market_tickers": [
+        "KXFUSION-40-JAN01",
+        "KXFUSION-35-JAN01",
+        "KXFUSION-30-JAN01"
+      ],
+      "event_id": 3158601867,
+      "affinity_key": 43647,
+      "reason": "markets form a unique before-style close-time ladder without conflicting strike metadata"
+    },
+    {
+      "event_ticker": "KXAGICO-COMP",
+      "series_ticker": "KXAGICO",
+      "topology_kind": "monotonic_chain",
+      "market_count": 13,
+      "market_tickers": [
+        "KXAGICO-COMP-30",
+        "KXAGICO-COMP-29",
+        "KXAGICO-COMP-28Q4",
+        "KXAGICO-COMP-28Q3",
+        "KXAGICO-COMP-28Q2",
+        "KXAGICO-COMP-28Q1",
+        "KXAGICO-COMP-27Q4",
+        "KXAGICO-COMP-27Q3",
+        "KXAGICO-COMP-27Q2",
+        "KXAGICO-COMP-27Q1",
+        "KXAGICO-COMP-26Q4",
+        "KXAGICO-COMP-26Q3",
+        "KXAGICO-COMP-26Q2"
+      ],
+      "event_id": 3180176731,
+      "affinity_key": 25484,
+      "reason": "markets share one custom entity and form a unique before-style close-time ladder"
+    },
+    {
+      "event_ticker": "USCLIMATE",
+      "series_ticker": "KXUSCLIMATE",
+      "topology_kind": "monotonic_chain",
+      "market_count": 2,
+      "market_tickers": [
+        "USCLIMATE-2025",
+        "USCLIMATE-2030"
+      ],
+      "event_id": 2760388704,
+      "affinity_key": 48913,
+      "reason": "all markets expose comparable cumulative numeric thresholds"
+    }
+  ],
+  "skipped_events": [
+    {
+      "event_ticker": "KXELONMARS-99",
+      "series_ticker": "KXELONMARS",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXNEWPOPE-70",
+      "series_ticker": "KXNEWPOPE",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 7,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXWARMING-50",
+      "series_ticker": "KXWARMING",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXMARSVRAIL-50",
+      "series_ticker": "KXMARSVRAIL",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXERUPTSUPER-0",
+      "series_ticker": "KXERUPTSUPER",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXCOLONIZEMARS-50",
+      "series_ticker": "KXCOLONIZEMARS",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXPERSONPRESMAM-45",
+      "series_ticker": "KXPERSONPRESMAM",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXXISUCCESSOR-45JAN01",
+      "series_ticker": "KXXISUCCESSOR",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 14,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXPERSONPRESFUENTES-45",
+      "series_ticker": "KXPERSONPRESFUENTES",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXNEXTISRAELPM-45JAN01",
+      "series_ticker": "KXNEXTISRAELPM",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 12,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXG7LEADEROUT-45JAN01",
+      "series_ticker": "KXG7LEADEROUT",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 7,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXRAMPBREX-40",
+      "series_ticker": "KXRAMPBREX",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 2,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXOAIANTH-40",
+      "series_ticker": "KXOAIANTH",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 2,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXDEELRIP-40",
+      "series_ticker": "KXDEELRIP",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 2,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXPOPCHANGESTATE10-35",
+      "series_ticker": "KXPOPCHANGESTATE10",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXEARTHQUAKECALIFORNIA-35",
+      "series_ticker": "KXEARTHQUAKECALIFORNIA",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXROBOTMARS-35",
+      "series_ticker": "KXROBOTMARS",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXPERFORMBONDSONG-35",
+      "series_ticker": "KXPERFORMBONDSONG",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 22,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXJOHNNYDEPP-35",
+      "series_ticker": "KXJOHNNYDEPP",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXBRUVSEAT-35",
+      "series_ticker": "KXBRUVSEAT",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXAFRICALEADEROUT-35",
+      "series_ticker": "KXAFRICALEADEROUT",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 10,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXACTORSONNYCROCKETT-35",
+      "series_ticker": "KXACTORSONNYCROCKETT",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 10,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXFDATYPE1DIABETES-33",
+      "series_ticker": "KXFDATYPE1DIABETES",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "EUCLIMATE",
+      "series_ticker": "KXEUCLIMATE",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "INDIACLIMATE-30",
+      "series_ticker": "KXINDIACLIMATE",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXNEXTSPEAKER-31",
+      "series_ticker": "KXNEXTSPEAKER",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 3,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXMOONMAN-31",
+      "series_ticker": "KXMOONMAN",
+      "topology_kind": "unordered_group",
+      "market_count": 5,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXTVSEASONRELEASETHELASTOFUS",
+      "series_ticker": "KXTVSEASONRELEASETHELASTOFUS",
+      "topology_kind": "monotonic_chain",
+      "market_count": 7,
+      "reason": "excluded by market_limit: adding 7 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXPRIMEENGCONSUMPTION-30",
+      "series_ticker": "KXPRIMEENGCONSUMPTION",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 10,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXACTORTOMCRUZ-30",
+      "series_ticker": "KXACTORTOMCRUZ",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXINDIANAPOWELL-30",
+      "series_ticker": "KXINDIANAPOWELL",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXCANADACUP-30",
+      "series_ticker": "KXCANADACUP",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXF1RETIRE-30VERSTAPPEN",
+      "series_ticker": "KXF1RETIRE",
+      "topology_kind": "unordered_group",
+      "market_count": 4,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXTIMEDECADE20S-30",
+      "series_ticker": "KXTIMEDECADE20S",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 6,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "EVSHARE-30JAN",
+      "series_ticker": "KXEVSHARE",
+      "topology_kind": "monotonic_chain",
+      "market_count": 4,
+      "reason": "excluded by market_limit: adding 4 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXU3MAX-30",
+      "series_ticker": "KXU3MAX",
+      "topology_kind": "monotonic_chain",
+      "market_count": 10,
+      "reason": "excluded by market_limit: adding 10 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXPERFORMROLEBRITNEY",
+      "series_ticker": "KXPERFORMROLEBRITNEY",
+      "topology_kind": "unordered_group",
+      "market_count": 10,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXPERFORMROLE007-VILLAIN",
+      "series_ticker": "KXPERFORMROLE007",
+      "topology_kind": "unordered_group",
+      "market_count": 7,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXPERFORMROLE007-Q",
+      "series_ticker": "KXPERFORMROLE007",
+      "topology_kind": "unordered_group",
+      "market_count": 5,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXPERFORMROLE007-MONEYPENNY",
+      "series_ticker": "KXPERFORMROLE007",
+      "topology_kind": "unordered_group",
+      "market_count": 8,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXPERFORMROLE007-M",
+      "series_ticker": "KXPERFORMROLE007",
+      "topology_kind": "unordered_group",
+      "market_count": 5,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXPERFORMROLE007-FELIX",
+      "series_ticker": "KXPERFORMROLE007",
+      "topology_kind": "unordered_group",
+      "market_count": 9,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXPERFORMROLE007",
+      "series_ticker": "KXPERFORMROLE007",
+      "topology_kind": "unordered_group",
+      "market_count": 16,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXYTUBESUBSISHOWSPEED",
+      "series_ticker": "KXYTUBESUBSISHOWSPEED",
+      "topology_kind": "unordered_group",
+      "market_count": 4,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXUSTAKEOVER-30",
+      "series_ticker": "KXUSTAKEOVER",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXTVSEASONRELEASEACOURTOFTHORNSANDROSES",
+      "series_ticker": "KXTVSEASONRELEASEACOURTOFTHORNSANDROSES",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXTRILLIONAIRE-30",
+      "series_ticker": "KXTRILLIONAIRE",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 11,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXTRAVISKELCEWEDDING-30JAN01",
+      "series_ticker": "KXTRAVISKELCEWEDDING",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 6,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXTAYLORSWIFTWEDDING-30JAN01",
+      "series_ticker": "KXTAYLORSWIFTWEDDING",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 17,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXTAIWANLVL4",
+      "series_ticker": "KXTAIWANLVL4",
+      "topology_kind": "monotonic_chain",
+      "market_count": 5,
+      "reason": "excluded by market_limit: adding 5 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXSWIFTKELCEWEDDINGLOCATION-30",
+      "series_ticker": "KXSWIFTKELCEWEDDINGLOCATION",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 5,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXSPORTSOWNERLBJ-30",
+      "series_ticker": "KXSPORTSOWNERLBJ",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXSPACEXMARS-30",
+      "series_ticker": "KXSPACEXMARS",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXSONICS-30",
+      "series_ticker": "KXSONICS",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXSHOWENDSIMPSONS-30",
+      "series_ticker": "KXSHOWENDSIMPSONS",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXSHOWENDFAMILYGUY-30",
+      "series_ticker": "KXSHOWENDFAMILYGUY",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXROASTSUBJECT-30JAN01",
+      "series_ticker": "KXROASTSUBJECT",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 11,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXPOLIOELIM-30",
+      "series_ticker": "KXPOLIOELIM",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXNEXTUKPM-30",
+      "series_ticker": "KXNEXTUKPM",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 20,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXNETWORTHKAICENAT-30",
+      "series_ticker": "KXNETWORTHKAICENAT",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXNBATEAM-30",
+      "series_ticker": "KXNBATEAM",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXNBASEATTLE-30",
+      "series_ticker": "KXNBASEATTLE",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXMUSKTRILLION",
+      "series_ticker": "KXMUSKTRILLION",
+      "topology_kind": "monotonic_chain",
+      "market_count": 4,
+      "reason": "excluded by market_limit: adding 4 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXMEDIARELEASEPRISONBREAK-30JAN01",
+      "series_ticker": "KXMEDIARELEASEPRISONBREAK",
+      "topology_kind": "monotonic_chain",
+      "market_count": 6,
+      "reason": "excluded by market_limit: adding 6 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXMARRIAGESTYLESKRAVITZ-HSZK",
+      "series_ticker": "KXMARRIAGESTYLESKRAVITZ",
+      "topology_kind": "monotonic_chain",
+      "market_count": 4,
+      "reason": "excluded by market_limit: adding 4 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXLIPATURNERLOCATION-30",
+      "series_ticker": "KXLIPATURNERLOCATION",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 10,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXJPMCEONEW",
+      "series_ticker": "KXJPMCEONEW",
+      "topology_kind": "unordered_group",
+      "market_count": 4,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXIPOAIRTABLE",
+      "series_ticker": "KXIPOAIRTABLE",
+      "topology_kind": "monotonic_chain",
+      "market_count": 4,
+      "reason": "excluded by market_limit: adding 4 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXGTAPRICE",
+      "series_ticker": "KXGTAPRICE",
+      "topology_kind": "monotonic_chain",
+      "market_count": 5,
+      "reason": "excluded by market_limit: adding 5 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXGTA6SONGS-30",
+      "series_ticker": "KXGTA6SONGS",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 14,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXFYREFESTPRICE-30",
+      "series_ticker": "KXFYREFESTPRICE",
+      "topology_kind": "monotonic_chain",
+      "market_count": 10,
+      "reason": "excluded by market_limit: adding 10 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXEUREF-30",
+      "series_ticker": "KXEUREF",
+      "topology_kind": "mutually_exclusive",
+      "market_count": 4,
+      "reason": "excluded by include_topologies filter: mutually_exclusive"
+    },
+    {
+      "event_ticker": "KXEUEXITCOUNTRY-30",
+      "series_ticker": "KXEUEXITCOUNTRY",
+      "topology_kind": "unordered_group",
+      "market_count": 6,
+      "reason": "excluded by include_topologies filter: unordered_group"
+    },
+    {
+      "event_ticker": "KXECCOMPACT-30",
+      "series_ticker": "KXECCOMPACT",
+      "topology_kind": "monotonic_chain",
+      "market_count": 4,
+      "reason": "excluded by market_limit: adding 4 markets would exceed limit 20"
+    },
+    {
+      "event_ticker": "KXEARTHQUAKEJAPAN-30",
+      "series_ticker": "KXEARTHQUAKEJAPAN",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXDATACENTER-30",
+      "series_ticker": "KXDATACENTER",
+      "topology_kind": "single_market",
+      "market_count": 1,
+      "reason": "excluded by include_topologies filter: single_market"
+    },
+    {
+      "event_ticker": "KXCO2LEVEL-30",
+      "series_ticker": "KXCO2LEVEL",
+      "topology_kind": "monotonic_chain",
+      "market_count": 5,
+      "reason": "excluded by market_limit: adding 5 markets would exceed limit 20"
+    }
+  ]
+}

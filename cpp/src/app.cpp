@@ -33,6 +33,7 @@
 #include <unordered_map>
 #include <vector>
 #include <mutex>
+#include <limits>
 #include <string_view>
 #include <system_error>
 
@@ -64,6 +65,68 @@ namespace predex {
                 return 0;
             }
             return static_cast<internal::QtyLots>(parsed);
+        }
+
+        [[nodiscard]] bool parse_non_negative_dollars_to_ticks(
+            std::string_view value,
+            internal::PriceTicks& out_ticks) {
+            constexpr std::uint64_t kDollarToTicksScale = 10000U;
+            constexpr auto kI64MaxAsU64 =
+                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+            if (value.empty() || value.front() == '-' || value.front() == '+') {
+                return false;
+            }
+            const std::size_t dot_pos = value.find('.');
+            const std::string_view int_part =
+                dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
+            const std::string_view frac_part =
+                dot_pos == std::string_view::npos ? std::string_view{} : value.substr(dot_pos + 1);
+            if (int_part.empty()) {
+                return false;
+            }
+            for (char digit_char : int_part) {
+                if (digit_char < '0' || digit_char > '9') {
+                    return false;
+                }
+            }
+            for (char frac_char : frac_part) {
+                if (frac_char < '0' || frac_char > '9') {
+                    return false;
+                }
+            }
+
+            std::uint64_t dollars = 0;
+            const auto [ptr, ec] =
+                std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
+            if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
+                return false;
+            }
+
+            std::uint64_t subcent_units = 0;
+            const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+            for (std::size_t index = 0; index < digits_to_take; ++index) {
+                subcent_units = subcent_units * 10U +
+                    static_cast<std::uint64_t>(frac_part[index] - '0');
+            }
+            for (std::size_t index = digits_to_take; index < 4U; ++index) {
+                subcent_units *= 10U;
+            }
+            if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+                ++subcent_units;
+                if (subcent_units == kDollarToTicksScale) {
+                    subcent_units = 0U;
+                    ++dollars;
+                }
+            }
+
+            if (dollars > (kI64MaxAsU64 - subcent_units) / kDollarToTicksScale) {
+                return false;
+            }
+
+            out_ticks = static_cast<internal::PriceTicks>(
+                dollars * kDollarToTicksScale + subcent_units);
+            return true;
         }
 
         [[nodiscard]] std::optional<std::uint64_t> read_u64_field(
@@ -893,20 +956,11 @@ namespace predex {
         std::vector<predex::core::oms::kalshi::OrderLifecycleEvent> parsed_events;
         parsed_events.reserve(predex::core::oms::kalshi::kDefaultMaxPrivateWsEventsPerMessage);
         std::uint32_t reconnect_attempts = 0;
-
-        // OMS WS liveness watchdog. Kalshi pings every ~10s (see memory file
-        // project_kalshi_heartbeat) and has no documented pong-timeout; without this
-        // tripwire, a silent half-open TCP (peer crash, NAT drop, LB rotation) would
-        // leave us blind to our own fills indefinitely because we never send on this
-        // channel. 15s grace from a fresh connect protects against false trips during
-        // handshake; the 25s stale threshold tolerates ~2 missed pings before forcing
-        // a reconnect. Market-data WS intentionally does not share this tripwire — its
-        // outages are loud (frame counters drop) and have a smaller blast radius.
         constexpr std::uint64_t kWsGraceNs = 15'000'000'000ULL;
         constexpr std::uint64_t kWsStaleThresholdNs = 25'000'000'000ULL;
 
         // First connect happened in start() before this thread spawned; seed here.
-        std::uint64_t connection_established_ns =
+        auto connection_established_ns =
             static_cast<std::uint64_t>(monotonic_now_ns());
 
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
@@ -1114,6 +1168,16 @@ namespace predex {
                             order.side.c_str());
                         std::fflush(stderr);
                         continue;
+                    }
+                    const std::string_view limit_price_dollars =
+                        outcome == predex::core::oms::kalshi::Outcome::kYes
+                            ? std::string_view{order.yes_price_dollars}
+                            : std::string_view{order.no_price_dollars};
+                    predex::internal::PriceTicks parsed_limit_ticks = 0;
+                    if (parse_non_negative_dollars_to_ticks(limit_price_dollars,
+                                                            parsed_limit_ticks) &&
+                        parsed_limit_ticks > 0) {
+                        state.live_limit_price_ticks = parsed_limit_ticks;
                     }
                     const auto assigned_id =
                         oms->seed_orphaned_order(std::move(state), side, outcome);
@@ -1422,51 +1486,60 @@ namespace predex {
         // via the now-idle RestClient.
         {
             predex::core::oms::kalshi::CancelOrderCmd cancel_cmd{};
+            std::size_t skipped_due_timeout = 0;
+            constexpr auto kStopCancelBudget = std::chrono::seconds(3);
+            const auto deadline = std::chrono::steady_clock::now() + kStopCancelBudget;
             while (oms_cancel_queue != nullptr && oms_cancel_queue->try_pop(cancel_cmd)) {
                 if (config.oms_transport.enabled) {
-                    constexpr std::uint32_t kCancelRetryCount = 3;
-                    bool canceled = false;
-                    std::string last_cancel_error;
-                    for (std::uint32_t attempt = 0; attempt < kCancelRetryCount; ++attempt) {
-                        const auto cancel_result = oms_rest_client.cancel_order(cancel_cmd);
-                        if (cancel_result.ok) {
-                            canceled = true;
-                            break;
-                        }
-                        last_cancel_error = cancel_result.error;
-                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    if (std::chrono::steady_clock::now() >= deadline) {
+                        ++skipped_due_timeout;
+                        continue;
                     }
-                    if (!canceled) {
+                    // call_json_api already retries transport once; keep shutdown bounded.
+                    const auto cancel_result = oms_rest_client.cancel_order(cancel_cmd);
+                    if (!cancel_result.ok) {
                         std::fprintf(stderr,
                                      "[stop] failed to cancel order (oms_request_id=%llu, client_order_id=%s): %s\n",
                                      static_cast<unsigned long long>(cancel_cmd.oms_request_id),
                                      cancel_cmd.client_order_id.c_str(),
-                                     last_cancel_error.c_str());
+                                     cancel_result.error.c_str());
                     }
                 }
+            }
+            if (skipped_due_timeout > 0) {
+                std::fprintf(stderr,
+                             "[stop] skipped %zu cancel(s) after shutdown budget (%lld ms)\n",
+                             skipped_due_timeout,
+                             static_cast<long long>(
+                                 std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     kStopCancelBudget).count()));
             }
         }
 
         if (oms_private_ws_thread.joinable()) {
             oms_private_ws_thread.request_stop();
+            // Force-close the private WS so a blocking recv_text() wakes up,
+            // observes the stop request, and lets join() complete.
+            oms_ws_session.close();
             oms_private_ws_thread.join();
         }
 
-        // Drain tape logger and audit queues before joining those threads.
-        if (tape_logger) {
-            while (tape_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {}
-        }
         if(logger_thread.joinable()){
             logger_thread.request_stop();
             logger_thread.join();
         }
-
-        if (audit_logger) {
-            while (audit_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {}
+        // Single-threaded final drain after logger thread has stopped.
+        if (tape_logger) {
+            while (tape_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {}
         }
+
         if(audit_thread.joinable()){
             audit_thread.request_stop();
             audit_thread.join();
+        }
+        // Single-threaded final drain after audit thread has stopped.
+        if (audit_logger) {
+            while (audit_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {}
         }
     }
 

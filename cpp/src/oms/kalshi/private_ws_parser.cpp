@@ -1,8 +1,10 @@
 #include "predex/oms/kalshi/private_ws_parser.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -106,6 +108,64 @@ namespace {
         return 0;
     }
     return static_cast<internal::QtyLots>(parsed);
+}
+
+[[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
+                                                        internal::PriceTicks& out_ticks) {
+    constexpr std::uint64_t kDollarToTicksScale = 10000U;
+    constexpr auto kI64MaxAsU64 =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+
+    if (value.empty() || value.front() == '-' || value.front() == '+') {
+        return false;
+    }
+    const std::size_t dot_pos = value.find('.');
+    const std::string_view int_part =
+        dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
+    const std::string_view frac_part =
+        dot_pos == std::string_view::npos ? std::string_view{} : value.substr(dot_pos + 1);
+    if (int_part.empty()) {
+        return false;
+    }
+    for (char digit_char : int_part) {
+        if (digit_char < '0' || digit_char > '9') {
+            return false;
+        }
+    }
+    for (char frac_char : frac_part) {
+        if (frac_char < '0' || frac_char > '9') {
+            return false;
+        }
+    }
+
+    std::uint64_t dollars = 0;
+    const auto [ptr, ec] =
+        std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
+    if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
+        return false;
+    }
+
+    std::uint64_t subcent_units = 0;
+    const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+    for (std::size_t index = 0; index < digits_to_take; ++index) {
+        subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+    }
+    for (std::size_t index = digits_to_take; index < 4U; ++index) {
+        subcent_units *= 10U;
+    }
+    if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+        ++subcent_units;
+        if (subcent_units == kDollarToTicksScale) {
+            subcent_units = 0U;
+            ++dollars;
+        }
+    }
+
+    if (dollars > (kI64MaxAsU64 - subcent_units) / kDollarToTicksScale) {
+        return false;
+    }
+    out_ticks = static_cast<internal::PriceTicks>(dollars * kDollarToTicksScale + subcent_units);
+    return true;
 }
 
 [[nodiscard]] std::optional<std::uint64_t> read_u64(const nlohmann::json& object,
@@ -250,6 +310,11 @@ namespace {
     if (event.kind == OrderLifecycleEventKind::kFill ||
         event.kind == OrderLifecycleEventKind::kPartialFill) {
         OrderFill fill{};
+        fill.raw_action = read_string(message, "action");
+        fill.raw_side = read_string(message, "side");
+        const auto is_yes = read_bool(message, "is_yes");
+        fill.raw_is_yes = is_yes.has_value() ? (*is_yes ? 1 : 0) : -1;
+
         if (const auto fill_qty = read_i64(message, "fill_qty")) {
             fill.fill_qty_lots = static_cast<internal::QtyLots>(*fill_qty);
         } else if (const auto fill_qty = read_i64(message, "count")) {
@@ -270,11 +335,28 @@ namespace {
             fill.fill_price_ticks = static_cast<internal::PriceTicks>(*fill_price);
         } else if (const auto fill_price = read_i64(message, "price")) {
             fill.fill_price_ticks = static_cast<internal::PriceTicks>(*fill_price);
+        } else if (message.contains("fill_price_dollars") &&
+                   message["fill_price_dollars"].is_string()) {
+            const auto fill_price_dollars = message["fill_price_dollars"].get<std::string>();
+            static_cast<void>(
+                parse_non_negative_dollars_to_ticks(fill_price_dollars, fill.fill_price_ticks));
+        } else {
+            const std::string yes_price_dollars = read_string(message, "yes_price_dollars");
+            const std::string no_price_dollars = read_string(message, "no_price_dollars");
+            const std::string side_value = to_lower(fill.raw_side);
+            if (side_value == "yes") {
+                static_cast<void>(
+                    parse_non_negative_dollars_to_ticks(yes_price_dollars, fill.fill_price_ticks));
+            } else if (side_value == "no") {
+                static_cast<void>(
+                    parse_non_negative_dollars_to_ticks(no_price_dollars, fill.fill_price_ticks));
+            } else {
+                if (!parse_non_negative_dollars_to_ticks(yes_price_dollars, fill.fill_price_ticks)) {
+                    static_cast<void>(
+                        parse_non_negative_dollars_to_ticks(no_price_dollars, fill.fill_price_ticks));
+                }
+            }
         }
-        fill.raw_action = read_string(message, "action");
-        fill.raw_side = read_string(message, "side");
-        const auto is_yes = read_bool(message, "is_yes");
-        fill.raw_is_yes = is_yes.has_value() ? (*is_yes ? 1 : 0) : -1;
 
         fill.side = side_from_action_text(fill.raw_action);
         if (fill.side == internal::Side::kUnknown) {

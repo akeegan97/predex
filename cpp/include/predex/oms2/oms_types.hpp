@@ -1,255 +1,431 @@
 #pragma once
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <variant>
 
-
 #include "predex/internal/market_types.hpp"
-namespace predex::core::oms2::kalshi{
 
-    using OmsRequestId = std::uint64_t;
-    using LocalIntentId = std::uint64_t;
-    using GroupIntentId = std::uint64_t;
-    /*
-    somewhat unavoidable string usage since 
-    Kalshi sends them around and are needed for cancel/modify
-    + matching ws feed for bookkeeping
-    */
-    struct ClientOrderId{
-        std::string value;
-    };
-    struct ExchangeOrderId{
-        std::string value;
-    };
-    /*
-    Enums/codes for OMS translation
-    */
-   enum class TimeInForce : std::uint8_t{
-        kGtc = 1,
-        kIoc = 2,
-        kFoc = 3,
-   };
-   enum class OrderTypeIntent : std::uint8_t{
-        kLimit = 1, // specified to limit potential slippage kLimit + kIoc stops walking book 
-        kMarketableLimit = 2, // specified to aggressively walk the book
-   };
+namespace predex::core::oms2::kalshi {
 
-   enum class LiquidityIntent : std::uint8_t{
-        kDefault = 1, // taker intent
-        kPostOnly = 2, // maker intent
-   };
+using OmsRequestId = std::uint64_t;
+using LocalIntentId = std::uint64_t;
+using GroupIntentId = std::uint64_t;
 
+struct ClientOrderId {
+    //might want to convert this to a fixed-sized array to avoid dynamic memory allocation, noting for future PR work on perf.
+    std::string value;
 
-   enum class IntentRejectReason : std::uint16_t{
-        kHardHalt = 0,
-        kSoftHalt = 1,
-        kGlobalRiskExceeded = 2,
-        kInvalidParams = 3,
-        kMarketClosed = 4,
-        kStaleSignal = 5,
-        kDuplicateClientOrderId = 6,
-        kUnsupported = 7,
-        kNone = 8,
-   };
+    [[nodiscard]] bool operator==(const ClientOrderId& other) const noexcept {
+        return value == other.value;
+    }
+};
 
-   enum class Outcome : std::uint8_t{
-        kYes = 1,
-        kNo = 2,
-   };
+struct ExchangeOrderId {
+    std::string value;
 
-   struct IntentOrigin{
-        std::uint16_t shard_id{0};
-        internal::AffinityKey affinity_key{0};
-        std::uint16_t leg_index{0};
-        std::uint16_t leg_count{0};
-        std::uint64_t signal_id{0};
-        LocalIntentId local_intent_id{0};
+    [[nodiscard]] bool operator==(const ExchangeOrderId& other) const noexcept {
+        return value == other.value;
+    }
+};
 
-        /*
-        latency fields
-        */
-        internal::TimestampNs signal_ts_ns{0};
-        internal::TimestampNs tick_recv_ns{0};
-        internal::TimestampNs submission_enqueued_ns{0};
-        /*
-        end latency fields
-        */
-        internal::EventId event_id{0};
-        internal::MarketId market_id{0};
-   };
-   
-   //Sent to REST client from OMS 
+enum class TimeInForce : std::uint8_t {
+    kGtc = 1,
+    kIoc = 2,
+    kFok = 3,
+};
 
-   struct OrderIntent{
-        std::uint64_t group_order_id{0};
-        internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
-        internal::Side side{internal::Side::kUnknown};
-        Outcome outcome{};
-        internal::QtyLots qty_lots{0};
-        std::optional<internal::PriceTicks> limit_price_ticks;
-        TimeInForce time_in_force{};
-        LiquidityIntent liquidity_intent{};
-        OrderTypeIntent order_type_intent{};
-        IntentOrigin intent_origin{};
+enum class OrderTypeIntent : std::uint8_t {
+    kLimit = 1,
+    kMarketableLimit = 2,
+};
 
-        /*
-        latency fields
-        */
-       internal::TimestampNs intent_ts_ns{0};
-   };
+enum class LiquidityIntent : std::uint8_t {
+    kDefault = 1,
+    kPostOnly = 2,
+};
 
-   enum class GroupExecutionPolicy : std::uint8_t{
-        kUnwind = 1,
-        kAbortRemaining = 2,
-        kBestEffort = 3,
-   };
-inline constexpr std::uint8_t kMaxGroupOrderLegs = 4;
-   struct GroupOrderIntent{
-    /*
-    although Kalshi doesn't support atomic batch orders, 
-    I want to track orders generated in parallel by strategy together:
-    ie for monotonic_arb/cdf_violation strategies
-    */
-        IntentOrigin intent_origin{};
-        GroupIntentId group_intent_id{0};
-        GroupExecutionPolicy execution_policy{};
-        std::array<OrderIntent, kMaxGroupOrderLegs> legs{0};
-        std::uint8_t leg_count{0};
-        internal::TimestampNs intent_ts_ns{0};
-   };
+enum class Outcome : std::uint8_t {
+    kYes = 1,
+    kNo = 2,
+};
 
-    struct CancelIntent {
-        IntentOrigin origin{};
-        std::optional<OmsRequestId> target_oms_request_id;
-        ClientOrderId target_client_order_id;
-        std::optional<ExchangeOrderId> target_exchange_order_id;
-        internal::TimestampNs intent_ts_ns{0};
-    };
-/*
-    ModifyIntent should either come from shard/strategy to OMS in a market making/resting order strategy 
-    where it makes sense to reprice/reduce exposure without cancel + send a new intent:
+enum class IntentRejectReason : std::uint16_t {
+    kHardHalt = 0,
+    kSoftHalt = 1,
+    kGlobalRiskExceeded = 2,
+    kInvalidParams = 3,
+    kMarketClosed = 4,
+    kStaleSignal = 5,
+    kDuplicateClientOrderId = 6,
+    kUnsupported = 7,
+    kNone = 8,
+};
 
-    OMS should not be constructing ModifyIntents from shards OrderIntents directly
+enum class VenueRejectReason : std::uint8_t {
+    kNone = 0,
+    kRateLimit = 1,
+    kVenueDown = 2,
+    kUnknown = 3,
+};
 
-*/
-    struct ModifyIntent{
-        IntentOrigin origin{};
-        std::optional<OmsRequestId> target_oms_request_id;
-        ClientOrderId target_client_order_id;
-        std::optional<ExchangeOrderId> target_exchange_order_id;
-        OrderIntent replacement_intent{};
-        internal::TimestampNs intent_ts_ns{0};
-    };
+enum class KalshiEventSource : std::uint8_t {
+    kRest = 1,
+    kPrivateWs = 2,
+    kReconcile = 3,
+};
 
-    using OmsSubmission = 
-        std::variant<OrderIntent, GroupOrderIntent, CancelIntent, ModifyIntent>;
+enum class GroupExecutionPolicy : std::uint8_t {
+    kUnwind = 1,
+    kAbortRemaining = 2,
+    kBestEffort = 3,
+};
 
-    struct AcceptedIntent{
-        OrderIntent intent{};
-        OmsRequestId oms_request_id{0};
-        ClientOrderId client_order_id;
-    };
+inline constexpr std::size_t kMaxGroupOrderLegs = 4;
 
-    struct RejectedIntent{
-        OrderIntent intent{};
-        IntentRejectReason reason{IntentRejectReason::kNone};
-    };
-
-    struct ModifiedIntent{
-        OrderIntent original_intent{};
-        OrderIntent modified_intent{};
-        OmsRequestId oms_request_id{0};
-        ClientOrderId client_order_id;
-        IntentRejectReason reason{IntentRejectReason::kNone};
-    };
-
-    using IntentDecisionType = 
-        std::variant<std::monostate, AcceptedIntent, RejectedIntent, ModifiedIntent>;
-    
-/*
-Order Lifecycle Events
-*/
-/*
-OMS mints ClientOrderId & OmsRequestId immediately following 
-popping from shard<->OMS SPSC queue and before returning event lifecycle back to shard
-*/
-struct ShardOrderCorrelation {
-    OmsRequestId oms_request_id{0};
-    ClientOrderId client_order_id;
-    LocalIntentId local_intent_id{0};
+// Shard lineage, routing identity, and latency attribution travel together today.
+// We can split this later if the seams need stricter ownership.
+struct IntentContext {
+    std::uint16_t shard_id{0};
+    internal::AffinityKey affinity_key{0};
     GroupIntentId group_intent_id{0};
     std::uint16_t leg_index{0};
+    std::uint16_t leg_count{0};
+    std::uint64_t signal_id{0};
+    LocalIntentId local_intent_id{0};
+
+    internal::TimestampNs signal_ts_ns{0};
+    internal::TimestampNs tick_recv_ns{0};
+    internal::TimestampNs submission_enqueued_ns{0};
+
+    internal::EventId event_id{0};
+    internal::MarketId market_id{0};
 };
-    struct IntentAccepted{
-        ShardOrderCorrelation corr{};
-    };
-    struct IntentRejected{
-        ShardOrderCorrelation corr{};
-        IntentRejectReason rejection_reason{IntentRejectReason::kNone};
-    };
-    struct OrderWorking{
-        ShardOrderCorrelation corr{};
-        internal::QtyLots working_qty_lots{0};
-        internal::PriceTicks working_price_ticks{0}; 
-    };
-    struct OrderPartiallyFilled{
-        ShardOrderCorrelation corr{};
-        internal::QtyLots filled_qty{0};
-        internal::QtyLots unfilled_qty{0};
-        internal::PriceTicks filled_price_ticks{0};
-    };
-    struct OrderFilled{
-         ShardOrderCorrelation corr{};
-        internal::QtyLots filled_qty{0};
-        internal::PriceTicks filled_price_ticks{0};
-    };
-    struct OrderCanceled{
-        ShardOrderCorrelation corr{};
-    };
-    struct OrderUncertain{
-        ShardOrderCorrelation corr{};
-    };
-    enum class VenueRejectionReason : std::uint8_t{
-        kNone = 0,
-        kRateLimit = 1,
-        kVenueDown = 2,
-        kElse = 3,
-    };
-    struct OrderRejected{
-        ShardOrderCorrelation corr{};
-        VenueRejectionReason venue_rejected_reason{VenueRejectionReason::kNone};
-    };
 
-    using ShardOrderEvent  = std::variant<
-        std::monostate, 
-        IntentAccepted, 
-        IntentRejected,
-        OrderWorking,
-        OrderPartiallyFilled,
-        OrderFilled,
-        OrderCanceled,
-        OrderUncertain,
-        OrderRejected
-        >;
+struct OmsOrderRef {
+    OmsRequestId oms_request_id{0};
+    ClientOrderId client_order_id{};
+    std::optional<ExchangeOrderId> exchange_order_id;
+};
+
+struct ShardOrderCorrelation {
+    IntentContext context{};
+    OmsOrderRef order{};
+};
+
+// ---------------------------------------------------------------------------
+// 1. Shard -> OMS requests
+// ---------------------------------------------------------------------------
+
+struct NewOrderIntent {
+    IntentContext context{};
+    internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
+    internal::Side side{internal::Side::kUnknown};
+    Outcome outcome{Outcome::kYes};
+    internal::QtyLots qty_lots{0};
+    std::optional<internal::PriceTicks> limit_price_ticks;
+    TimeInForce time_in_force{TimeInForce::kGtc};
+    LiquidityIntent liquidity_intent{LiquidityIntent::kDefault};
+    OrderTypeIntent order_type_intent{OrderTypeIntent::kLimit};
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+struct GroupOrderIntent {
+    IntentContext context{};
+    GroupExecutionPolicy execution_policy{GroupExecutionPolicy::kAbortRemaining};
+    std::array<NewOrderIntent, kMaxGroupOrderLegs> legs{};
+    std::size_t leg_count{0};
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+struct CancelOrderIntent {
+    IntentContext context{};
+    std::optional<OmsRequestId> target_oms_request_id;
+    ClientOrderId target_client_order_id{};
+    std::optional<ExchangeOrderId> target_exchange_order_id;
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+struct ModifyOrderIntent {
+    IntentContext context{};
+    std::optional<OmsRequestId> target_oms_request_id;
+    ClientOrderId target_client_order_id{};
+    std::optional<ExchangeOrderId> target_exchange_order_id;
+    // OMS2 modify semantics are intentionally narrow: replacement may adjust
+    // working qty/price only. OMS must reject attempts to change side, outcome,
+    // event, market, or other immutable order identity fields.
+    NewOrderIntent replacement{};
+    internal::TimestampNs intent_ts_ns{0};
+};
+
+using ShardOmsRequest =
+    std::variant<NewOrderIntent, GroupOrderIntent, CancelOrderIntent, ModifyOrderIntent>;
+
+// Compatibility aliases while this module is still in-flight.
+using OrderIntent = NewOrderIntent;
+using CancelIntent = CancelOrderIntent;
+using ModifyIntent = ModifyOrderIntent;
+using OmsSubmission = ShardOmsRequest;
+
+// ---------------------------------------------------------------------------
+// 2. OMS -> risk requests
+// ---------------------------------------------------------------------------
+
+struct CheckNewOrderRisk {
+    NewOrderIntent intent{};
+};
+
+struct CheckModifyRisk {
+    OmsOrderRef target_order{};
+    NewOrderIntent replacement{};
+};
+
+struct RegisterVenueFillRisk {
+    ShardOrderCorrelation corr{};
+    internal::QtyLots fill_qty_lots{0};
+    internal::PriceTicks fill_price_ticks{0};
+};
+
+struct ReleaseOrderRisk {
+    ShardOrderCorrelation corr{};
+    internal::QtyLots remaining_open_qty_lots{0};
+};
+
+using OmsToRiskRequest =
+    std::variant<CheckNewOrderRisk, CheckModifyRisk, RegisterVenueFillRisk, ReleaseOrderRisk>;
+
+// ---------------------------------------------------------------------------
+// 3. Risk -> OMS decisions
+// ---------------------------------------------------------------------------
+
+struct RiskApproved {
+    std::int64_t capital_reserved_ticks{0};
+};
+
+struct RiskRejected {
+    IntentRejectReason reason{IntentRejectReason::kNone};
+};
+
+using RiskToOmsDecision = std::variant<RiskApproved, RiskRejected>;
+
+// ---------------------------------------------------------------------------
+// 4. OMS -> Kalshi commands
+// ---------------------------------------------------------------------------
+
+struct SubmitOrderCmd {
+    OmsOrderRef order{};
+    NewOrderIntent intent{};
+};
+
+struct CancelOrderCmd {
+    ShardOrderCorrelation corr{};
+    internal::TimestampNs cmd_ts_ns{0};
+};
+
+struct ModifyOrderCmd {
+    ShardOrderCorrelation corr{};
+    NewOrderIntent replacement{};
+    internal::TimestampNs cmd_ts_ns{0};
+};
+
+using OmsToKalshiCommand =
+    std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>;
+
+// ---------------------------------------------------------------------------
+// 5. Kalshi -> OMS events
+// ---------------------------------------------------------------------------
+
+struct VenueOrderAck {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    internal::QtyLots accepted_qty_lots{0};
+};
+
+struct VenueOrderReject {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    VenueRejectReason reason{VenueRejectReason::kNone};
+    std::string raw_reason_code;
+    std::string raw_reason_message;
+};
+
+struct VenueOrderPartialFill {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    internal::QtyLots fill_qty_lots{0};
+    internal::PriceTicks fill_price_ticks{0};
+    internal::Side side{internal::Side::kUnknown};
+};
+
+struct VenueOrderFill {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    internal::QtyLots fill_qty_lots{0};
+    internal::PriceTicks fill_price_ticks{0};
+    internal::Side side{internal::Side::kUnknown};
+};
+
+struct VenueCancelAck {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+};
+
+struct VenueCancelReject {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    VenueRejectReason reason{VenueRejectReason::kNone};
+    std::string raw_reason_code;
+    std::string raw_reason_message;
+};
+
+struct VenueModifyAck {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    internal::QtyLots working_qty_lots{0};
+    std::optional<internal::PriceTicks> working_price_ticks;
+};
+
+struct VenueModifyReject {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+    VenueRejectReason reason{VenueRejectReason::kNone};
+    std::string raw_reason_code;
+    std::string raw_reason_message;
+};
+
+struct VenueOrderCanceled {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+};
+
+struct VenueOrderUncertain {
+    OmsOrderRef order{};
+    internal::TimestampNs recv_ts_ns{0};
+};
+
+// Reconciliation snapshots should come in as OMS-ingest events, not be applied
+// out-of-band, so they participate in the same canonical bookkeeping.
+struct ReconcileOpenOrderSnapshot {
+    OmsOrderRef order{};
+    IntentContext context{};
+    internal::QtyLots initial_qty_lots{0};
+    internal::QtyLots working_qty_lots{0};
+    internal::QtyLots cumulative_filled_qty_lots{0};
+    std::optional<internal::PriceTicks> working_limit_price_ticks;
+    internal::TimestampNs recv_ts_ns{0};
+};
+
+using KalshiToOmsEvent = std::variant<VenueOrderAck,
+                                      VenueOrderReject,
+                                      VenueOrderPartialFill,
+                                      VenueOrderFill,
+                                      VenueCancelAck,
+                                      VenueCancelReject,
+                                      VenueModifyAck,
+                                      VenueModifyReject,
+                                      VenueOrderCanceled,
+                                      VenueOrderUncertain,
+                                      ReconcileOpenOrderSnapshot>;
+
+struct SourcedKalshiEvent {
+    KalshiEventSource source{KalshiEventSource::kPrivateWs};
+    KalshiToOmsEvent event;
+};
+
+// ---------------------------------------------------------------------------
+// 6. OMS -> shard events
+// ---------------------------------------------------------------------------
+
+struct IntentAccepted {
+    ShardOrderCorrelation corr{};
+};
+
+struct IntentRejected {
+    IntentContext context{};
+    IntentRejectReason reason{IntentRejectReason::kNone};
+};
+
+struct IntentModified {
+    ShardOrderCorrelation corr{};
+    NewOrderIntent replacement{};
+};
+
+using OmsToShardDecision = std::variant<IntentAccepted, IntentRejected, IntentModified>;
+
+struct OrderWorking {
+    ShardOrderCorrelation corr{};
+    internal::QtyLots working_qty_lots{0};
+    internal::PriceTicks working_price_ticks{0};
+};
+
+struct OrderPartiallyFilled {
+    ShardOrderCorrelation corr{};
+    internal::QtyLots filled_qty_lots{0};
+    internal::QtyLots remaining_qty_lots{0};
+    internal::PriceTicks fill_price_ticks{0};
+};
+
+struct OrderFilled {
+    ShardOrderCorrelation corr{};
+    internal::QtyLots filled_qty_lots{0};
+    internal::PriceTicks fill_price_ticks{0};
+};
+
+struct OrderCanceled {
+    ShardOrderCorrelation corr{};
+};
+
+struct OrderUncertain {
+    ShardOrderCorrelation corr{};
+};
+
+struct OrderVenueRejected {
+    ShardOrderCorrelation corr{};
+    VenueRejectReason reason{VenueRejectReason::kNone};
+};
+
+using OmsToShardLifecycleEvent =
+    std::variant<OrderWorking,
+                 OrderPartiallyFilled,
+                 OrderFilled,
+                 OrderCanceled,
+                 OrderUncertain,
+                 OrderVenueRejected>;
+
+// Compatibility alias for the older draft naming.
+using ShardOrderEvent = OmsToShardLifecycleEvent;
+
+enum class OrderStatus : std::uint8_t{
+    kUncertain,
+    kPendingSubmit,
+    kWorking,
+    kRejected,
+    kPartiallyFilled,
+    kFilled,
+    kPendingCancel,
+    kCanceled,
+    kPendingModify,
+};
 
 
-    enum class OrderLifeCycleEventKind : std::uint8_t {
-        kAck,
-        kReject,
-        kPartialFill,
-        kFill,
-        kCancelAck,
-        kCancelReject,
-        kModifyAck,
-        kModifyReject,
-        kCanceled,
-    };
 
-    struct OrderAck{
-        
-    };
+} // namespace predex::core::oms2::kalshi
 
-}
+template <>
+struct std::hash<predex::core::oms2::kalshi::ClientOrderId> {
+    std::size_t operator()(const predex::core::oms2::kalshi::ClientOrderId& identity) const noexcept {
+        return std::hash<std::string>{}(identity.value);
+    }
+};
+
+template <>
+struct std::hash<predex::core::oms2::kalshi::ExchangeOrderId> {
+    std::size_t operator()(
+        const predex::core::oms2::kalshi::ExchangeOrderId& identity) const noexcept {
+        return std::hash<std::string>{}(identity.value);
+    }
+};

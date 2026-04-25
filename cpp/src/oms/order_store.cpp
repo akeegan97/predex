@@ -1,203 +1,320 @@
 #include "predex/oms/order_store.hpp"
 
+#include <algorithm>
+#include <type_traits>
+#include <utility>
+
 namespace predex::core::oms::kalshi {
+namespace {
 
-void OrderStore::insert_live_order(const AcceptedIntent& accepted_intent,
-                                    internal::TimestampNs decision_ts_ns) {
-    OrderState order_state{
-        .origin = accepted_intent.intent.origin,
-        .oms_request_id = accepted_intent.oms_request_id,
-        .status = OmsOrderStatus::kPendingSubmit,
-        .client_order_id = accepted_intent.client_order_id,
-        .exchange_order_id = std::nullopt,
-        .original_qty_lots = accepted_intent.intent.qty_lots,
-        .live_qty_lots = accepted_intent.intent.qty_lots,
-        .cum_fill_qty_lots = 0,
-        .live_limit_price_ticks = accepted_intent.intent.limit_price_ticks,
-        .last_update_ts_ns = decision_ts_ns,
-        .oms_decision_ts_ns = decision_ts_ns,
-        .transport_submit_ts_ns = 0,
-        .first_fill_recv_ns = 0,
-        .terminal_recv_ns = 0,
+[[nodiscard]] OrderStatus restored_working_status(const OrderState& state) noexcept {
+    if (state.status_before_pending_transition.has_value()) {
+        return *state.status_before_pending_transition;
+    }
+    if (state.cumulative_filled_qty_lots > 0) {
+        return OrderStatus::kPartiallyFilled;
+    }
+    return OrderStatus::kWorking;
+}
+
+[[nodiscard]] bool is_terminal_status(OrderStatus status) noexcept {
+    return status == OrderStatus::kRejected || status == OrderStatus::kFilled ||
+           status == OrderStatus::kCanceled;
+}
+
+} // namespace
+
+OrderState* OrderStore::find(const LookupKey& key) noexcept {
+    if (key.oms_request_id.has_value()) {
+        if (auto* state = find_by_request_id(*key.oms_request_id); state != nullptr) {
+            return state;
+        }
+    }
+    if (!key.client_order_id.value.empty()) {
+        if (auto* state = find_by_client_order_id(key.client_order_id); state != nullptr) {
+            return state;
+        }
+    }
+    if (key.exchange_order_id.has_value()) {
+        return find_by_exchange_order_id(*key.exchange_order_id);
+    }
+    return nullptr;
+}
+
+const OrderState* OrderStore::find(const LookupKey& key) const noexcept {
+    return const_cast<OrderStore*>(this)->find(key);
+}
+
+OrderState* OrderStore::find(const OmsOrderRef& order) noexcept {
+    return find(LookupKey{
+        .oms_request_id = order.oms_request_id,
+        .client_order_id = order.client_order_id,
+        .exchange_order_id = order.exchange_order_id,
+    });
+}
+
+const OrderState* OrderStore::find(const OmsOrderRef& order) const noexcept {
+    return const_cast<OrderStore*>(this)->find(order);
+}
+
+void OrderStore::insert_pending_submit(const BeginSubmitTransition& transition) {
+    OrderState state{
+        .context = transition.intent.context,
+        .order = transition.corr.order,
+        .exchange = transition.intent.exchange,
+        .side = transition.intent.side,
+        .outcome = transition.intent.outcome,
+        .initial_qty_lots = transition.intent.qty_lots,
+        .working_qty_lots = transition.intent.qty_lots,
+        .cumulative_filled_qty_lots = 0,
+        .initial_limit_price_ticks = transition.intent.limit_price_ticks,
+        .working_limit_price_ticks = transition.intent.limit_price_ticks,
+        .time_in_force = transition.intent.time_in_force,
+        .liquidity_intent = transition.intent.liquidity_intent,
+        .order_type_intent = transition.intent.order_type_intent,
+        .status = OrderStatus::kPendingSubmit,
+        .last_venue_reject_reason = VenueRejectReason::kNone,
+        .intent_ts_ns = transition.intent.intent_ts_ns,
+        .oms_decision_ts_ns = transition.oms_decision_ts_ns,
+        .venue_submit_ts_ns = 0,
+        .venue_ack_ts_ns = 0,
+        .first_fill_ts_ns = 0,
+        .last_fill_ts_ns = 0,
+        .terminal_ts_ns = 0,
+        .last_update_ts_ns = transition.oms_decision_ts_ns,
     };
-    request_by_client_order_id_[order_state.client_order_id] = order_state.oms_request_id;
-    orders_by_request_id_[order_state.oms_request_id] = std::move(order_state);
+
+    bind_client_order_id(state.order.client_order_id, state.order.oms_request_id);
+    if (state.order.exchange_order_id.has_value()) {
+        bind_exchange_order_id(*state.order.exchange_order_id, state.order.oms_request_id);
+    }
+    orders_by_request_id_[state.order.oms_request_id] = std::move(state);
 }
 
-void OrderStore::set_transport_submit_ts(OmsRequestId oms_request_id,
-                                          internal::TimestampNs ts_ns) noexcept {
-    const auto it = orders_by_request_id_.find(oms_request_id);
-    if (it != orders_by_request_id_.end()) {
-        it->second.transport_submit_ts_ns = ts_ns;
+void OrderStore::mark_submitted(const MarkSubmittedTransition& transition) noexcept {
+    if (auto* state = find(transition.order); state != nullptr) {
+        state->venue_submit_ts_ns = transition.venue_submit_ts_ns;
+        state->last_update_ts_ns = transition.venue_submit_ts_ns;
     }
 }
 
-OrderState* OrderStore::find_order_state(const OrderLifecycleEvent& event) {
-    {
-        auto it = orders_by_request_id_.find(event.oms_request_id);
-        if (it != orders_by_request_id_.end()) {
-            return &it->second;
-        }
+bool OrderStore::mark_pending_cancel(const BeginCancelTransition& transition) noexcept {
+    auto* state = find(transition.corr.order);
+    if (state == nullptr || is_terminal_status(state->status)) {
+        return false;
     }
-    if (!event.client_order_id.empty()) {
-        const auto by_client = request_by_client_order_id_.find(event.client_order_id);
-        if (by_client != request_by_client_order_id_.end()) {
-            auto it = orders_by_request_id_.find(by_client->second);
-            if (it != orders_by_request_id_.end()) {
-                return &it->second;
-            }
-        }
-    }
-    if (event.exchange_order_id.has_value()) {
-        const auto by_exchange =
-            request_by_exchange_order_id_.find(*event.exchange_order_id);
-        if (by_exchange != request_by_exchange_order_id_.end()) {
-            auto it = orders_by_request_id_.find(by_exchange->second);
-            if (it != orders_by_request_id_.end()) {
-                return &it->second;
-            }
-        }
-    }
-    return nullptr;
+    state->status_before_pending_transition = state->status;
+    state->status = OrderStatus::kPendingCancel;
+    state->last_update_ts_ns = transition.ts_ns;
+    return true;
 }
 
-OrderState* OrderStore::find_order_for_action(
-    std::optional<OmsRequestId> oms_request_id,
-    const ClientOrderId& client_order_id,
-    const std::optional<ExchangeOrderId>& exchange_order_id) {
-    if (oms_request_id.has_value()) {
-        auto it = orders_by_request_id_.find(*oms_request_id);
-        if (it != orders_by_request_id_.end()) {
-            return &it->second;
-        }
+bool OrderStore::mark_pending_modify(const BeginModifyTransition& transition) noexcept {
+    auto* state = find(transition.corr.order);
+    if (state == nullptr || is_terminal_status(state->status)) {
+        return false;
     }
-    if (!client_order_id.empty()) {
-        const auto by_client = request_by_client_order_id_.find(client_order_id);
-        if (by_client != request_by_client_order_id_.end()) {
-            auto it = orders_by_request_id_.find(by_client->second);
-            if (it != orders_by_request_id_.end()) {
-                return &it->second;
-            }
-        }
-    }
-    if (exchange_order_id.has_value()) {
-        const auto by_exchange = request_by_exchange_order_id_.find(*exchange_order_id);
-        if (by_exchange != request_by_exchange_order_id_.end()) {
-            auto it = orders_by_request_id_.find(by_exchange->second);
-            if (it != orders_by_request_id_.end()) {
-                return &it->second;
-            }
-        }
-    }
-    return nullptr;
+    state->status_before_pending_transition = state->status;
+    state->status = OrderStatus::kPendingModify;
+    state->pending_replacement = PendingReplacement{
+        .requested_working_qty_lots = transition.replacement.qty_lots,
+        .requested_working_limit_price_ticks = transition.replacement.limit_price_ticks,
+        .request_ts_ns = transition.ts_ns,
+    };
+    state->last_update_ts_ns = transition.ts_ns;
+    return true;
 }
 
-OrderStore::LifecycleApplyResult OrderStore::apply_lifecycle_event(
-    const OrderLifecycleEvent& event) {
-    OrderState* const order_state = find_order_state(event);
-    if (order_state == nullptr) {
+OrderStore::VenueApplyResult OrderStore::apply_venue_event(const SourcedKalshiEvent& sourced_event) {
+    const auto* ref = std::visit(
+        [](const auto& typed_event) -> const OmsOrderRef* { return &typed_event.order; },
+        sourced_event.event);
+    OrderState* state = find(*ref);
+    if (state == nullptr) {
+        if (const auto* snapshot = std::get_if<ReconcileOpenOrderSnapshot>(&sourced_event.event)) {
+            adopt_reconciled_order(OrderState{
+                .context = snapshot->context,
+                .order = snapshot->order,
+                .exchange = snapshot->exchange,
+                .side = snapshot->side,
+                .outcome = snapshot->outcome,
+                .initial_qty_lots = snapshot->initial_qty_lots,
+                .working_qty_lots = snapshot->working_qty_lots,
+                .cumulative_filled_qty_lots = snapshot->cumulative_filled_qty_lots,
+                .initial_limit_price_ticks = snapshot->working_limit_price_ticks,
+                .working_limit_price_ticks = snapshot->working_limit_price_ticks,
+                .status = snapshot->working_qty_lots > 0
+                    ? (snapshot->cumulative_filled_qty_lots > 0 ? OrderStatus::kPartiallyFilled
+                                                                 : OrderStatus::kWorking)
+                    : OrderStatus::kFilled,
+                .intent_ts_ns = snapshot->context.signal_ts_ns,
+                .venue_ack_ts_ns = snapshot->recv_ts_ns,
+                .last_update_ts_ns = snapshot->recv_ts_ns,
+            });
+            return {
+                .ok = true,
+                .order_found = false,
+            };
+        }
         return {};
     }
 
-    const internal::EventId event_id = order_state->origin.event_id;
-
-    order_state->status = event.status;
-    order_state->last_update_ts_ns = event.recv_ts_ns;
-
-    if (!event.client_order_id.empty() &&
-        event.client_order_id != order_state->client_order_id) {
-        request_by_client_order_id_.erase(order_state->client_order_id);
-        order_state->client_order_id = event.client_order_id;
-        request_by_client_order_id_[order_state->client_order_id] = order_state->oms_request_id;
-    }
-    if (event.exchange_order_id.has_value()) {
-        order_state->exchange_order_id = event.exchange_order_id;
-        request_by_exchange_order_id_[*event.exchange_order_id] = order_state->oms_request_id;
-    }
-
-    internal::QtyLots fill_qty_lots = 0;
-    if (const auto* fill = std::get_if<OrderFill>(&event.data)) {
-        const internal::QtyLots fill_reduction =
-            fill->fill_qty_lots > order_state->live_qty_lots ? order_state->live_qty_lots
-                                                              : fill->fill_qty_lots;
-        order_state->cum_fill_qty_lots += fill_reduction;
-        order_state->live_qty_lots -= fill_reduction;
-        if (order_state->first_fill_recv_ns == 0) {
-            order_state->first_fill_recv_ns = event.recv_ts_ns;
-        }
-        fill_qty_lots = fill_reduction;
-    }
-
-    if (const auto* replace_ack = std::get_if<ReplaceAck>(&event.data)) {
-        order_state->live_qty_lots = replace_ack->replaced_qty_lots;
-        order_state->live_limit_price_ticks = replace_ack->replaced_limit_price_ticks;
-    }
-
-    const bool is_terminal =
-        event.kind == OrderLifecycleEventKind::kReject ||
-        event.kind == OrderLifecycleEventKind::kCanceled ||
-        event.kind == OrderLifecycleEventKind::kFill;
-
-    if (!is_terminal) {
-        return LifecycleApplyResult{
-            .ok = true,
-            .event_id = event_id,
-            .fill_qty_lots = fill_qty_lots,
-            .first_fill_recv_ns = order_state->first_fill_recv_ns,
-            .is_terminal = false,
-            .remaining_open_qty_lots = 0,
-        };
-    }
-
-    const internal::QtyLots remaining_open_qty_lots = order_state->live_qty_lots;
-    const internal::TimestampNs first_fill_recv_ns = order_state->first_fill_recv_ns;
-    order_state->live_qty_lots = 0;
-    order_state->terminal_recv_ns = event.recv_ts_ns;
-
-    const OmsRequestId request_id = order_state->oms_request_id;
-    const ClientOrderId client_order_id = order_state->client_order_id;
-    const std::optional<ExchangeOrderId> exchange_order_id = order_state->exchange_order_id;
-
-    request_by_client_order_id_.erase(client_order_id);
-    if (exchange_order_id.has_value()) {
-        request_by_exchange_order_id_.erase(*exchange_order_id);
-    }
-    orders_by_request_id_.erase(request_id);
-
-    return LifecycleApplyResult{
+    VenueApplyResult result{
         .ok = true,
-        .event_id = event_id,
-        .fill_qty_lots = fill_qty_lots,
-        .first_fill_recv_ns = first_fill_recv_ns,
-        .is_terminal = true,
-        .remaining_open_qty_lots = remaining_open_qty_lots,
+        .order_found = true,
+        .first_fill_observed = false,
+        .became_terminal = false,
+        .fill_qty_lots = 0,
+        .remaining_open_qty_lots = state->working_qty_lots,
     };
+
+    const auto recv_ts_ns = std::visit(
+        [](const auto& typed_event) { return typed_event.recv_ts_ns; }, sourced_event.event);
+    state->last_update_ts_ns = recv_ts_ns;
+
+    auto update_identity = [&](const OmsOrderRef& order) {
+        if (order.client_order_id != state->order.client_order_id &&
+            !order.client_order_id.value.empty()) {
+            request_by_client_order_id_.erase(state->order.client_order_id);
+            state->order.client_order_id = order.client_order_id;
+            bind_client_order_id(state->order.client_order_id, state->order.oms_request_id);
+        }
+        if (order.exchange_order_id.has_value() &&
+            (!state->order.exchange_order_id.has_value() ||
+             *state->order.exchange_order_id != *order.exchange_order_id)) {
+            if (state->order.exchange_order_id.has_value()) {
+                request_by_exchange_order_id_.erase(*state->order.exchange_order_id);
+            }
+            state->order.exchange_order_id = order.exchange_order_id;
+            bind_exchange_order_id(*state->order.exchange_order_id, state->order.oms_request_id);
+        }
+    };
+
+    std::visit(
+        [&](const auto& event) {
+            using T = std::decay_t<decltype(event)>;
+            update_identity(event.order);
+
+            if constexpr (std::is_same_v<T, VenueOrderAck>) {
+                state->venue_ack_ts_ns = event.recv_ts_ns;
+                state->status = OrderStatus::kWorking;
+                state->working_qty_lots = event.accepted_qty_lots > 0 ? event.accepted_qty_lots
+                                                                      : state->working_qty_lots;
+                result.remaining_open_qty_lots = state->working_qty_lots;
+            } else if constexpr (std::is_same_v<T, VenueOrderReject>) {
+                state->venue_ack_ts_ns = event.recv_ts_ns;
+                state->status = OrderStatus::kRejected;
+                state->last_venue_reject_reason = event.reason;
+                state->terminal_ts_ns = event.recv_ts_ns;
+                result.became_terminal = true;
+                result.remaining_open_qty_lots = state->working_qty_lots;
+            } else if constexpr (std::is_same_v<T, VenueOrderPartialFill>) {
+                const internal::QtyLots applied_fill =
+                    std::min(state->working_qty_lots, event.fill_qty_lots);
+                state->cumulative_filled_qty_lots += applied_fill;
+                state->working_qty_lots -= applied_fill;
+                state->status = state->working_qty_lots > 0 ? OrderStatus::kPartiallyFilled
+                                                            : OrderStatus::kFilled;
+                if (state->first_fill_ts_ns == 0 && applied_fill > 0) {
+                    state->first_fill_ts_ns = event.recv_ts_ns;
+                    result.first_fill_observed = true;
+                }
+                if (applied_fill > 0) {
+                    state->last_fill_ts_ns = event.recv_ts_ns;
+                }
+                result.fill_qty_lots = applied_fill;
+                result.remaining_open_qty_lots = state->working_qty_lots;
+            } else if constexpr (std::is_same_v<T, VenueOrderFill>) {
+                const internal::QtyLots applied_fill =
+                    std::min(state->working_qty_lots, event.fill_qty_lots > 0
+                                                          ? event.fill_qty_lots
+                                                          : state->working_qty_lots);
+                state->cumulative_filled_qty_lots += applied_fill;
+                state->working_qty_lots -= applied_fill;
+                if (state->first_fill_ts_ns == 0 && applied_fill > 0) {
+                    state->first_fill_ts_ns = event.recv_ts_ns;
+                    result.first_fill_observed = true;
+                }
+                if (applied_fill > 0) {
+                    state->last_fill_ts_ns = event.recv_ts_ns;
+                }
+                state->status = OrderStatus::kFilled;
+                state->terminal_ts_ns = event.recv_ts_ns;
+                result.fill_qty_lots = applied_fill;
+                result.remaining_open_qty_lots = state->working_qty_lots;
+                result.became_terminal = true;
+            } else if constexpr (std::is_same_v<T, VenueCancelAck>) {
+                state->status = OrderStatus::kPendingCancel;
+            } else if constexpr (std::is_same_v<T, VenueCancelReject>) {
+                state->status = restored_working_status(*state);
+                state->status_before_pending_transition.reset();
+                state->last_venue_reject_reason = event.reason;
+            } else if constexpr (std::is_same_v<T, VenueModifyAck>) {
+                state->working_qty_lots = event.working_qty_lots;
+                state->working_limit_price_ticks = event.working_price_ticks;
+                state->status = restored_working_status(*state);
+                state->status_before_pending_transition.reset();
+                state->pending_replacement.reset();
+                result.remaining_open_qty_lots = state->working_qty_lots;
+            } else if constexpr (std::is_same_v<T, VenueModifyReject>) {
+                state->status = restored_working_status(*state);
+                state->status_before_pending_transition.reset();
+                state->pending_replacement.reset();
+                state->last_venue_reject_reason = event.reason;
+            } else if constexpr (std::is_same_v<T, VenueOrderCanceled>) {
+                state->status = OrderStatus::kCanceled;
+                state->terminal_ts_ns = event.recv_ts_ns;
+                result.remaining_open_qty_lots = state->working_qty_lots;
+                result.became_terminal = true;
+            } else if constexpr (std::is_same_v<T, VenueOrderUncertain>) {
+                state->status = OrderStatus::kUncertain;
+            } else if constexpr (std::is_same_v<T, ReconcileOpenOrderSnapshot>) {
+                state->context = event.context;
+                state->exchange = event.exchange;
+                state->side = event.side;
+                state->outcome = event.outcome;
+                state->initial_qty_lots = event.initial_qty_lots;
+                state->working_qty_lots = event.working_qty_lots;
+                state->cumulative_filled_qty_lots = event.cumulative_filled_qty_lots;
+                state->working_limit_price_ticks = event.working_limit_price_ticks;
+                state->last_update_ts_ns = event.recv_ts_ns;
+                state->status = event.working_qty_lots > 0
+                    ? (event.cumulative_filled_qty_lots > 0 ? OrderStatus::kPartiallyFilled
+                                                            : OrderStatus::kWorking)
+                    : OrderStatus::kFilled;
+                result.remaining_open_qty_lots = state->working_qty_lots;
+            }
+        },
+        sourced_event.event);
+
+    if (result.became_terminal) {
+        erase_indices_for(*state);
+        orders_by_request_id_.erase(state->order.oms_request_id);
+    }
+
+    return result;
 }
 
-void OrderStore::adopt_orphaned(OrderState state) {
-    const OmsRequestId request_id = state.oms_request_id;
-    if (!state.client_order_id.empty()) {
-        request_by_client_order_id_[state.client_order_id] = request_id;
+void OrderStore::adopt_reconciled_order(OrderState state) {
+    bind_client_order_id(state.order.client_order_id, state.order.oms_request_id);
+    if (state.order.exchange_order_id.has_value()) {
+        bind_exchange_order_id(*state.order.exchange_order_id, state.order.oms_request_id);
     }
-    if (state.exchange_order_id.has_value() && !state.exchange_order_id->empty()) {
-        request_by_exchange_order_id_[*state.exchange_order_id] = request_id;
-    }
-    orders_by_request_id_.emplace(request_id, std::move(state));
+    orders_by_request_id_[state.order.oms_request_id] = std::move(state);
 }
 
-std::vector<CancelOrderCmd> OrderStore::build_cancel_all_cmds(
-    internal::TimestampNs ts_ns) const {
+std::vector<CancelOrderCmd> OrderStore::build_cancel_all_cmds(internal::TimestampNs ts_ns) const {
     std::vector<CancelOrderCmd> cmds;
     cmds.reserve(orders_by_request_id_.size());
     for (const auto& [request_id, state] : orders_by_request_id_) {
-        if (state.status == OmsOrderStatus::kPendingCancel) {
+        if (is_terminal_status(state.status) || state.status == OrderStatus::kPendingCancel) {
             continue;
         }
         cmds.push_back(CancelOrderCmd{
-            .oms_request_id = state.oms_request_id,
-            .origin = state.origin,
-            .client_order_id = state.client_order_id,
-            .exchange_order_id = state.exchange_order_id,
+            .corr = ShardOrderCorrelation{
+                .context = state.context,
+                .order = state.order,
+            },
             .cmd_ts_ns = ts_ns,
         });
     }
@@ -206,6 +323,59 @@ std::vector<CancelOrderCmd> OrderStore::build_cancel_all_cmds(
 
 std::size_t OrderStore::live_order_count() const noexcept {
     return orders_by_request_id_.size();
+}
+
+OrderState* OrderStore::find_by_request_id(OmsRequestId oms_request_id) noexcept {
+    const auto it = orders_by_request_id_.find(oms_request_id);
+    return it != orders_by_request_id_.end() ? &it->second : nullptr;
+}
+
+const OrderState* OrderStore::find_by_request_id(OmsRequestId oms_request_id) const noexcept {
+    return const_cast<OrderStore*>(this)->find_by_request_id(oms_request_id);
+}
+
+OrderState* OrderStore::find_by_client_order_id(const ClientOrderId& client_order_id) noexcept {
+    const auto it = request_by_client_order_id_.find(client_order_id);
+    return it != request_by_client_order_id_.end() ? find_by_request_id(it->second) : nullptr;
+}
+
+const OrderState* OrderStore::find_by_client_order_id(
+    const ClientOrderId& client_order_id) const noexcept {
+    return const_cast<OrderStore*>(this)->find_by_client_order_id(client_order_id);
+}
+
+OrderState* OrderStore::find_by_exchange_order_id(
+    const ExchangeOrderId& exchange_order_id) noexcept {
+    const auto it = request_by_exchange_order_id_.find(exchange_order_id);
+    return it != request_by_exchange_order_id_.end() ? find_by_request_id(it->second) : nullptr;
+}
+
+const OrderState* OrderStore::find_by_exchange_order_id(
+    const ExchangeOrderId& exchange_order_id) const noexcept {
+    return const_cast<OrderStore*>(this)->find_by_exchange_order_id(exchange_order_id);
+}
+
+void OrderStore::bind_client_order_id(const ClientOrderId& client_order_id,
+                                      OmsRequestId oms_request_id) {
+    if (!client_order_id.value.empty()) {
+        request_by_client_order_id_[client_order_id] = oms_request_id;
+    }
+}
+
+void OrderStore::bind_exchange_order_id(const ExchangeOrderId& exchange_order_id,
+                                        OmsRequestId oms_request_id) {
+    if (!exchange_order_id.value.empty()) {
+        request_by_exchange_order_id_[exchange_order_id] = oms_request_id;
+    }
+}
+
+void OrderStore::erase_indices_for(const OrderState& state) {
+    if (!state.order.client_order_id.value.empty()) {
+        request_by_client_order_id_.erase(state.order.client_order_id);
+    }
+    if (state.order.exchange_order_id.has_value()) {
+        request_by_exchange_order_id_.erase(*state.order.exchange_order_id);
+    }
 }
 
 } // namespace predex::core::oms::kalshi

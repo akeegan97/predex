@@ -48,6 +48,11 @@ class BoostBeastWsTransport final : public IWsTransport {
   public:
     BoostBeastWsTransport();
     ~BoostBeastWsTransport() override;
+    BoostBeastWsTransport(BoostBeastWsTransport&&) noexcept;
+    BoostBeastWsTransport& operator=(BoostBeastWsTransport&&) noexcept;
+
+    BoostBeastWsTransport(const BoostBeastWsTransport&) = delete;
+    BoostBeastWsTransport& operator=(const BoostBeastWsTransport&) = delete;
 
     bool connect(const TransportConfig& config) override;
     bool send_text(std::string_view payload) override;

@@ -54,7 +54,7 @@ class LocalRiskManager {
                 .reason = RiskRejectReason::kStrategyDisabled,
             };
         }
-        if (intent.origin.market_id == 0 || intent.qty_lots <= 0 ||
+        if (intent.context.market_id == 0 || intent.qty_lots <= 0 ||
             intent.side == internal::Side::kUnknown) {
             return RiskDecision{
                 .code = RiskDecisionCode::kRejected,
@@ -66,7 +66,7 @@ class LocalRiskManager {
         // The hard post-close reject fires unconditionally; the margin reject is only
         // active when min_seconds_to_close is configured > 0.
         {
-            const auto* market_view = update.event.find_market_view(intent.origin.market_id);
+            const auto* market_view = update.event.find_market_view(intent.context.market_id);
             if (market_view != nullptr) {
                 const auto now_s = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::seconds>(
@@ -91,7 +91,7 @@ class LocalRiskManager {
 
         if (limits_.max_net_position_lots_per_market < kDefaultMaxNetPositionLotsPerMarket) {
             const auto pos_it =
-                state.net_position_lots_by_market.find(intent.origin.market_id);
+                state.net_position_lots_by_market.find(intent.context.market_id);
             const std::int64_t current_net =
                 pos_it != state.net_position_lots_by_market.end() ? pos_it->second : 0;
             const std::int64_t delta =

@@ -19,8 +19,12 @@ add_library(
   src/websocket/client.cpp
   src/websocket/session.cpp
   src/websocket/kalshi/auth_signer.cpp
-  src/websocket/kalshi/rest_client.cpp
   src/websocket/kalshi/ws_adapter.cpp
+  src/oms/transport/persistent_http_session.cpp
+  src/oms/transport/kalshi_rest_adapter.cpp
+  src/oms/transport/rest_worker.cpp
+  src/oms/transport/kalshi_private_ws_adapter.cpp
+  src/oms/transport/private_ws_worker.cpp
 )
 
 add_library(predex::websocket ALIAS predex_websocket)
@@ -40,11 +44,8 @@ add_library(
   src/audit/audit_logger.cpp
   src/ingest/frame_pool.cpp
   src/ingest/io_writer.cpp
-  src/oms/execution_transport.cpp
   src/oms/order_store.cpp
   src/oms/oms.cpp
-  src/oms/risk_engine.cpp
-  src/oms/kalshi/private_ws_parser.cpp
   src/router/market_registry.cpp
   src/router/shard_dispatch.cpp
   src/router/router.cpp

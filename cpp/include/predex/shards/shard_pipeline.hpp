@@ -18,9 +18,10 @@
 #include "predex/utils/spsc_queue.hpp"
 
 namespace predex::core::shards::kalshi {
+namespace oms = predex::core::oms::kalshi;
+
 constexpr std::size_t kMaxSignalsPerEvent = 16;
 constexpr std::uint64_t kPipelineProbeSampleRate = 64;
-
 
 enum class PipelineDecisionCode : std::uint8_t {
     kAccepted = 1,
@@ -53,8 +54,8 @@ class DefaultShardPipeline {
         std::uint16_t shard_id,
         LocalRisk risk,
         utils::SPSCQueue<OmsSubmission>* intent_queue,
-        utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue,
-        utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue,
+        utils::SPSCQueue<oms::OmsToShardDecision>* decision_queue,
+        utils::SPSCQueue<oms::OmsToShardLifecycleEvent>* lifecycle_queue,
         utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
         Strategies... strategies)
         : shard_id_(shard_id),
@@ -193,9 +194,10 @@ class DefaultShardPipeline {
     }
 
     struct TrackedIntentState {
-        predex::core::oms::kalshi::IntentOrigin origin{};
+        oms::IntentContext context{};
+        internal::Side side{internal::Side::kUnknown};
         internal::QtyLots open_qty_lots{0};
-        std::optional<predex::core::oms::kalshi::OmsRequestId> oms_request_id;
+        std::optional<oms::OmsRequestId> oms_request_id;
         internal::TimestampNs tick_recv_ts_ns{0};
         internal::TimestampNs signal_ts_ns{0};
         internal::TimestampNs submission_enqueued_ts_ns{0};
@@ -222,8 +224,8 @@ class DefaultShardPipeline {
     LocalRisk risk_;
     LocalRiskState risk_state_{};
     utils::SPSCQueue<OmsSubmission>* intent_queue_{nullptr};
-    utils::SPSCQueue<predex::core::oms::kalshi::IntentDecision>* decision_queue_{nullptr};
-    utils::SPSCQueue<predex::core::oms::kalshi::OrderLifecycleEvent>* lifecycle_queue_{nullptr};
+    utils::SPSCQueue<oms::OmsToShardDecision>* decision_queue_{nullptr};
+    utils::SPSCQueue<oms::OmsToShardLifecycleEvent>* lifecycle_queue_{nullptr};
     utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue_{nullptr};
     std::tuple<Strategies...> strategies_;
 
@@ -234,13 +236,12 @@ class DefaultShardPipeline {
     std::array<OmsSubmission, kMaxSignalsPerEvent> submissions_buffer_{};
     std::size_t submission_count_{0};
 
-    predex::core::oms::kalshi::LocalIntentId next_local_intent_id_{1};
-    predex::core::oms::kalshi::GroupIntentId next_group_intent_id_{1};
+    oms::LocalIntentId next_local_intent_id_{1};
+    oms::GroupIntentId next_group_intent_id_{1};
 
-    std::unordered_map<predex::core::oms::kalshi::LocalIntentId, TrackedIntentState>
+    std::unordered_map<oms::LocalIntentId, TrackedIntentState>
         tracked_intents_;
-    std::unordered_map<predex::core::oms::kalshi::OmsRequestId,
-                       predex::core::oms::kalshi::LocalIntentId>
+    std::unordered_map<oms::OmsRequestId, oms::LocalIntentId>
         local_intent_id_by_request_id_;
     internal::TimestampNs current_tick_recv_ns_{0};
     std::uint64_t event_counter_{0};
@@ -335,14 +336,14 @@ class DefaultShardPipeline {
         }
 
         return OmsOrderIntent{
-            .origin = predex::core::oms::kalshi::IntentOrigin{
+            .context = oms::IntentContext{
                 .shard_id = shard_id_,
                 .affinity_key = update.update.meta.affinity_key,
-                .group_id = 0,
-                .local_intent_id = next_local_intent_id_++,
+                .group_intent_id = 0,
                 .leg_index = 0,
                 .leg_count = 1,
                 .signal_id = signal.signal_id,
+                .local_intent_id = next_local_intent_id_++,
                 .signal_ts_ns = signal.signal_ts_ns == 0 ? update.update.meta.recv_ns
                                                          : signal.signal_ts_ns,
                 .tick_recv_ns = update.update.meta.recv_ns,
@@ -357,22 +358,37 @@ class DefaultShardPipeline {
             .outcome = signal.outcome,
             .qty_lots = signal.target_qty_lots,
             .limit_price_ticks = signal.reference_price_ticks,
-            .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kGtc,
+            .time_in_force = oms::OmsTimeInForce::kGtc,
             .intent_ts_ns = signal.signal_ts_ns == 0 ? update.update.meta.recv_ns
                                                      : signal.signal_ts_ns,
         };
     }
 
-    [[nodiscard]] std::optional<predex::core::oms::kalshi::GroupOrderIntent>
+    [[nodiscard]] std::optional<oms::GroupOrderIntent>
     build_candidate_group_intent(const AppliedEventUpdate& update,
                                  const GroupSignal& group_signal) noexcept {
         if (group_signal.kind == SignalKind::kUnknown || group_signal.leg_count == 0 ||
-            group_signal.leg_count > predex::core::oms::kalshi::kMaxGroupOrderLegs) {
+            group_signal.leg_count > oms::kMaxGroupOrderLegs) {
             return std::nullopt;
         }
 
-        predex::core::oms::kalshi::GroupOrderIntent group_intent{};
-        group_intent.group_id = next_group_intent_id_++;
+        oms::GroupOrderIntent group_intent{};
+        group_intent.context = oms::IntentContext{
+            .shard_id = shard_id_,
+            .affinity_key = update.update.meta.affinity_key,
+            .group_intent_id = next_group_intent_id_++,
+            .leg_index = 0,
+            .leg_count = static_cast<std::uint16_t>(group_signal.leg_count),
+            .signal_id = group_signal.signal_id,
+            .local_intent_id = 0,
+            .signal_ts_ns = group_signal.signal_ts_ns == 0
+                ? update.update.meta.recv_ns
+                : group_signal.signal_ts_ns,
+            .tick_recv_ns = update.update.meta.recv_ns,
+            .submission_enqueued_ns = 0,
+            .event_id = group_signal.event_id == 0 ? update.event.event_id : group_signal.event_id,
+            .market_id = 0,
+        };
         group_intent.execution_policy = group_signal.execution_policy;
         group_intent.leg_count = group_signal.leg_count;
         group_intent.intent_ts_ns = group_signal.signal_ts_ns == 0
@@ -390,19 +406,19 @@ class DefaultShardPipeline {
             const SubmissionLeg& leg = group_signal.legs[leg_index];
             if (leg.market_id == 0 || leg.qty_lots <= 0 ||
                 leg.side == internal::Side::kUnknown ||
-                leg.outcome == predex::core::oms::kalshi::Outcome::kUnknown) {
+                leg.outcome == oms::Outcome::kUnknown) {
                 return std::nullopt;
             }
 
             group_intent.legs[leg_index] = OmsOrderIntent{
-                .origin = predex::core::oms::kalshi::IntentOrigin{
+                .context = oms::IntentContext{
                     .shard_id = shard_id_,
                     .affinity_key = update.update.meta.affinity_key,
-                    .group_id = group_intent.group_id,
-                    .local_intent_id = next_local_intent_id_++,
+                    .group_intent_id = group_intent.context.group_intent_id,
                     .leg_index = static_cast<std::uint16_t>(leg_index),
                     .leg_count = static_cast<std::uint16_t>(group_signal.leg_count),
                     .signal_id = group_signal.signal_id,
+                    .local_intent_id = next_local_intent_id_++,
                     .signal_ts_ns = group_intent.intent_ts_ns,
                     .tick_recv_ns = update.update.meta.recv_ns,
                     .submission_enqueued_ns = 0,
@@ -428,7 +444,7 @@ class DefaultShardPipeline {
             emit_submission_audit(*intent);
             return;
         }
-        if (const auto* group = std::get_if<predex::core::oms::kalshi::GroupOrderIntent>(&submission)) {
+        if (const auto* group = std::get_if<oms::GroupOrderIntent>(&submission)) {
             for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
                 on_intent_enqueued(group->legs[leg_index]);
                 emit_submission_audit(group->legs[leg_index]);
@@ -442,19 +458,20 @@ class DefaultShardPipeline {
         risk_state_.event_exposure_lots += intent.qty_lots;
         risk_state_.market_exposure_lots += intent.qty_lots;
         const internal::TimestampNs tick_recv_ts =
-            intent.origin.tick_recv_ns != 0 ? intent.origin.tick_recv_ns : current_tick_recv_ns_;
+            intent.context.tick_recv_ns != 0 ? intent.context.tick_recv_ns : current_tick_recv_ns_;
         internal::TimestampNs signal_ts = tick_recv_ts;
-        if (intent.origin.signal_ts_ns != 0) {
-            signal_ts = intent.origin.signal_ts_ns;
+        if (intent.context.signal_ts_ns != 0) {
+            signal_ts = intent.context.signal_ts_ns;
         } else if (intent.intent_ts_ns != 0) {
             signal_ts = intent.intent_ts_ns;
         }
         const internal::TimestampNs submission_enqueued_ts =
-            intent.origin.submission_enqueued_ns != 0
-                ? intent.origin.submission_enqueued_ns
+            intent.context.submission_enqueued_ns != 0
+                ? intent.context.submission_enqueued_ns
                 : current_tick_recv_ns_;
-        tracked_intents_[intent.origin.local_intent_id] = TrackedIntentState{
-            .origin = intent.origin,
+        tracked_intents_[intent.context.local_intent_id] = TrackedIntentState{
+            .context = intent.context,
+            .side = intent.side,
             .open_qty_lots = intent.qty_lots,
             .oms_request_id = std::nullopt,
             .tick_recv_ts_ns = tick_recv_ts,
@@ -486,7 +503,7 @@ class DefaultShardPipeline {
             }
 
             const auto* group =
-                std::get_if<predex::core::oms::kalshi::GroupOrderIntent>(&submission);
+                std::get_if<oms::GroupOrderIntent>(&submission);
             if (group == nullptr) {
                 continue; // or assert(false) if this should be impossible
             }
@@ -499,16 +516,16 @@ class DefaultShardPipeline {
         OmsSubmission& submission,
         internal::TimestampNs enqueued_ts_ns) noexcept {
         if (auto* intent = std::get_if<OmsOrderIntent>(&submission)) {
-            intent->origin.submission_enqueued_ns = enqueued_ts_ns;
+            intent->context.submission_enqueued_ns = enqueued_ts_ns;
             return;
         }
 
-        auto* group = std::get_if<predex::core::oms::kalshi::GroupOrderIntent>(&submission);
+        auto* group = std::get_if<oms::GroupOrderIntent>(&submission);
         if (group == nullptr) {
             return;
         }
         for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
-            group->legs[leg_index].origin.submission_enqueued_ns = enqueued_ts_ns;
+            group->legs[leg_index].context.submission_enqueued_ns = enqueued_ts_ns;
         }
     }
 
@@ -517,45 +534,45 @@ class DefaultShardPipeline {
             return false;
         }
 
-        predex::core::oms::kalshi::IntentDecision decision{};
+        oms::OmsToShardDecision decision{};
         if (!decision_queue_->try_pop(decision)) {
             return false;
         }
+        const internal::TimestampNs decision_ts_ns = monotonic_now_ns();
 
-        if (const auto* accepted =
-                std::get_if<predex::core::oms::kalshi::AcceptedIntent>(&decision.data)) {
-            auto* tracked = find_tracked_intent(accepted->intent.origin, accepted->oms_request_id);
+        if (const auto* accepted = std::get_if<oms::IntentAccepted>(&decision)) {
+            auto* tracked = find_tracked_intent(
+                accepted->corr.context, accepted->corr.order.oms_request_id);
             internal::TimestampNs tick_recv_ts_ns = 0;
             internal::TimestampNs signal_ts_ns = 0;
             internal::TimestampNs submission_ts_ns = 0;
             if (tracked != nullptr) {
-                tracked->oms_request_id = accepted->oms_request_id;
+                tracked->oms_request_id = accepted->corr.order.oms_request_id;
                 if (tracked->first_decision_ts_ns == 0) {
-                    tracked->first_decision_ts_ns = decision.decision_ts_ns;
+                    tracked->first_decision_ts_ns = decision_ts_ns;
                 }
-                local_intent_id_by_request_id_[accepted->oms_request_id] =
-                    accepted->intent.origin.local_intent_id;
+                local_intent_id_by_request_id_[accepted->corr.order.oms_request_id] =
+                    accepted->corr.context.local_intent_id;
                 tick_recv_ts_ns = tracked->tick_recv_ts_ns;
                 signal_ts_ns = tracked->signal_ts_ns;
                 submission_ts_ns = tracked->submission_enqueued_ts_ns;
             }
             emit_reconcile_audit(
-                accepted->intent.origin,
-                accepted->oms_request_id,
-                accepted->intent.qty_lots,
-                decision.decision_ts_ns,
+                accepted->corr.context,
+                accepted->corr.order.oms_request_id,
+                tracked != nullptr ? tracked->open_qty_lots : 0,
+                decision_ts_ns,
                 tick_recv_ts_ns,
                 signal_ts_ns,
                 submission_ts_ns,
-                decision.decision_ts_ns,
+                decision_ts_ns,
                 0,
                 0);
             return true;
         }
 
-        if (const auto* rejected =
-                std::get_if<predex::core::oms::kalshi::RejectedIntent>(&decision.data)) {
-            auto* tracked = find_tracked_intent(rejected->intent.origin, 0);
+        if (const auto* rejected = std::get_if<oms::IntentRejected>(&decision)) {
+            auto* tracked = find_tracked_intent(rejected->context, std::nullopt);
             const internal::TimestampNs tick_recv_ts_ns =
                 tracked != nullptr ? tracked->tick_recv_ts_ns : 0;
             const internal::TimestampNs signal_ts_ns =
@@ -563,49 +580,48 @@ class DefaultShardPipeline {
             const internal::TimestampNs submission_ts_ns =
                 tracked != nullptr ? tracked->submission_enqueued_ts_ns : 0;
             emit_reconcile_audit(
-                rejected->intent.origin,
+                rejected->context,
                 0,
                 0,
-                decision.decision_ts_ns,
+                decision_ts_ns,
                 tick_recv_ts_ns,
                 signal_ts_ns,
                 submission_ts_ns,
-                decision.decision_ts_ns,
+                decision_ts_ns,
                 0,
-                decision.decision_ts_ns);
-            release_tracked_intent(rejected->intent.origin.local_intent_id);
+                decision_ts_ns);
+            release_tracked_intent(rejected->context.local_intent_id);
             return true;
         }
 
-        if (const auto* modified =
-                std::get_if<predex::core::oms::kalshi::ModifiedIntent>(&decision.data)) {
-            auto* tracked = find_tracked_intent(modified->modified_intent.origin,
-                                                modified->oms_request_id);
+        if (const auto* modified = std::get_if<oms::IntentModified>(&decision)) {
+            auto* tracked = find_tracked_intent(
+                modified->corr.context, modified->corr.order.oms_request_id);
             internal::TimestampNs tick_recv_ts_ns = 0;
             internal::TimestampNs signal_ts_ns = 0;
             internal::TimestampNs submission_ts_ns = 0;
             if (tracked != nullptr) {
-                tracked->origin = modified->modified_intent.origin;
-                tracked->oms_request_id = modified->oms_request_id;
+                tracked->context = modified->corr.context;
+                tracked->oms_request_id = modified->corr.order.oms_request_id;
                 if (tracked->first_decision_ts_ns == 0) {
-                    tracked->first_decision_ts_ns = decision.decision_ts_ns;
+                    tracked->first_decision_ts_ns = decision_ts_ns;
                 }
-                reconcile_open_qty(*tracked, modified->modified_intent.qty_lots);
-                local_intent_id_by_request_id_[modified->oms_request_id] =
-                    modified->modified_intent.origin.local_intent_id;
+                reconcile_open_qty(*tracked, modified->replacement.qty_lots);
+                local_intent_id_by_request_id_[modified->corr.order.oms_request_id] =
+                    modified->corr.context.local_intent_id;
                 tick_recv_ts_ns = tracked->tick_recv_ts_ns;
                 signal_ts_ns = tracked->signal_ts_ns;
                 submission_ts_ns = tracked->submission_enqueued_ts_ns;
             }
             emit_reconcile_audit(
-                modified->modified_intent.origin,
-                modified->oms_request_id,
-                modified->modified_intent.qty_lots,
-                decision.decision_ts_ns,
+                modified->corr.context,
+                modified->corr.order.oms_request_id,
+                modified->replacement.qty_lots,
+                decision_ts_ns,
                 tick_recv_ts_ns,
                 signal_ts_ns,
                 submission_ts_ns,
-                decision.decision_ts_ns,
+                decision_ts_ns,
                 0,
                 0);
             return true;
@@ -619,92 +635,87 @@ class DefaultShardPipeline {
             return false;
         }
 
-        predex::core::oms::kalshi::OrderLifecycleEvent event{};
+        oms::OmsToShardLifecycleEvent event{};
         if (!lifecycle_queue_->try_pop(event)) {
             return false;
         }
+        const internal::TimestampNs event_ts_ns = monotonic_now_ns();
+        const auto* corr = std::visit(
+            [](const auto& typed_event) -> const oms::ShardOrderCorrelation* {
+                return &typed_event.corr;
+            },
+            event);
 
-        TrackedIntentState* tracked = find_tracked_intent(event.origin, event.oms_request_id);
+        TrackedIntentState* tracked = find_tracked_intent(corr->context, corr->order.oms_request_id);
         if (tracked == nullptr) {
             return true;
         }
 
-        if (const auto* fill =
-                std::get_if<predex::core::oms::kalshi::OrderFill>(&event.data)) {
-            reduce_open_qty(*tracked, fill->fill_qty_lots);
-            const std::int64_t fill_delta = static_cast<std::int64_t>(fill->fill_qty_lots);
-            if (fill->side == internal::Side::kBuy || fill->side == internal::Side::kBid) {
-                risk_state_.net_position_lots_by_market[event.origin.market_id] += fill_delta;
-            } else if (fill->side == internal::Side::kSell ||
-                       fill->side == internal::Side::kAsk) {
-                risk_state_.net_position_lots_by_market[event.origin.market_id] -= fill_delta;
-            }
-            if (tracked->first_lifecycle_ts_ns == 0) {
-                tracked->first_lifecycle_ts_ns = event.recv_ts_ns;
-            }
-            emit_reconcile_audit(
-                event.origin,
-                event.oms_request_id,
-                tracked->open_qty_lots,
-                event.recv_ts_ns,
-                tracked->tick_recv_ts_ns,
-                tracked->signal_ts_ns,
-                tracked->submission_enqueued_ts_ns,
-                tracked->first_decision_ts_ns,
-                tracked->first_lifecycle_ts_ns,
-                0);
-        }
-        if (const auto* replace_ack =
-                std::get_if<predex::core::oms::kalshi::ReplaceAck>(&event.data)) {
-            reconcile_open_qty(*tracked, replace_ack->replaced_qty_lots);
-            if (tracked->first_lifecycle_ts_ns == 0) {
-                tracked->first_lifecycle_ts_ns = event.recv_ts_ns;
-            }
-            emit_reconcile_audit(
-                event.origin,
-                event.oms_request_id,
-                tracked->open_qty_lots,
-                event.recv_ts_ns,
-                tracked->tick_recv_ts_ns,
-                tracked->signal_ts_ns,
-                tracked->submission_enqueued_ts_ns,
-                tracked->first_decision_ts_ns,
-                tracked->first_lifecycle_ts_ns,
-                0);
-        }
+        std::visit(
+            [&](const auto& typed_event) {
+                using T = std::decay_t<decltype(typed_event)>;
+                if constexpr (std::is_same_v<T, oms::OrderPartiallyFilled>) {
+                    reduce_open_qty(*tracked, typed_event.filled_qty_lots);
+                    const std::int64_t fill_delta =
+                        static_cast<std::int64_t>(typed_event.filled_qty_lots);
+                    if (tracked->side == internal::Side::kBuy ||
+                        tracked->side == internal::Side::kBid) {
+                        risk_state_.net_position_lots_by_market[corr->context.market_id] += fill_delta;
+                    } else if (tracked->side == internal::Side::kSell ||
+                               tracked->side == internal::Side::kAsk) {
+                        risk_state_.net_position_lots_by_market[corr->context.market_id] -= fill_delta;
+                    }
+                } else if constexpr (std::is_same_v<T, oms::OrderFilled>) {
+                    reduce_open_qty(*tracked, typed_event.filled_qty_lots);
+                    const std::int64_t fill_delta =
+                        static_cast<std::int64_t>(typed_event.filled_qty_lots);
+                    if (tracked->side == internal::Side::kBuy ||
+                        tracked->side == internal::Side::kBid) {
+                        risk_state_.net_position_lots_by_market[corr->context.market_id] += fill_delta;
+                    } else if (tracked->side == internal::Side::kSell ||
+                               tracked->side == internal::Side::kAsk) {
+                        risk_state_.net_position_lots_by_market[corr->context.market_id] -= fill_delta;
+                    }
+                } else if constexpr (std::is_same_v<T, oms::OrderWorking>) {
+                    reconcile_open_qty(*tracked, typed_event.working_qty_lots);
+                }
 
-        switch (event.kind) {
-            case predex::core::oms::kalshi::OrderLifecycleEventKind::kReject:
-            case predex::core::oms::kalshi::OrderLifecycleEventKind::kFill:
-            case predex::core::oms::kalshi::OrderLifecycleEventKind::kCanceled:
+                if (tracked->first_lifecycle_ts_ns == 0) {
+                    tracked->first_lifecycle_ts_ns = event_ts_ns;
+                }
+
+                const bool terminal =
+                    std::is_same_v<T, oms::OrderFilled> ||
+                    std::is_same_v<T, oms::OrderCanceled> ||
+                    std::is_same_v<T, oms::OrderVenueRejected>;
                 emit_reconcile_audit(
-                    event.origin,
-                    event.oms_request_id,
-                    0,
-                    event.recv_ts_ns,
+                    corr->context,
+                    corr->order.oms_request_id,
+                    terminal ? 0 : tracked->open_qty_lots,
+                    event_ts_ns,
                     tracked->tick_recv_ts_ns,
                     tracked->signal_ts_ns,
                     tracked->submission_enqueued_ts_ns,
                     tracked->first_decision_ts_ns,
                     tracked->first_lifecycle_ts_ns,
-                    event.recv_ts_ns);
-                release_tracked_intent(event.origin.local_intent_id);
-                break;
-            default:
-                break;
-        }
+                    terminal ? event_ts_ns : 0);
+                if (terminal) {
+                    release_tracked_intent(corr->context.local_intent_id);
+                }
+            },
+            event);
         return true;
     }
 
     [[nodiscard]] TrackedIntentState* find_tracked_intent(
-        const predex::core::oms::kalshi::IntentOrigin& origin,
-        predex::core::oms::kalshi::OmsRequestId oms_request_id = 0) noexcept {
-        auto tracked = tracked_intents_.find(origin.local_intent_id);
+        const oms::IntentContext& context,
+        std::optional<oms::OmsRequestId> oms_request_id = std::nullopt) noexcept {
+        auto tracked = tracked_intents_.find(context.local_intent_id);
         if (tracked != tracked_intents_.end()) {
             return &tracked->second;
         }
-        if (oms_request_id != 0) {
-            const auto local_id = local_intent_id_by_request_id_.find(oms_request_id);
+        if (oms_request_id.has_value()) {
+            const auto local_id = local_intent_id_by_request_id_.find(*oms_request_id);
             if (local_id != local_intent_id_by_request_id_.end()) {
                 auto tracked_by_request = tracked_intents_.find(local_id->second);
                 if (tracked_by_request != tracked_intents_.end()) {
@@ -744,7 +755,7 @@ class DefaultShardPipeline {
     }
 
     void release_tracked_intent(
-        predex::core::oms::kalshi::LocalIntentId local_intent_id) noexcept {
+        oms::LocalIntentId local_intent_id) noexcept {
         auto tracked = tracked_intents_.find(local_intent_id);
         if (tracked == tracked_intents_.end()) {
             return;
@@ -787,15 +798,15 @@ class DefaultShardPipeline {
             .kind = predex::core::audit::AuditKind::kLocalRisk,
             .ts_ns = update.update.meta.recv_ns,
             .shard_id = shard_id_,
-            .signal_id = intent.origin.signal_id,
-            .group_id = intent.origin.group_id,
-            .local_intent_id = intent.origin.local_intent_id,
+            .signal_id = intent.context.signal_id,
+            .group_id = intent.context.group_intent_id,
+            .local_intent_id = intent.context.local_intent_id,
             .exchange = intent.exchange,
-            .event_id = intent.origin.event_id,
-            .market_id = intent.origin.market_id,
+            .event_id = intent.context.event_id,
+            .market_id = intent.context.market_id,
             .side = intent.side,
-            .leg_index = intent.origin.leg_index,
-            .leg_count = intent.origin.leg_count,
+            .leg_index = intent.context.leg_index,
+            .leg_count = intent.context.leg_count,
             .qty_lots = intent.qty_lots,
             .price_ticks = intent.limit_price_ticks.value_or(0),
             .decision_code = static_cast<std::uint8_t>(decision.code),
@@ -806,7 +817,7 @@ class DefaultShardPipeline {
     }
 
     void emit_submission_audit(const OmsOrderIntent& intent) noexcept {
-        const auto tracked_it = tracked_intents_.find(intent.origin.local_intent_id);
+        const auto tracked_it = tracked_intents_.find(intent.context.local_intent_id);
         const internal::TimestampNs enqueue_ts =
             tracked_it != tracked_intents_.end()
                 ? tracked_it->second.submission_enqueued_ts_ns
@@ -815,8 +826,8 @@ class DefaultShardPipeline {
         internal::TimestampNs signal_ts = 0;
         if (tracked_it != tracked_intents_.end()) {
             signal_ts = tracked_it->second.signal_ts_ns;
-        } else if (intent.origin.signal_ts_ns != 0) {
-            signal_ts = intent.origin.signal_ts_ns;
+        } else if (intent.context.signal_ts_ns != 0) {
+            signal_ts = intent.context.signal_ts_ns;
         } else {
             signal_ts = intent.intent_ts_ns;
         }
@@ -824,8 +835,8 @@ class DefaultShardPipeline {
         internal::TimestampNs tick_recv_ts = 0;
         if (tracked_it != tracked_intents_.end()) {
             tick_recv_ts = tracked_it->second.tick_recv_ts_ns;
-        } else if (intent.origin.tick_recv_ns != 0) {
-            tick_recv_ts = intent.origin.tick_recv_ns;
+        } else if (intent.context.tick_recv_ns != 0) {
+            tick_recv_ts = intent.context.tick_recv_ns;
         } else {
             tick_recv_ts = current_tick_recv_ns_;
         }
@@ -833,19 +844,19 @@ class DefaultShardPipeline {
             .kind = predex::core::audit::AuditKind::kSubmission,
             .ts_ns = enqueue_ts,
             .shard_id = shard_id_,
-            .signal_id = intent.origin.signal_id,
-            .group_id = intent.origin.group_id,
-            .local_intent_id = intent.origin.local_intent_id,
+            .signal_id = intent.context.signal_id,
+            .group_id = intent.context.group_intent_id,
+            .local_intent_id = intent.context.local_intent_id,
             .tick_recv_ns = tick_recv_ts,
             .signal_ts_ns = signal_ts,
             .submission_enqueued_ns = enqueue_ts,
             .signal_to_submission_ns = latency_delta_ns(enqueue_ts, signal_ts),
             .exchange = intent.exchange,
-            .event_id = intent.origin.event_id,
-            .market_id = intent.origin.market_id,
+            .event_id = intent.context.event_id,
+            .market_id = intent.context.market_id,
             .side = intent.side,
-            .leg_index = intent.origin.leg_index,
-            .leg_count = intent.origin.leg_count,
+            .leg_index = intent.context.leg_index,
+            .leg_count = intent.context.leg_count,
             .qty_lots = intent.qty_lots,
             .price_ticks = intent.limit_price_ticks.value_or(0),
             .event_exposure_lots = risk_state_.event_exposure_lots,
@@ -871,8 +882,8 @@ class DefaultShardPipeline {
         });
     }
 
-    void emit_reconcile_audit(const predex::core::oms::kalshi::IntentOrigin& origin,
-                              predex::core::oms::kalshi::OmsRequestId oms_request_id,
+    void emit_reconcile_audit(const oms::IntentContext& context,
+                              oms::OmsRequestId oms_request_id,
                               internal::QtyLots open_qty_lots,
                               internal::TimestampNs ts_ns,
                               internal::TimestampNs tick_recv_ts_ns,
@@ -885,9 +896,9 @@ class DefaultShardPipeline {
             .kind = predex::core::audit::AuditKind::kShardReconcile,
             .ts_ns = ts_ns,
             .shard_id = shard_id_,
-            .signal_id = origin.signal_id,
-            .group_id = origin.group_id,
-            .local_intent_id = origin.local_intent_id,
+            .signal_id = context.signal_id,
+            .group_id = context.group_intent_id,
+            .local_intent_id = context.local_intent_id,
             .oms_request_id = oms_request_id,
             .tick_recv_ns = tick_recv_ts_ns,
             .signal_ts_ns = signal_ts_ns,
@@ -902,10 +913,10 @@ class DefaultShardPipeline {
                 latency_delta_ns(first_fill_recv_ts_ns, tick_recv_ts_ns),
             .tick_to_terminal_ns =
                 latency_delta_ns(terminal_recv_ts_ns, tick_recv_ts_ns),
-            .event_id = origin.event_id,
-            .market_id = origin.market_id,
-            .leg_index = origin.leg_index,
-            .leg_count = origin.leg_count,
+            .event_id = context.event_id,
+            .market_id = context.market_id,
+            .leg_index = context.leg_index,
+            .leg_count = context.leg_count,
             .qty_lots = open_qty_lots,
             .event_exposure_lots = risk_state_.event_exposure_lots,
             .market_exposure_lots = risk_state_.market_exposure_lots,

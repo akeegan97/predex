@@ -181,6 +181,9 @@ BoostBeastWsTransport::BoostBeastWsTransport() : impl_(std::make_unique<Impl>())
 }
 
 BoostBeastWsTransport::~BoostBeastWsTransport() = default;
+BoostBeastWsTransport::BoostBeastWsTransport(BoostBeastWsTransport&&) noexcept = default;
+BoostBeastWsTransport& BoostBeastWsTransport::operator=(BoostBeastWsTransport&&) noexcept =
+    default;
 
 bool BoostBeastWsTransport::connect(const TransportConfig& config) {
     close();

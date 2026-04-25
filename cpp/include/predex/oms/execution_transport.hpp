@@ -1,48 +1,92 @@
 #pragma once
 
+#include <utility>
+
 #include "predex/oms/oms_types.hpp"
 #include "predex/utils/spsc_queue.hpp"
 
 namespace predex::core::oms::kalshi {
 
-// Queue handles wiring the OMS coordinator to the REST and private WS threads.
-// Constructed in App and passed to Oms — pointers must outlive both.
-struct OmsTransportQueues {
-    utils::SPSCQueue<SubmitOrderCmd>* submit_queue{nullptr};
-    utils::SPSCQueue<CancelOrderCmd>* cancel_queue{nullptr};
-    utils::SPSCQueue<ModifyOrderCmd>* modify_queue{nullptr};
-    // Two separate SPSC queues — one per producer — to preserve the SPSC invariant.
-    // rest_update_queue: written by the OMS REST thread only.
-    // ws_update_queue:   written by the OMS private WS thread only.
-    utils::SPSCQueue<OrderLifecycleEvent>* rest_update_queue{nullptr};
-    utils::SPSCQueue<OrderLifecycleEvent>* ws_update_queue{nullptr};
+// OMS owns this adapter, while the actual REST/private-WS worker threads own the
+// opposite ends of the queues. Commands flow OMS -> REST thread. Venue truth
+// flows REST/private-WS threads -> OMS via separate inbound queues to preserve
+// SPSC invariants for each producer.
+struct ExecutionTransportQueues {
+    utils::SPSCQueue<OmsToKalshiCommand>* command_queue{nullptr};
+    utils::SPSCQueue<KalshiToOmsEvent>* rest_event_queue{nullptr};
+    utils::SPSCQueue<KalshiToOmsEvent>* ws_event_queue{nullptr};
 };
 
-// Thin adapter over OmsTransportQueues. Encapsulates all outbound command
-// dispatch and inbound lifecycle event ingestion. No business logic.
 class ExecutionTransport {
   public:
-    explicit ExecutionTransport(OmsTransportQueues queues = {});
+    explicit ExecutionTransport(ExecutionTransportQueues queues = {}) : queues_(queues) {}
+//NOLINTNEXTLINE
+    [[nodiscard]] bool try_send(const OmsToKalshiCommand& command) noexcept {
+        return queues_.command_queue != nullptr && queues_.command_queue->try_push(command);
+    }
 
-    [[nodiscard]] bool try_submit(const SubmitOrderCmd& cmd) noexcept;
+    [[nodiscard]] bool try_pop_event(SourcedKalshiEvent& event_out) noexcept {
+        if (drain_rest_next_) {
+            KalshiToOmsEvent raw_event{};
+            if (queues_.rest_event_queue != nullptr &&
+                queues_.rest_event_queue->try_pop(raw_event)) {
+                const KalshiEventSource source =
+                    std::holds_alternative<ReconcileOpenOrderSnapshot>(raw_event)
+                        ? KalshiEventSource::kReconcile
+                        : KalshiEventSource::kRest;
+                event_out = SourcedKalshiEvent{
+                    .source = source,
+                    .event = std::move(raw_event),
+                };
+                drain_rest_next_ = false;
+                return true;
+            }
+            if (queues_.ws_event_queue != nullptr &&
+                queues_.ws_event_queue->try_pop(raw_event)) {
+                event_out = SourcedKalshiEvent{
+                    .source = KalshiEventSource::kPrivateWs,
+                    .event = std::move(raw_event),
+                };
+                drain_rest_next_ = true;
+                return true;
+            }
+            return false;
+        }
 
-    [[nodiscard]] bool try_cancel(const CancelOrderCmd& cmd) noexcept;
+        KalshiToOmsEvent raw_event{};
+        if (queues_.ws_event_queue != nullptr && queues_.ws_event_queue->try_pop(raw_event)) {
+            event_out = SourcedKalshiEvent{
+                .source = KalshiEventSource::kPrivateWs,
+                .event = std::move(raw_event),
+            };
+            drain_rest_next_ = true;
+            return true;
+        }
+        if (queues_.rest_event_queue != nullptr && queues_.rest_event_queue->try_pop(raw_event)) {
+            const KalshiEventSource source =
+                std::holds_alternative<ReconcileOpenOrderSnapshot>(raw_event)
+                    ? KalshiEventSource::kReconcile
+                    : KalshiEventSource::kRest;
+            event_out = SourcedKalshiEvent{
+                .source = source,
+                .event = std::move(raw_event),
+            };
+            drain_rest_next_ = false;
+            return true;
+        }
+        return false;
+    }
 
-    [[nodiscard]] bool try_modify(const ModifyOrderCmd& cmd) noexcept;
+    [[nodiscard]] bool command_available() const noexcept {
+        return queues_.command_queue != nullptr;
+    }
 
-    // Pops one inbound lifecycle event. Returns false if none available.
-    [[nodiscard]] bool try_pop_lifecycle_event(OrderLifecycleEvent& event_out) noexcept;
-
-    [[nodiscard]] bool submit_available() const noexcept;
-
-    [[nodiscard]] bool cancel_available() const noexcept;
-
-    [[nodiscard]] bool modify_available() const noexcept;
-
-    [[nodiscard]] bool inbound_available() const noexcept;
+    [[nodiscard]] bool inbound_available() const noexcept {
+        return queues_.rest_event_queue != nullptr || queues_.ws_event_queue != nullptr;
+    }
 
   private:
-    OmsTransportQueues queues_{};
+    ExecutionTransportQueues queues_{};
     bool drain_rest_next_{true};
 };
 

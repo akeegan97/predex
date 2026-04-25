@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "predex/audit/audit_types.hpp"
 #include "predex/oms/execution_transport.hpp"
 #include "predex/oms/global_risk.hpp"
 #include "predex/oms/order_store.hpp"
@@ -51,6 +52,7 @@ class Oms {
                  std::vector<ShardLifecycleQueue*> shard_lifecycle_queues,
                  ExecutionTransportQueues transport_queues = {},
                  GlobalRiskLimits global_risk_limits = {},
+                 utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue = nullptr,
                  std::function<std::optional<std::string>(internal::MarketId)>
                      market_ticker_resolver = {});
 
@@ -66,11 +68,18 @@ class Oms {
 
     [[nodiscard]] bool is_halted() const noexcept;
     [[nodiscard]] std::size_t live_order_count() const noexcept;
+    [[nodiscard]] std::uint64_t processed_shard_request_count() const noexcept;
+    [[nodiscard]] std::uint64_t processed_kalshi_event_count() const noexcept;
+    [[nodiscard]] std::uint64_t emitted_decision_count() const noexcept;
+    [[nodiscard]] std::uint64_t emitted_transport_count() const noexcept;
+    [[nodiscard]] std::uint64_t emitted_lifecycle_count() const noexcept;
+    [[nodiscard]] std::uint64_t rejected_decision_count() const noexcept;
 
   private:
     GlobalRisk global_risk_;
     OrderStore order_store_{};
     ExecutionTransport transport_;
+    utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue_{nullptr};
     std::function<std::optional<std::string>(internal::MarketId)> market_ticker_resolver_;
 
     std::vector<ShardRequestQueue*> shard_request_queues_;
@@ -83,6 +92,10 @@ class Oms {
 
     std::uint64_t processed_shard_request_count_{0};
     std::uint64_t processed_kalshi_event_count_{0};
+    std::uint64_t emitted_decision_count_{0};
+    std::uint64_t emitted_transport_count_{0};
+    std::uint64_t emitted_lifecycle_count_{0};
+    std::uint64_t rejected_decision_count_{0};
 
     std::atomic<std::uint8_t> halt_mode_{0};
     bool hard_halt_cancel_triggered_{false};
@@ -120,6 +133,27 @@ class Oms {
                                            std::uint16_t shard_id) noexcept;
     [[nodiscard]] bool emit_shard_lifecycle(const OmsToShardLifecycleEvent& event,
                                             std::uint16_t shard_id) noexcept;
+    void emit_audit(const predex::core::audit::AuditEvent& event) noexcept;
+    void emit_decision_audit(const IntentContext& context,
+                             OmsRequestId oms_request_id,
+                             internal::TimestampNs decision_ts_ns,
+                             std::uint8_t decision_code,
+                             std::uint8_t reject_reason,
+                             internal::QtyLots qty_lots) noexcept;
+    void emit_transport_audit(const ShardOrderCorrelation& corr,
+                              internal::TimestampNs transport_ts_ns,
+                              std::uint8_t decision_code,
+                              internal::QtyLots qty_lots,
+                              internal::PriceTicks price_ticks) noexcept;
+    void emit_lifecycle_audit(const ShardOrderCorrelation& corr,
+                              internal::TimestampNs lifecycle_ts_ns,
+                              std::uint8_t lifecycle_kind,
+                              std::uint8_t order_status,
+                              std::uint8_t reject_reason,
+                              internal::QtyLots qty_lots,
+                              internal::PriceTicks price_ticks,
+                              internal::TimestampNs first_fill_ts_ns,
+                              internal::TimestampNs terminal_ts_ns) noexcept;
 
     [[nodiscard]] std::optional<std::size_t> shard_index_for(
         std::uint16_t shard_id) const noexcept;

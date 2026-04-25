@@ -7,7 +7,7 @@ namespace predex::core::shards::kalshi::strategies {
 
 struct CdfViolationConfig {
     std::int64_t min_violation_ticks{1};
-    internal::QtyLots default_order_qty_lots{1};
+    internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
     bool enabled{true};
 };
 

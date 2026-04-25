@@ -52,10 +52,10 @@ class ReplayHarnessTests(unittest.TestCase):
 
             events = list(iter_market_events(tape_path))
             self.assertEqual(len(events), 2)
-            self.assertEqual(events[0].bids, ((2000, 5),))
-            self.assertEqual(events[0].asks, ((2500, 2),))
+            self.assertEqual(events[0].bids, ((200, 5),))
+            self.assertEqual(events[0].asks, ((250, 2),))
             self.assertEqual(events[1].side, "bid")
-            self.assertEqual(events[1].price_ticks, 2100)
+            self.assertEqual(events[1].price_ticks, 210)
             self.assertEqual(events[1].delta_qty_lots, 3)
 
     def test_replay_book_store_tracks_top_of_book(self) -> None:
@@ -85,8 +85,8 @@ class ReplayHarnessTests(unittest.TestCase):
         )
         store.apply(snapshot)
         state = store.books["EV-LOW"]
-        self.assertEqual(state.best_bid().price_ticks, 2000)  # type: ignore[union-attr]
-        self.assertEqual(state.best_ask().price_ticks, 2500)  # type: ignore[union-attr]
+        self.assertEqual(state.best_bid().price_ticks, 200)  # type: ignore[union-attr]
+        self.assertEqual(state.best_ask().price_ticks, 250)  # type: ignore[union-attr]
 
     def test_signal_bundle_verification_matches_replayed_books(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -169,8 +169,8 @@ class ReplayHarnessTests(unittest.TestCase):
                     "aux_qty_lots": 0,
                     "price_ticks": 0,
                     "aux_price_ticks": 0,
-                    "edge_ticks": 5600,
-                    "score": 5600,
+                    "edge_ticks": 560,
+                    "score": 560,
                     "decision_code": 0,
                     "reject_reason": 0,
                     "lifecycle_kind": 0,
@@ -194,7 +194,7 @@ class ReplayHarnessTests(unittest.TestCase):
                     "leg_count": 2,
                     "qty_lots": 1,
                     "aux_qty_lots": 0,
-                    "price_ticks": 1300,
+                    "price_ticks": 130,
                     "aux_price_ticks": 0,
                     "edge_ticks": 0,
                     "score": 0,
@@ -221,7 +221,7 @@ class ReplayHarnessTests(unittest.TestCase):
                     "leg_count": 2,
                     "qty_lots": 1,
                     "aux_qty_lots": 0,
-                    "price_ticks": 7200,
+                    "price_ticks": 720,
                     "aux_price_ticks": 0,
                     "edge_ticks": 0,
                     "score": 0,
@@ -243,9 +243,9 @@ class ReplayHarnessTests(unittest.TestCase):
             verification = verify_signal_bundle(bundle, config_index=config_index, tape_path=tape_path)
 
             self.assertTrue(verification.matched)
-            self.assertEqual(verification.recomputed_edge_ticks, 5600)
-            self.assertEqual(verification.easier_ask_ticks, 1300)
-            self.assertEqual(verification.harder_bid_ticks, 7200)
+            self.assertEqual(verification.recomputed_edge_ticks, 560)
+            self.assertEqual(verification.easier_ask_ticks, 130)
+            self.assertEqual(verification.harder_bid_ticks, 720)
 
             timeline = build_event_timeline(
                 config_index=config_index,

@@ -51,29 +51,47 @@ namespace predex {
                     .count());
         }
 
+        void format_utc_timestamp(char* buffer, std::size_t buffer_size) noexcept {
+            const std::time_t now = std::time(nullptr);
+            std::tm utc_tm{};
+#if defined(_WIN32)
+            gmtime_s(&utc_tm, &now);
+#else
+            gmtime_r(&now, &utc_tm);
+#endif
+            if (std::strftime(buffer, buffer_size, "%Y-%m-%d %H:%M:%S UTC", &utc_tm) == 0U) {
+                std::snprintf(buffer, buffer_size, "unknown-time");
+            }
+        }
+
+        void log_public_ws_event(const char* phase,
+                                 std::uint64_t generation,
+                                 const char* detail = nullptr) noexcept {
+            char time_buf[32];
+            format_utc_timestamp(time_buf, sizeof(time_buf));
+            std::fprintf(stdout,
+                         "[%s] WS | scope=public | generation=%llu | phase=%s%s%s\n",
+                         time_buf,
+                         static_cast<unsigned long long>(generation),
+                         phase,
+                         detail == nullptr ? "" : " | detail=",
+                         detail == nullptr ? "" : detail);
+            std::fflush(stdout);
+        }
+
         [[nodiscard]] internal::QtyLots parse_count_fp_to_lots(std::string_view value) {
-            if (value.empty()) {
+            internal::QtyLots qty_lots = 0;
+            if (!internal::parse_non_negative_quantity_fp(value, qty_lots)) {
                 return 0;
             }
-            const std::size_t dot_pos = value.find('.');
-            const std::string_view integer_part =
-                dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
-            if (integer_part.empty()) {
-                return 0;
-            }
-            std::int64_t parsed = 0;
-            const auto [ptr, ec] =
-                std::from_chars(integer_part.data(), integer_part.data() + integer_part.size(), parsed);
-            if (ec != std::errc() || ptr != integer_part.data() + integer_part.size() || parsed < 0) {
-                return 0;
-            }
-            return static_cast<internal::QtyLots>(parsed);
+            return qty_lots;
         }
 
         [[nodiscard]] bool parse_non_negative_dollars_to_ticks(
             std::string_view value,
             internal::PriceTicks& out_ticks) {
-            constexpr std::uint64_t kDollarToTicksScale = 10000U;
+            constexpr std::uint64_t kDollarToTicksScale =
+                static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
             constexpr auto kI64MaxAsU64 =
                 static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
@@ -107,15 +125,18 @@ namespace predex {
             }
 
             std::uint64_t subcent_units = 0;
-            const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+            const std::size_t digits_to_take =
+                std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
             for (std::size_t index = 0; index < digits_to_take; ++index) {
                 subcent_units = subcent_units * 10U +
                     static_cast<std::uint64_t>(frac_part[index] - '0');
             }
-            for (std::size_t index = digits_to_take; index < 4U; ++index) {
+            for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces;
+                 ++index) {
                 subcent_units *= 10U;
             }
-            if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+            if (frac_part.size() > internal::kPriceDecimalPlaces &&
+                frac_part[internal::kPriceDecimalPlaces] >= '5') {
                 ++subcent_units;
                 if (subcent_units == kDollarToTicksScale) {
                     subcent_units = 0U;
@@ -356,6 +377,7 @@ namespace predex {
         std::jthread oms_private_ws_thread;
         std::jthread logger_thread;
         std::jthread audit_thread;
+        std::atomic<std::uint64_t> public_ws_generation_{0};
 
         
         
@@ -570,6 +592,7 @@ namespace predex {
                 .ws_event_queue = oms_ws_event_queue.get(),
             },
             global_risk_limits,
+            oms_audit_queue.get(),
             [this](internal::MarketId market_id) -> std::optional<std::string> {
                 const auto it = market_ticker_by_id_.find(market_id);
                 if (it == market_ticker_by_id_.end()) {
@@ -659,25 +682,32 @@ namespace predex {
         if(running.load(std::memory_order_acquire)){
             return true;
         }
+        log_public_ws_event("connect_start", 0, config.kalshi_ws.endpoint.c_str());
         if(!ws_session.connect()){
+            log_public_ws_event("connect_failed", 0, ws_session.last_error().c_str());
             ws_session.close();
             set_error(ws_session.last_error());
             return false;
         }
+        log_public_ws_event("connect_ok", 0);
 
         for(const auto& channel : config.kalshi_ws.channels){
             if(!ws_session.subscribe(channel, config.kalshi_ws.market_tickers)){
+                log_public_ws_event("subscribe_failed", 0, ws_session.last_error().c_str());
                 ws_session.close();
                 set_error(ws_session.last_error());
                 return false;
             }
+            log_public_ws_event("subscribe_ok", 0, channel.c_str());
         }
         for (const auto& channel : config.kalshi_ws.lifecycle_channels) {
             if (!ws_session.subscribe(channel, {})) {
+                log_public_ws_event("subscribe_failed", 0, ws_session.last_error().c_str());
                 ws_session.close();
                 set_error(ws_session.last_error());
                 return false;
             }
+            log_public_ws_event("subscribe_ok", 0, channel.c_str());
         }
 
         if (config.oms_transport.enabled) {
@@ -687,6 +717,7 @@ namespace predex {
             }
         }
         set_error("");
+        public_ws_generation_.store(0, std::memory_order_release);
         running.store(true, std::memory_order_release);
         
         io_thread = std::jthread([this](const std::stop_token& stop_token){
@@ -738,26 +769,48 @@ namespace predex {
                 // Reconnect with exponential backoff.
                 const std::uint32_t backoff_ms = std::min<std::uint32_t>(
                     5000U, 100U * (1U << std::min(reconnect_attempts, 5U)));
+                const auto next_generation =
+                    public_ws_generation_.load(std::memory_order_acquire) + 1U;
+                char reconnect_detail[256];
+                std::snprintf(reconnect_detail,
+                              sizeof(reconnect_detail),
+                              "backoff_ms=%u attempt=%u",
+                              backoff_ms,
+                              reconnect_attempts + 1U);
+                log_public_ws_event("closed", next_generation, reconnect_detail);
                 std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
                 ++reconnect_attempts;
 
                 if (!ws_session.connect()) {
+                    log_public_ws_event("reconnect_failed",
+                                        next_generation,
+                                        ws_session.last_error().c_str());
                     continue;
                 }
+                log_public_ws_event("reconnect_ok", next_generation);
                 bool subscribe_ok = true;
                 for (const auto& channel : config.kalshi_ws.channels) {
                     if (!ws_session.subscribe(channel, config.kalshi_ws.market_tickers)) {
+                        log_public_ws_event("resubscribe_failed",
+                                            next_generation,
+                                            ws_session.last_error().c_str());
                         subscribe_ok = false;
                         break;
                     }
+                    log_public_ws_event("resubscribe_ok", next_generation, channel.c_str());
                 }
                 for (const auto& channel : config.kalshi_ws.lifecycle_channels) {
                     if (!ws_session.subscribe(channel, {})) {
+                        log_public_ws_event("resubscribe_failed",
+                                            next_generation,
+                                            ws_session.last_error().c_str());
                         subscribe_ok = false;
                         break;
                     }
+                    log_public_ws_event("resubscribe_ok", next_generation, channel.c_str());
                 }
                 if (!subscribe_ok) {
+                    log_public_ws_event("reconnect_close", next_generation);
                     ws_session.close();
                     continue;
                 }
@@ -767,11 +820,16 @@ namespace predex {
                 for (const auto& shard : shards) {
                     shard->request_reset();
                 }
+                public_ws_generation_.store(next_generation, std::memory_order_release);
+                log_public_ws_event("reconnect_epoch_activated", next_generation);
                 reconnect_attempts = 0;
                 continue;
             }
 
             if (recv_result.status == websocket::RecvStatus::kError) {
+                log_public_ws_event("recv_error",
+                                    public_ws_generation_.load(std::memory_order_acquire),
+                                    ws_session.last_error().c_str());
                 set_error(ws_session.last_error());
                 running.store(false, std::memory_order_release);
                 break;
@@ -1008,6 +1066,18 @@ namespace predex {
 
         const bool halted = oms && oms->is_halted();
         const std::size_t live_orders = oms ? oms->live_order_count() : 0;
+        const std::uint64_t oms_processed_shard_requests =
+            oms ? oms->processed_shard_request_count() : 0;
+        const std::uint64_t oms_processed_kalshi_events =
+            oms ? oms->processed_kalshi_event_count() : 0;
+        const std::uint64_t oms_emitted_decisions =
+            oms ? oms->emitted_decision_count() : 0;
+        const std::uint64_t oms_emitted_transport =
+            oms ? oms->emitted_transport_count() : 0;
+        const std::uint64_t oms_emitted_lifecycle =
+            oms ? oms->emitted_lifecycle_count() : 0;
+        const std::uint64_t oms_rejected_decisions =
+            oms ? oms->rejected_decision_count() : 0;
 
         std::size_t desynced_events = 0;
         for (const auto& event_store : event_stores) {
@@ -1020,15 +1090,25 @@ namespace predex {
         std::fprintf(stdout,
             "[%s] STATUS | halted=%s"
             " | live_orders=%zu"
+            " | oms_shard_requests=%llu | oms_kalshi_events=%llu"
+            " | oms_decisions=%llu | oms_transport=%llu"
+            " | oms_lifecycle=%llu | oms_rejected=%llu"
             " | router_frames=%zu | router_drop_bp=%zu | router_drop_lifecycle=%zu"
-            " | router_drop_invalid=%zu | desynced_events=%zu\n",
+            " | router_drop_invalid=%zu | router_seq_rejects=%zu | desynced_events=%zu\n",
             time_buf,
             halted ? "true" : "false",
             live_orders,
+            static_cast<unsigned long long>(oms_processed_shard_requests),
+            static_cast<unsigned long long>(oms_processed_kalshi_events),
+            static_cast<unsigned long long>(oms_emitted_decisions),
+            static_cast<unsigned long long>(oms_emitted_transport),
+            static_cast<unsigned long long>(oms_emitted_lifecycle),
+            static_cast<unsigned long long>(oms_rejected_decisions),
             telem.processed_frames_,
             telem.dropped_backpressure_,
             telem.dropped_unknown_ticker_lifecycle_,
             telem.dropped_invalid_,
+            telem.sequence_rejects_,
             desynced_events);
         std::fflush(stdout);
     }

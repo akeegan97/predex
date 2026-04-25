@@ -25,6 +25,26 @@ enum class EventApplyCode: std::uint8_t{
     kParseFail=3
 };
 
+enum class ShardDesyncReason : std::uint8_t {
+    kNone = 0,
+    kUnexpectedSnapshotAfterInit = 1,
+    kDeltaWhileDesynced = 2,
+    kTradeInvalidOrDesynced = 3,
+    kDeltaSequence = 4,
+    kInvalidSide = 5,
+    kNegativeQuantity = 6,
+    kInvalidSeq = 7,
+    kPendingDeltaOverflow = 8,
+    kReplayPendingDeltaFailure = 9,
+    kInvalidSnapshotData = 10,
+    kTopologyRecomputeFailure = 11,
+};
+
+struct EventApplyResult {
+    EventApplyCode code{EventApplyCode::kRejected};
+    ShardDesyncReason desync_reason{ShardDesyncReason::kNone};
+};
+
 struct SideDepthLevel {
     std::optional<internal::PriceTicks> price_ticks;
     std::optional<internal::QtyLots> qty_lots;
@@ -149,7 +169,7 @@ struct Event {
     bool desynced{false};
     internal::TimestampNs last_update_ns{0};
 
-    EventApplyCode apply_market_update(const internal::NormalizedEvent& event);
+    EventApplyResult apply_market_update(const internal::NormalizedEvent& event);
 
     [[nodiscard]] const EventMarketView* find_market_view(
         internal::MarketId market_id) const noexcept;

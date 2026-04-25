@@ -381,7 +381,7 @@ events = client.discover_events(series_ticker="KXPGATOUR", limit=50)
 result = build_trader_config_result(
     events,
     pipeline=PipelineSettings(shard_count=4),
-    oms_transport=OmsTransportSettings(enabled=False, max_session_loss_ticks=500),
+    oms_transport=OmsTransportSettings(enabled=False, max_session_loss_ticks=50),
     local_risk=LocalRiskSettings(
         max_net_position_lots_per_market=10,
         min_seconds_to_close=60,

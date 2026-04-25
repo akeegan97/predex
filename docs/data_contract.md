@@ -84,7 +84,7 @@ Current normalized event fields:
 
 This is the first stage where exchange-native JSON is converted into a stable internal event model.
 
-**Kalshi ask derivation**: Kalshi's wire format has no explicit ask book. The ask side is derived from the No-bid: a No-bid at tick `p` implies an Ask at `10000 - p`. The parser handles this at both snapshot and delta level. Everything downstream sees a standard two-sided book.
+**Kalshi ask derivation**: Kalshi's wire format has no explicit ask book. The ask side is derived from the No-bid: a No-bid at tick `p` implies an Ask at `1000 - p`. The parser handles this at both snapshot and delta level. Everything downstream sees a standard two-sided book.
 
 ## 5. Book Application Contract
 

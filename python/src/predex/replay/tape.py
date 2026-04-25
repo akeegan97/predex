@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-_TICKS_SCALE = Decimal("10000")
-_MAX_PRICE_TICKS = 10000
+_TICKS_SCALE = Decimal("1000")
+_MAX_PRICE_TICKS = 1000
 
 
 def _parse_decimal_to_ticks(value: Any) -> int:

@@ -45,6 +45,9 @@ struct NoopShardPipeline {
     [[nodiscard]] std::size_t drain_oms_updates(std::size_t /*max_batch_size*/) noexcept {
         return 0;
     }
+    void on_event_apply_result(const internal::NormalizedEvent& /*event*/,
+                               const Event& /*stored_event*/,
+                               const EventApplyResult& /*result*/) noexcept {}
 };
 
 template <typename LocalRisk, typename... Strategies>
@@ -168,6 +171,15 @@ class DefaultShardPipeline {
             break;
         }
         return processed;
+    }
+
+    void on_event_apply_result(const internal::NormalizedEvent& event,
+                               const Event& /*stored_event*/,
+                               const EventApplyResult& result) noexcept {
+        if (result.desync_reason == ShardDesyncReason::kNone) {
+            return;
+        }
+        emit_shard_desync_audit(event, result);
     }
 
   private:
@@ -920,6 +932,28 @@ class DefaultShardPipeline {
             .qty_lots = open_qty_lots,
             .event_exposure_lots = risk_state_.event_exposure_lots,
             .market_exposure_lots = risk_state_.market_exposure_lots,
+        });
+    }
+
+    void emit_shard_desync_audit(const internal::NormalizedEvent& event,
+                                 const EventApplyResult& result) noexcept {
+        internal::Side event_side = internal::Side::kUnknown;
+        if (const auto* delta = std::get_if<internal::DeltaData>(&event.data)) {
+            event_side = delta->side;
+        } else if (const auto* trade = std::get_if<internal::TradeData>(&event.data)) {
+            event_side = trade->book_side;
+        }
+        emit_audit(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kShardDesync,
+            .ts_ns = event.meta.recv_ns,
+            .shard_id = shard_id_,
+            .tick_recv_ns = event.meta.recv_ns,
+            .exchange = event.meta.exchange,
+            .event_id = event.meta.event_id,
+            .market_id = event.meta.market_id,
+            .side = event_side,
+            .decision_code = static_cast<std::uint8_t>(result.code),
+            .reject_reason = static_cast<std::uint8_t>(result.desync_reason),
         });
     }
 

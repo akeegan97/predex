@@ -122,8 +122,8 @@ void build_submit_body(const SubmitOrderCmd& command,
     append_json_escaped(body, command.order.client_order_id.value);
     body.append(",\"side\":");
     append_json_escaped(body, outcome_side);
-    body.append(",\"count\":");
-    body.append(std::to_string(command.intent.qty_lots));
+    body.append(",\"count_fp\":");
+    append_json_escaped(body, internal::format_quantity_fp(command.intent.qty_lots));
     body.append(",\"time_in_force\":");
     append_json_escaped(body, time_in_force);
     if (command.intent.limit_price_ticks.has_value()) {
@@ -153,8 +153,8 @@ void build_modify_body(const ModifyOrderCmd& command,
     append_json_escaped(body, outcome_side);
     body.append(",\"action\":");
     append_json_escaped(body, action);
-    body.append(",\"count\":");
-    body.append(std::to_string(command.replacement.qty_lots));
+    body.append(",\"count_fp\":");
+    append_json_escaped(body, internal::format_quantity_fp(command.replacement.qty_lots));
     if (command.replacement.limit_price_ticks.has_value()) {
         body.push_back(',');
         append_json_escaped(body, price_field);
@@ -165,27 +165,17 @@ void build_modify_body(const ModifyOrderCmd& command,
 }
 
 [[nodiscard]] internal::QtyLots parse_count_fp_to_lots(std::string_view value) {
-    if (value.empty()) {
+    internal::QtyLots qty_lots = 0;
+    if (!internal::parse_non_negative_quantity_fp(value, qty_lots)) {
         return 0;
     }
-    const std::size_t dot_pos = value.find('.');
-    const std::string_view integer_part =
-        dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
-    if (integer_part.empty()) {
-        return 0;
-    }
-    std::int64_t parsed = 0;
-    const auto [ptr, ec] =
-        std::from_chars(integer_part.data(), integer_part.data() + integer_part.size(), parsed);
-    if (ec != std::errc() || ptr != integer_part.data() + integer_part.size() || parsed < 0) {
-        return 0;
-    }
-    return static_cast<internal::QtyLots>(parsed);
+    return qty_lots;
 }
 
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                         internal::PriceTicks& out_ticks) {
-    constexpr std::uint64_t kDollarToTicksScale = 10000U;
+    constexpr std::uint64_t kDollarToTicksScale =
+        static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
     constexpr auto kI64MaxAsU64 =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
@@ -219,14 +209,16 @@ void build_modify_body(const ModifyOrderCmd& command,
     }
 
     std::uint64_t subcent_units = 0;
-    const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+    const std::size_t digits_to_take =
+        std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
     for (std::size_t index = 0; index < digits_to_take; ++index) {
         subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
     }
-    for (std::size_t index = digits_to_take; index < 4U; ++index) {
+    for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
         subcent_units *= 10U;
     }
-    if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+    if (frac_part.size() > internal::kPriceDecimalPlaces &&
+        frac_part[internal::kPriceDecimalPlaces] >= '5') {
         ++subcent_units;
         if (subcent_units == kDollarToTicksScale) {
             subcent_units = 0U;

@@ -244,8 +244,7 @@ class GlobalRisk {
         if (*limit_price_ticks <= 0) {
             return std::nullopt;
         }
-        return static_cast<std::int64_t>(qty_lots) *
-               static_cast<std::int64_t>(*limit_price_ticks);
+        return internal::scale_ticks_by_qty_ceil(*limit_price_ticks, qty_lots);
     }
 
     [[nodiscard]] static internal::QtyLots saturating_subtract(internal::QtyLots value,

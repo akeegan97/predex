@@ -84,28 +84,17 @@ constexpr std::size_t kDefaultMaxPrivateWsEventsPerMessage = 32;
 }
 
 [[nodiscard]] internal::QtyLots parse_count_fp_to_lots(const std::string& value) {
-    if (value.empty()) {
+    internal::QtyLots qty_lots = 0;
+    if (!internal::parse_non_negative_quantity_fp(value, qty_lots)) {
         return 0;
     }
-    const std::size_t dot_pos = value.find('.');
-    const std::string_view integer_part =
-        dot_pos == std::string::npos ? std::string_view(value)
-                                     : std::string_view(value).substr(0, dot_pos);
-    if (integer_part.empty()) {
-        return 0;
-    }
-    std::int64_t parsed = 0;
-    const auto [ptr, ec] =
-        std::from_chars(integer_part.data(), integer_part.data() + integer_part.size(), parsed);
-    if (ec != std::errc() || ptr != integer_part.data() + integer_part.size() || parsed < 0) {
-        return 0;
-    }
-    return static_cast<internal::QtyLots>(parsed);
+    return qty_lots;
 }
 
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                        internal::PriceTicks& out_ticks) {
-    constexpr std::uint64_t kDollarToTicksScale = 10000U;
+    constexpr std::uint64_t kDollarToTicksScale =
+        static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
     constexpr auto kI64MaxAsU64 =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 
@@ -139,14 +128,16 @@ constexpr std::size_t kDefaultMaxPrivateWsEventsPerMessage = 32;
     }
 
     std::uint64_t subcent_units = 0;
-    const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+    const std::size_t digits_to_take =
+        std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
     for (std::size_t index = 0; index < digits_to_take; ++index) {
         subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
     }
-    for (std::size_t index = digits_to_take; index < 4U; ++index) {
+    for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
         subcent_units *= 10U;
     }
-    if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+    if (frac_part.size() > internal::kPriceDecimalPlaces &&
+        frac_part[internal::kPriceDecimalPlaces] >= '5') {
         ++subcent_units;
         if (subcent_units == kDollarToTicksScale) {
             subcent_units = 0U;
@@ -306,11 +297,7 @@ std::optional<KalshiToOmsEvent> KalshiPrivateWsAdapter::parse_single_event_(
     if (lower_type == "fill" || lower_type == "filled" || lower_type == "partial_fill" ||
         lower_type == "partial_filled") {
         internal::QtyLots fill_qty_lots = 0;
-        if (const auto fill_qty = read_i64(message, "fill_qty")) {
-            fill_qty_lots = static_cast<internal::QtyLots>(*fill_qty);
-        } else if (const auto count = read_i64(message, "count")) {
-            fill_qty_lots = static_cast<internal::QtyLots>(*count);
-        } else if (message.contains("count_fp") && message["count_fp"].is_string()) {
+        if (message.contains("count_fp") && message["count_fp"].is_string()) {
             fill_qty_lots = parse_count_fp_to_lots(message["count_fp"].get<std::string>());
         } else if (message.contains("remaining_count_fp") && message["remaining_count_fp"].is_string() &&
                    message.contains("initial_count_fp") && message["initial_count_fp"].is_string()) {
@@ -319,6 +306,10 @@ std::optional<KalshiToOmsEvent> KalshiPrivateWsAdapter::parse_single_event_(
             const auto initial =
                 parse_count_fp_to_lots(message["initial_count_fp"].get<std::string>());
             fill_qty_lots = initial > remaining ? (initial - remaining) : 0;
+        } else if (const auto fill_qty = read_i64(message, "fill_qty")) {
+            fill_qty_lots = internal::contracts_to_qty(*fill_qty);
+        } else if (const auto count = read_i64(message, "count")) {
+            fill_qty_lots = internal::contracts_to_qty(*count);
         }
 
         internal::PriceTicks fill_price_ticks = 0;
@@ -396,12 +387,12 @@ std::optional<KalshiToOmsEvent> KalshiPrivateWsAdapter::parse_single_event_(
     if (lower_type == "replace_ack" || lower_type == "replace_accepted" ||
         lower_type == "modified" || lower_status == "pending_modify") {
         internal::QtyLots working_qty_lots = 0;
-        if (const auto qty = read_i64(message, "new_count")) {
-            working_qty_lots = static_cast<internal::QtyLots>(*qty);
-        } else if (const auto count = read_i64(message, "count")) {
-            working_qty_lots = static_cast<internal::QtyLots>(*count);
-        } else if (message.contains("remaining_count_fp") && message["remaining_count_fp"].is_string()) {
+        if (message.contains("remaining_count_fp") && message["remaining_count_fp"].is_string()) {
             working_qty_lots = parse_count_fp_to_lots(message["remaining_count_fp"].get<std::string>());
+        } else if (const auto qty = read_i64(message, "new_count")) {
+            working_qty_lots = internal::contracts_to_qty(*qty);
+        } else if (const auto count = read_i64(message, "count")) {
+            working_qty_lots = internal::contracts_to_qty(*count);
         }
 
         std::optional<internal::PriceTicks> working_price_ticks;
@@ -432,10 +423,10 @@ std::optional<KalshiToOmsEvent> KalshiPrivateWsAdapter::parse_single_event_(
         lower_type == "user_order" || lower_status == "open" || lower_status == "resting" ||
         lower_status == "live") {
         internal::QtyLots accepted_qty_lots = 0;
-        if (const auto count = read_i64(message, "count")) {
-            accepted_qty_lots = static_cast<internal::QtyLots>(*count);
-        } else if (message.contains("initial_count_fp") && message["initial_count_fp"].is_string()) {
+        if (message.contains("initial_count_fp") && message["initial_count_fp"].is_string()) {
             accepted_qty_lots = parse_count_fp_to_lots(message["initial_count_fp"].get<std::string>());
+        } else if (const auto count = read_i64(message, "count")) {
+            accepted_qty_lots = internal::contracts_to_qty(*count);
         }
         return VenueOrderAck{
             .order = order,

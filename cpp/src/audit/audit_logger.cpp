@@ -39,6 +39,8 @@ const char* kind_to_string(AuditKind kind) {
             return "shard_reconcile";
         case AuditKind::kPipelineProbe:
             return "pipeline_probe";
+        case AuditKind::kShardDesync:
+            return "shard_desync";
         default:
             return "unknown";
     }

@@ -23,7 +23,8 @@ constexpr std::size_t kMaxPendingRestEvents = 4096;
     if (snapshot.side == "yes" && !snapshot.yes_price_dollars.empty()) {
         try {
             const double dollars = std::stod(snapshot.yes_price_dollars);
-            return static_cast<internal::PriceTicks>(dollars * 10000.0);
+            return static_cast<internal::PriceTicks>(
+                dollars * static_cast<double>(internal::kPriceTicksPerDollar));
         } catch (...) {
             return std::nullopt;
         }
@@ -31,7 +32,8 @@ constexpr std::size_t kMaxPendingRestEvents = 4096;
     if (snapshot.side == "no" && !snapshot.no_price_dollars.empty()) {
         try {
             const double dollars = std::stod(snapshot.no_price_dollars);
-            return static_cast<internal::PriceTicks>(dollars * 10000.0);
+            return static_cast<internal::PriceTicks>(
+                dollars * static_cast<double>(internal::kPriceTicksPerDollar));
         } catch (...) {
             return std::nullopt;
         }
@@ -60,25 +62,11 @@ constexpr std::size_t kMaxPendingRestEvents = 4096;
 }
 
 [[nodiscard]] internal::QtyLots parse_count_fp_to_lots(std::string_view value) {
-    if (value.empty()) {
+    internal::QtyLots qty_lots = 0;
+    if (!internal::parse_non_negative_quantity_fp(value, qty_lots)) {
         return 0;
     }
-
-    const std::size_t dot_pos = value.find('.');
-    const auto integer_part =
-        dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
-    if (integer_part.empty()) {
-        return 0;
-    }
-
-    std::int64_t parsed = 0;
-    const auto [ptr, ec] = std::from_chars(
-        integer_part.data(), integer_part.data() + integer_part.size(), parsed);
-    if (ec != std::errc() || ptr != integer_part.data() + integer_part.size() || parsed < 0) {
-        return 0;
-    }
-
-    return static_cast<internal::QtyLots>(parsed);
+    return qty_lots;
 }
 
 [[nodiscard]] KalshiToOmsEvent make_submit_reject_event(const SubmitOrderCmd& command) {

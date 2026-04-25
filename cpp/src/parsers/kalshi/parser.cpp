@@ -15,9 +15,8 @@ template <typename T>
 using ParseResult = predex::parsers::ParseResult<T>;
 
 namespace {
-constexpr std::int64_t kMaxPriceTicks = 10000LL;
 std::int64_t reciprocal_price(std::int64_t price){
-    return kMaxPriceTicks - price;
+    return internal::kMaxPriceTicks - price;
 }
 // Kalshi on-demand message type strings.
 constexpr std::string_view kTypeOrderbook = "orderbook_snapshot";
@@ -25,7 +24,7 @@ constexpr std::string_view kTypeOrderbookDelta = "orderbook_delta";
 constexpr std::string_view kTypeTrade = "trade";
 constexpr std::string_view kTypeLifecycle = "market_lifecycle";
 constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-constexpr auto kScale = 10000U;
+constexpr auto kScale = static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
 bool get_string(simdjson::ondemand::object& obj, std::string_view key, std::string_view& out) noexcept {
     auto result = obj.find_field_unordered(key).get_string();
     if (result.error() != simdjson::SUCCESS) {
@@ -55,69 +54,6 @@ bool get_value(simdjson::ondemand::object& obj,
     return true;
 }
 
-bool parse_signed_decimal_string_to_int64(std::string_view value, std::int64_t& out) noexcept {
-    if (value.empty()) {
-        return false;
-    }
-
-    bool negative = false;
-    if (value.front() == '+' || value.front() == '-') {
-        negative = value.front() == '-';
-        value.remove_prefix(1);
-    }
-    if (value.empty()) {
-        return false;
-    }
-
-    const std::size_t dot = value.find('.');
-    const std::string_view int_part = (dot == std::string_view::npos) ? value : value.substr(0, dot);
-    const std::string_view frac_part =
-        (dot == std::string_view::npos) ? std::string_view{} : value.substr(dot + 1);
-    if (int_part.empty()) {
-        return false;
-    }
-    for (char digit_char : int_part) {
-        if (digit_char < '0' || digit_char > '9') {
-            return false;
-        }
-    }
-    for (char frac_char : frac_part) {
-        if (frac_char != '0') {
-            return false;
-        }
-    }
-
-    std::uint64_t parsed = 0;
-    const auto [ptr, ec] = std::from_chars(int_part.data(), int_part.data() + int_part.size(), parsed);
-    if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
-        return false;
-    }
-
-    if ((!negative && parsed > kInt64MaxAsU64) || (negative && parsed > (kInt64MaxAsU64 + 1U))) {
-        return false;
-    }
-
-    if (!negative) {
-        out = static_cast<std::int64_t>(parsed);
-        return true;
-    }
-    if (parsed == kInt64MaxAsU64 + 1U) {
-        out = std::numeric_limits<std::int64_t>::min();
-        return true;
-    }
-    out = -static_cast<std::int64_t>(parsed);
-    return true;
-}
-
-bool parse_non_negative_decimal_string_to_int64(std::string_view value, std::int64_t& out) noexcept {
-    if (!parse_signed_decimal_string_to_int64(value, out)) {
-        return false;
-    }
-    if (out < 0) {
-        return false;
-    }
-    return true;
-}
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& out) noexcept {
     if (value.empty() || value.front() == '-' || value.front() == '+') {
@@ -150,17 +86,19 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
 
     std::uint64_t subcent_units = 0;
     if (!frac_part.empty()) {
-        const std::size_t digits_to_take = std::min<std::size_t>(frac_part.size(), 4U);
+        const std::size_t digits_to_take =
+            std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
         for (std::size_t index = 0; index < digits_to_take; ++index) {
             //NOLINTNEXTLINE(readability-magic-numbers)
             subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
         }
-        for (std::size_t index = digits_to_take; index < 4U; ++index) {
+        for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
             //NOLINTNEXTLINE(readability-magic-numbers)
             subcent_units *= 10U;
         }
         //NOLINTNEXTLINE(readability-magic-numbers)
-        if (frac_part.size() >= 5U && frac_part[4] >= '5') {
+        if (frac_part.size() > internal::kPriceDecimalPlaces &&
+            frac_part[internal::kPriceDecimalPlaces] >= '5') {
             ++subcent_units;
             if (subcent_units == kScale) {
                 subcent_units = 0U;
@@ -180,12 +118,17 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
 bool parse_lot_count_value(simdjson::ondemand::value& value, std::int64_t& out) noexcept {
     auto string_result = value.get_string();
     if (string_result.error() == simdjson::SUCCESS) {
-        return parse_signed_decimal_string_to_int64(string_result.value_unsafe(), out);
+        return internal::parse_quantity_fp(string_result.value_unsafe(), out, true);
     }
 
     auto int_result = value.get_int64();
     if (int_result.error() == simdjson::SUCCESS) {
-        out = int_result.value_unsafe();
+        const auto integer_contracts = int_result.value_unsafe();
+        if (integer_contracts > std::numeric_limits<std::int64_t>::max() / internal::kQtyScale ||
+            integer_contracts < std::numeric_limits<std::int64_t>::min() / internal::kQtyScale) {
+            return false;
+        }
+        out = integer_contracts * internal::kQtyScale;
         return true;
     }
 
@@ -194,8 +137,9 @@ bool parse_lot_count_value(simdjson::ondemand::value& value, std::int64_t& out) 
         return false;
     }
     const double as_double = double_result.value_unsafe();
+    const double scaled = as_double * static_cast<double>(internal::kQtyScale);
     double integer_part = 0.0;
-    if (std::modf(as_double, &integer_part) != 0.0 ||
+    if (std::modf(scaled, &integer_part) != 0.0 ||
         integer_part < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
         integer_part > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
         return false;
@@ -212,7 +156,7 @@ bool parse_price_ticks_value(simdjson::ondemand::value& value, std::int64_t& out
 
     auto int_result = value.get_int64();
     if (int_result.error() == simdjson::SUCCESS) {
-        constexpr std::int64_t kCentToSubcentScale = 100;
+        constexpr std::int64_t kCentToSubcentScale = internal::kTicksPerCent;
         const auto cents_value = int_result.value_unsafe();
         if (cents_value < 0 ||
             cents_value > std::numeric_limits<std::int64_t>::max() / kCentToSubcentScale) {
@@ -230,7 +174,7 @@ bool parse_price_ticks_value(simdjson::ondemand::value& value, std::int64_t& out
     if (as_double < 0.0) {
         return false;
     }
-    const double scaled = as_double * 10000.0;
+    const double scaled = as_double * static_cast<double>(internal::kPriceTicksPerDollar);
     double integer_part = 0.0;
     if (std::modf(scaled, &integer_part) != 0.0 ||
         integer_part > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
@@ -256,12 +200,12 @@ bool get_uint64(simdjson::ondemand::object& obj, std::string_view key, std::uint
 }
 
 bool get_lot_count(simdjson::ondemand::object& msg, std::int64_t& out) noexcept {
-    simdjson::ondemand::value count;
-    if (get_value(msg, "count", count) && parse_lot_count_value(count, out)) {
-        return out >= 0;
-    }
     simdjson::ondemand::value count_fp;
     if (get_value(msg, "count_fp", count_fp) && parse_lot_count_value(count_fp, out)) {
+        return out >= 0;
+    }
+    simdjson::ondemand::value count;
+    if (get_value(msg, "count", count) && parse_lot_count_value(count, out)) {
         return out >= 0;
     }
     return false;
@@ -435,11 +379,12 @@ bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& 
             return false;
         }
 
-        if (level.price_ticks < 0 || level.qty_lots < 0 || level.price_ticks > kMaxPriceTicks) {
+        if (level.price_ticks < 0 || level.qty_lots < 0 ||
+            level.price_ticks > internal::kMaxPriceTicks) {
             return false;
         }
         if(kalshi_reciprocal_price){
-            level.price_ticks = kMaxPriceTicks - level.price_ticks;
+            level.price_ticks = internal::kMaxPriceTicks - level.price_ticks;
         }
         out.push_back(level);
     }

@@ -401,29 +401,29 @@ namespace predex::core::shards::kalshi{
         return true;
     }
 
-    EventApplyCode Event::apply_market_update(const internal::NormalizedEvent& event){
+    EventApplyResult Event::apply_market_update(const internal::NormalizedEvent& event){
         if (event.meta.event_id == 0 || event.meta.event_id != event_id) {
-            return EventApplyCode::kRejected;
+            return EventApplyResult{.code = EventApplyCode::kRejected};
         }
         if (event.meta.topology_kind != internal::EventTopologyKind::kUnknown &&
             event.meta.topology_kind != topology_kind) {
-            return EventApplyCode::kRejected;
+            return EventApplyResult{.code = EventApplyCode::kRejected};
         }
 
         if (event.type == internal::EventType::kLifecycle) {
             const auto* lifecycle = std::get_if<internal::MarketLifecycleData>(&event.data);
             if (lifecycle == nullptr) {
-                return EventApplyCode::kParseFail;
+                return EventApplyResult{.code = EventApplyCode::kParseFail};
             }
             auto* view = find_market_view_mut(derived_state, event.meta.market_id);
             if (view == nullptr) {
-                return EventApplyCode::kRejected;
+                return EventApplyResult{.code = EventApplyCode::kRejected};
             }
             view->lifecycle.open_ts_s = lifecycle->open_ts_s;
             view->lifecycle.close_ts_s = lifecycle->close_ts_s;
             view->lifecycle.tradeable = is_tradeable(lifecycle->status);
             last_update_ns = event.meta.recv_ns;
-            return EventApplyCode::kApplied;
+            return EventApplyResult{.code = EventApplyCode::kApplied};
         }
 
         auto apply_result = book_store.apply_with_result(event);
@@ -431,20 +431,69 @@ namespace predex::core::shards::kalshi{
         switch(apply_result.reason){
             case BookApplyRejectReason::kUnsupportedEventType:
                 //ignore unsupported event types like heartbeat/status
-                return EventApplyCode::kRejected;
+                return EventApplyResult{.code = EventApplyCode::kRejected};
             //NOLINTNEXTLINE
             case BookApplyRejectReason::kUnexpectedSnapshotAfterInit:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kUnexpectedSnapshotAfterInit,
+                };
             case BookApplyRejectReason::kDeltaWhileDesynced:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kDeltaWhileDesynced,
+                };
             case BookApplyRejectReason::kTradeInvalidOrDesynced:
                 desynced = true;
-                return EventApplyCode::kRejected;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kTradeInvalidOrDesynced,
+                };
             case BookApplyRejectReason::kDeltaSequence:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kDeltaSequence,
+                };
             case BookApplyRejectReason::kInvalidSide:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kInvalidSide,
+                };
             case BookApplyRejectReason::kNegativeQuantity:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kNegativeQuantity,
+                };
             case BookApplyRejectReason::kInvalidSeq:
                 //these are all reasons that indicate we are missing a delta or snapshot update, mark desynced and reject the event update
                 desynced = true;
-                return EventApplyCode::kRejected;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kInvalidSeq,
+                };
+            case BookApplyRejectReason::kPendingDeltaOverflowDesync:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kPendingDeltaOverflow,
+                };
+            case BookApplyRejectReason::kReplayPendingDeltaFailure:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kReplayPendingDeltaFailure,
+                };
+            case BookApplyRejectReason::kInvalidSnapshotData:
+                desynced = true;
+                return EventApplyResult{
+                    .code = EventApplyCode::kRejected,
+                    .desync_reason = ShardDesyncReason::kInvalidSnapshotData,
+                };
             default:
                 break;
         }
@@ -455,6 +504,7 @@ namespace predex::core::shards::kalshi{
             last_update_ns = event.meta.recv_ns;
 
             const BookState* book = book_store.find(event.meta.market_id);
+            desynced = book != nullptr && book->desynced;
             if (auto* state = std::get_if<MonotonicChainState>(&derived_state)) {
                 update_monotonic_chain_state(
                     *state,
@@ -463,6 +513,13 @@ namespace predex::core::shards::kalshi{
                     event.meta.recv_ns,
                     desynced,
                     expected_market_count);
+                desynced = state->desynced;
+                if (state->desynced) {
+                    return EventApplyResult{
+                        .code = EventApplyCode::kApplied,
+                        .desync_reason = ShardDesyncReason::kTopologyRecomputeFailure,
+                    };
+                }
             } else if (auto* state = std::get_if<MutuallyExclusiveState>(&derived_state)) {
                 update_mutually_exclusive_state(
                     *state,
@@ -471,6 +528,13 @@ namespace predex::core::shards::kalshi{
                     event.meta.recv_ns,
                     desynced,
                     expected_market_count);
+                desynced = state->desynced;
+                if (state->desynced) {
+                    return EventApplyResult{
+                        .code = EventApplyCode::kApplied,
+                        .desync_reason = ShardDesyncReason::kTopologyRecomputeFailure,
+                    };
+                }
             } else if (auto* state = std::get_if<UnorderedGroupState>(&derived_state)) {
                 update_unordered_group_state(
                     *state,
@@ -479,6 +543,13 @@ namespace predex::core::shards::kalshi{
                     event.meta.recv_ns,
                     desynced,
                     expected_market_count);
+                desynced = state->desynced;
+                if (state->desynced) {
+                    return EventApplyResult{
+                        .code = EventApplyCode::kApplied,
+                        .desync_reason = ShardDesyncReason::kTopologyRecomputeFailure,
+                    };
+                }
             } else if (auto* state = std::get_if<SingleMarketState>(&derived_state)) {
                 update_single_market_state(
                     *state,
@@ -487,10 +558,17 @@ namespace predex::core::shards::kalshi{
                     event.meta.recv_ns,
                     desynced,
                     expected_market_count);
+                desynced = state->desynced;
+                if (state->desynced) {
+                    return EventApplyResult{
+                        .code = EventApplyCode::kApplied,
+                        .desync_reason = ShardDesyncReason::kTopologyRecomputeFailure,
+                    };
+                }
             }
-            return EventApplyCode::kApplied;
+            return EventApplyResult{.code = EventApplyCode::kApplied};
         }
-        return EventApplyCode::kRejected;
+        return EventApplyResult{.code = EventApplyCode::kRejected};
     }
 
     void EventStore::reset_all_books() noexcept {

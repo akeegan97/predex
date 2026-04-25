@@ -12,7 +12,28 @@
 
 
 namespace predex::core::shards::kalshi {
-constexpr std::int64_t kMaxPriceTicks = 10000LL;
+constexpr std::int64_t kMaxPriceTicks = internal::kMaxPriceTicks;
+constexpr std::size_t kRecentBookUpdateHistory = 8;
+
+struct BookUpdateTrace {
+    internal::EventType type{internal::EventType::kUnknown};
+    std::optional<internal::SequenceId> seq_id;
+    internal::Side side{internal::Side::kUnknown};
+    internal::PriceTicks price_ticks{0};
+    internal::QtyLots qty_lots{0};
+};
+
+struct BookFailureTrace {
+    internal::EventType type{internal::EventType::kUnknown};
+    std::optional<internal::SequenceId> seq_id;
+    internal::Side side{internal::Side::kUnknown};
+    internal::PriceTicks price_ticks{0};
+    internal::QtyLots delta_qty_lots{0};
+    internal::QtyLots existing_qty_lots{0};
+    internal::QtyLots updated_qty_lots{0};
+    std::size_t pending_delta_count{0};
+};
+
 struct BookState {
     using BidLevels = std::array<internal::QtyLots,kMaxPriceTicks+1>;
     using AskLevels = std::array<internal::QtyLots,kMaxPriceTicks+1>;
@@ -32,12 +53,16 @@ struct BookState {
     std::uint64_t buffered_delta_count{0};
     std::uint64_t replayed_delta_count{0};
     std::uint64_t dropped_pending_delta_count{0};
+    std::uint64_t recovery_snapshot_count{0};
     std::uint64_t desync_count{0};
     std::uint64_t stale_sequence_count{0};
     std::uint64_t apply_reject_count{0};
     std::uint64_t invalid_negative_level_count{0};
+    std::uint64_t corrected_negative_level_count{0};
     std::uint64_t invalid_side_count{0};
     std::uint64_t invalid_seq_count{0};
+    BookFailureTrace last_failure{};
+    std::deque<BookUpdateTrace> recent_updates;
 };
 
 enum class BookApplyRejectReason : unsigned char {
@@ -60,6 +85,7 @@ enum class BookApplyRejectReason : unsigned char {
 };
 enum class DeltaApplyResult: std::uint8_t{
     kSuccess = 0,
+    kClampedNegativeQuantity,
     kStaleSequence,
     kInvalidSide,
     kNegativeQuantityDesync,

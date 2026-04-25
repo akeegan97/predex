@@ -16,6 +16,7 @@ enum class AuditKind : std::uint8_t {
     kOmsLifecycle = 7,
     kShardReconcile = 8,
     kPipelineProbe = 9,
+    kShardDesync = 10,
 };
 
 struct AuditEvent {

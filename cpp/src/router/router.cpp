@@ -1,12 +1,45 @@
 #include "predex/router/router.hpp"
 #include "predex/ingest/frame_pool.hpp"
 #include <chrono>
+#include <cstdio>
+#include <ctime>
 #include <simdjson.h>
 
 
 
 namespace predex::core::routing::kalshi{
     namespace{
+        void format_utc_timestamp(char* buffer, std::size_t buffer_size) noexcept {
+            const std::time_t now = std::time(nullptr);
+            std::tm utc_tm{};
+#if defined(_WIN32)
+            gmtime_s(&utc_tm, &now);
+#else
+            gmtime_r(&now, &utc_tm);
+#endif
+            if (std::strftime(buffer, buffer_size, "%Y-%m-%d %H:%M:%S UTC", &utc_tm) == 0U) {
+                std::snprintf(buffer, buffer_size, "unknown-time");
+            }
+        }
+
+        const char* event_type_name(predex::core::ingest::kalshi::KalshiEventType type) noexcept {
+            switch (type) {
+                case predex::core::ingest::kalshi::KalshiEventType::kTrade:
+                    return "trade";
+                case predex::core::ingest::kalshi::KalshiEventType::kDelta:
+                    return "delta";
+                case predex::core::ingest::kalshi::KalshiEventType::kSnapshot:
+                    return "snapshot";
+                case predex::core::ingest::kalshi::KalshiEventType::kSubscribed:
+                    return "subscribed";
+                case predex::core::ingest::kalshi::KalshiEventType::kLifecycle:
+                    return "lifecycle";
+                case predex::core::ingest::kalshi::KalshiEventType::kUnknown:
+                default:
+                    return "unknown";
+            }
+        }
+
         bool get_uint64(simdjson::ondemand::object& obj, std::string_view key, std::uint64_t& out) noexcept{
             auto result = obj.find_field_unordered(key).get_uint64();
             if (result.error() != simdjson::SUCCESS) {
@@ -109,7 +142,7 @@ namespace predex::core::routing::kalshi{
             return RouteDecision::kToLogger;
         }
         if(handle.event_type_ != predex::core::ingest::kalshi::KalshiEventType::kLifecycle){
-            if(!check_sequence(handle)){
+            if(!check_sequence(handle, market_ticker)){
                 return RouteDecision::kToLogger;
             }
         }
@@ -132,7 +165,8 @@ namespace predex::core::routing::kalshi{
         //best effort to forward to logger, if logger queue is full, we just drop the message
         return logger_queue_.try_push(handle);
     }
-    bool Router::check_sequence(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept{
+    bool Router::check_sequence(const predex::core::ingest::kalshi::FrameHandle& handle,
+                                std::string_view market_ticker) noexcept{
         //check if the message is in order, duplicate, or out
         auto iterator = last_seq_by_sid_.find(handle.sid_);
         if(iterator == last_seq_by_sid_.end()){
@@ -147,6 +181,24 @@ namespace predex::core::routing::kalshi{
             return true;
         }
         //out of order or duplicate, 
+        ++telemetry_.sequence_rejects_;
+        if (telemetry_.sequence_rejects_ <= 20U ||
+            (telemetry_.sequence_rejects_ % 1000U) == 0U) {
+            char time_buf[32];
+            format_utc_timestamp(time_buf, sizeof(time_buf));
+            std::fprintf(stdout,
+                         "[%s] ROUTER | phase=sequence_reject | count=%zu | sid=%u | prev_seq=%llu"
+                         " | curr_seq=%llu | event_type=%s | market_ticker=%.*s\n",
+                         time_buf,
+                         telemetry_.sequence_rejects_,
+                         handle.sid_,
+                         static_cast<unsigned long long>(last_seq),
+                         static_cast<unsigned long long>(handle.seq_),
+                         event_type_name(handle.event_type_),
+                         static_cast<int>(market_ticker.size()),
+                         market_ticker.data());
+            std::fflush(stdout);
+        }
         return false;
     }
     std::size_t Router::compute_shard_id(std::uint16_t affinity_key, std::size_t shard_count) noexcept{

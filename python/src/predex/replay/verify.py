@@ -10,9 +10,9 @@ from .config import ConfigIndex, EventRoute
 from .tape import iter_market_events
 
 
-_PRICE_SCALE = 10000.0
+_PRICE_SCALE = 1000.0
 _CENT_SCALE = 100.0
-_TICKS_PER_CENT = 100
+_TICKS_PER_CENT = 10
 _TAKER_FEE_RATE = 0.07
 _SIDE_BUY = 3
 _SIDE_SELL = 4

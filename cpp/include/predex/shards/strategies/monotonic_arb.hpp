@@ -11,16 +11,16 @@
 #include "predex/shards/signal_types.hpp"
 
 namespace predex::core::shards::kalshi::strategies {
-inline constexpr double kPriceScale = 10000.0;
+inline constexpr double kPriceScale = static_cast<double>(internal::kPriceTicksPerDollar);
 inline constexpr double kCentScale = 100.0;
-inline constexpr internal::PriceTicks kTicksPerCent = 100;
+inline constexpr internal::PriceTicks kTicksPerCent = internal::kTicksPerCent;
 inline constexpr double kTakerFeeRate = 0.07;
 inline constexpr double kMakerFeeRate = 0.0175;
-inline constexpr std::int64_t kMinEdgeTicks = 200;
+inline constexpr std::int64_t kMinEdgeTicks = 20;
 
 struct MonotonicArbConfig {
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
-    internal::QtyLots default_order_qty_lots{1};
+    internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
     bool enabled{true};
 };
 
@@ -89,7 +89,7 @@ class MonotonicArbStrategy {
 
         const double p_dollars = static_cast<double>(price_ticks) / kPriceScale;
         const double fee_dollars =
-            fee_rate * static_cast<double>(qty) * p_dollars * (1.0 - p_dollars);
+            fee_rate * internal::qty_to_contracts(qty) * p_dollars * (1.0 - p_dollars);
         const double fee_cents = std::ceil(fee_dollars * kCentScale);
         return static_cast<internal::PriceTicks>(fee_cents) * kTicksPerCent;
     }
@@ -159,7 +159,8 @@ class MonotonicArbStrategy {
         }
 
         const internal::PriceTicks gross_edge_ticks =
-            gross_edge_per_contract * executable_qty;
+            static_cast<internal::PriceTicks>(
+                internal::scale_ticks_by_qty_floor(gross_edge_per_contract, executable_qty));
         const internal::PriceTicks total_fees_ticks =
             taker_fee_ticks_(*easier_ask, executable_qty) +
             taker_fee_ticks_(*harder_bid, executable_qty);

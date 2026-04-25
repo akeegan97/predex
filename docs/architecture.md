@@ -161,7 +161,7 @@ On WS reconnect, `EventStore::reset_all_books()` clears `has_snapshot` so the ne
 
 ### Kalshi Reciprocal Pricing
 
-Kalshi's wire format has no explicit Ask book. The ask side is derived from the No-bid: a No-bid at tick `p` implies an Ask at `10000 - p`. The parser handles this at both snapshot and delta level. Everything downstream sees a standard two-sided book.
+Kalshi's wire format has no explicit Ask book. The ask side is derived from the No-bid: a No-bid at tick `p` implies an Ask at `1000 - p`. The parser handles this at both snapshot and delta level. Everything downstream sees a standard two-sided book.
 
 ## Strategy Pipeline
 

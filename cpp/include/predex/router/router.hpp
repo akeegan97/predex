@@ -21,6 +21,8 @@ namespace predex::core::routing::kalshi{
         std::size_t dropped_unknown_ticker_lifecycle_{0};
         // Frame pool returned nullptr (corrupt handle, gen mismatch). Should be ~0.
         std::size_t dropped_invalid_{0};
+        // Frames rejected because sequence did not advance by exactly one on the shared sid.
+        std::size_t sequence_rejects_{0};
     };
 
     enum class RouteDecision:std::uint8_t{
@@ -58,7 +60,8 @@ namespace predex::core::routing::kalshi{
             [[nodiscard]] bool process_one() noexcept;
             [[nodiscard]] RouteDecision classify(predex::core::ingest::kalshi::FrameHandle& handle, const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept; //need to know where to send after classified or failed
             [[nodiscard]] bool lookup_route(predex::core::ingest::kalshi::FrameHandle& handle, std::string_view market_ticker) const noexcept;
-            [[nodiscard]] bool check_sequence(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept; //check and uses last_seq_by_sid_ to determine if the message is in order, duplicate, or out of order. Updates last_seq_by_sid_ if in order.
+            [[nodiscard]] bool check_sequence(const predex::core::ingest::kalshi::FrameHandle& handle,
+                                             std::string_view market_ticker) noexcept; //check and uses last_seq_by_sid_ to determine if the message is in order, duplicate, or out of order. Updates last_seq_by_sid_ if in order.
             [[nodiscard]] bool forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept;
             [[nodiscard]] static std::size_t compute_shard_id(std::uint16_t affinity_key, std::size_t shard_count) noexcept;
             [[nodiscard]] static std::uint64_t monotonic_now_ns() noexcept;

@@ -6,7 +6,7 @@
 namespace predex::core::shards::kalshi::strategies {
 
 struct MarketMakingConfig {
-    internal::QtyLots default_quote_qty_lots{1};
+    internal::QtyLots default_quote_qty_lots{internal::kOneContractQtyLots};
     std::int64_t min_spread_ticks{1};
     bool enabled{true};
 };

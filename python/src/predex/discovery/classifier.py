@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import re
 
 from .models import ClassifiedEvent, ClassifiedMarket, EventRecord, MarketRecord, TopologyKind
 
@@ -20,6 +21,7 @@ _TIME_AFTER_HINTS = (
     " no earlier than ",
     " on or after ",
 )
+_TICKER_ENTITY_RE = re.compile(r"^(?P<entity>[A-Za-z]+)(?P<strike>-?\d+(?:\.\d+)?)$")
 
 
 def _decimal_strike(value: object | None) -> Decimal | None:
@@ -141,6 +143,22 @@ def _numeric_monotonic_key(market: MarketRecord) -> int | None:
     return None
 
 
+def _numeric_entity_key(market: MarketRecord) -> str | None:
+    if market.custom_strike:
+        return "|".join(
+            f"{str(key).strip().lower()}={str(value).strip().lower()}"
+            for key, value in sorted(market.custom_strike.items(), key=lambda item: str(item[0]).lower())
+        )
+
+    ticker_prefix = f"{market.event_ticker}-"
+    if market.event_ticker and market.ticker.startswith(ticker_prefix):
+        suffix = market.ticker[len(ticker_prefix):]
+        match = _TICKER_ENTITY_RE.match(suffix)
+        if match is not None:
+            return match.group("entity").lower()
+    return None
+
+
 def _classify_numeric_monotonic_chain(event: EventRecord) -> ClassifiedEvent | None:
     strike_types = {market.strike_type.strip().lower() for market in event.markets if market.strike_type}
     if not strike_types or not strike_types.issubset(_NUMERIC_CHAIN_TYPES):
@@ -158,6 +176,98 @@ def _classify_numeric_monotonic_chain(event: EventRecord) -> ClassifiedEvent | N
         classified_markets,
         reason="all markets expose comparable cumulative numeric thresholds",
     )
+
+
+def _classify_event_without_numeric_split(event: EventRecord) -> ClassifiedEvent:
+    if len(event.markets) == 1:
+        return ClassifiedEvent(
+            event=event,
+            topology_kind=TopologyKind.SINGLE_MARKET,
+            markets=(ClassifiedMarket(market=event.markets[0], strike_key=0),),
+            reason="event only contains one market",
+        )
+
+    if event.mutually_exclusive:
+        return ClassifiedEvent(
+            event=event,
+            topology_kind=TopologyKind.MUTUALLY_EXCLUSIVE,
+            markets=tuple(
+                ClassifiedMarket(market=market, strike_key=0) for market in event.markets
+            ),
+            reason="event is explicitly flagged as mutually_exclusive",
+        )
+
+    numeric_monotonic_chain = _classify_numeric_monotonic_chain(event)
+    if numeric_monotonic_chain is not None:
+        return numeric_monotonic_chain
+
+    close_time_monotonic_chain = _classify_close_time_monotonic_chain(event)
+    if close_time_monotonic_chain is not None:
+        return close_time_monotonic_chain
+
+    structural_mutex = _classify_structural_mutex(event)
+    if structural_mutex is not None:
+        return structural_mutex
+
+    return ClassifiedEvent(
+        event=event,
+        topology_kind=TopologyKind.UNORDERED_GROUP,
+        markets=tuple(ClassifiedMarket(market=market, strike_key=0) for market in event.markets),
+        reason="event lacks a trustworthy monotonic order key and is not explicitly or structurally mutually exclusive",
+    )
+
+
+def classify_config_events(event: EventRecord) -> tuple[ClassifiedEvent, ...]:
+    strike_types = {market.strike_type.strip().lower() for market in event.markets if market.strike_type}
+    if not strike_types or not strike_types.issubset(_NUMERIC_CHAIN_TYPES):
+        return (_classify_event_without_numeric_split(event),)
+
+    markets_with_keys: list[tuple[ClassifiedMarket, str | None]] = []
+    for market in event.markets:
+        strike_key = _numeric_monotonic_key(market)
+        if strike_key is None:
+            return (_classify_event_without_numeric_split(event),)
+        markets_with_keys.append(
+            (ClassifiedMarket(market=market, strike_key=strike_key), _numeric_entity_key(market))
+        )
+
+    entity_keys = {entity_key for _, entity_key in markets_with_keys if entity_key is not None}
+    if len(entity_keys) <= 1:
+        return (_classify_event_without_numeric_split(event),)
+    if any(entity_key is None for _, entity_key in markets_with_keys):
+        return (_classify_event_without_numeric_split(event),)
+
+    grouped_markets: dict[str, list[ClassifiedMarket]] = {}
+    for classified_market, entity_key in markets_with_keys:
+        assert entity_key is not None
+        grouped_markets.setdefault(entity_key, []).append(classified_market)
+
+    if any(len(group) < 2 for group in grouped_markets.values()):
+        return (_classify_event_without_numeric_split(event),)
+
+    classified_events: list[ClassifiedEvent] = []
+    for entity_key, grouped in sorted(grouped_markets.items()):
+        ordered = _ordered_classification(
+            event,
+            grouped,
+            reason=(
+                "all markets expose comparable cumulative numeric thresholds within entity "
+                f"{entity_key}"
+            ),
+        )
+        if ordered is None:
+            return (_classify_event_without_numeric_split(event),)
+        classified_events.append(
+            ClassifiedEvent(
+                event=ordered.event,
+                topology_kind=ordered.topology_kind,
+                markets=ordered.markets,
+                reason=ordered.reason,
+                synthetic_key=f"numeric:{entity_key}",
+            )
+        )
+
+    return tuple(classified_events)
 
 
 def _classify_close_time_monotonic_chain(event: EventRecord) -> ClassifiedEvent | None:
@@ -231,39 +341,12 @@ def classify_event(event: EventRecord) -> ClassifiedEvent:
     if not event.markets:
         raise ValueError(f"event {event.event_ticker} does not contain any markets")
 
-    if len(event.markets) == 1:
+    numeric_config_events = classify_config_events(event)
+    if len(numeric_config_events) > 1:
         return ClassifiedEvent(
             event=event,
-            topology_kind=TopologyKind.SINGLE_MARKET,
-            markets=(ClassifiedMarket(market=event.markets[0], strike_key=0),),
-            reason="event only contains one market",
+            topology_kind=TopologyKind.UNORDERED_GROUP,
+            markets=tuple(ClassifiedMarket(market=market, strike_key=0) for market in event.markets),
+            reason="event contains multiple distinct numeric entities, so one global monotonic order is unsafe",
         )
-
-    if event.mutually_exclusive:
-        return ClassifiedEvent(
-            event=event,
-            topology_kind=TopologyKind.MUTUALLY_EXCLUSIVE,
-            markets=tuple(
-                ClassifiedMarket(market=market, strike_key=0) for market in event.markets
-            ),
-            reason="event is explicitly flagged as mutually_exclusive",
-        )
-
-    numeric_monotonic_chain = _classify_numeric_monotonic_chain(event)
-    if numeric_monotonic_chain is not None:
-        return numeric_monotonic_chain
-
-    close_time_monotonic_chain = _classify_close_time_monotonic_chain(event)
-    if close_time_monotonic_chain is not None:
-        return close_time_monotonic_chain
-
-    structural_mutex = _classify_structural_mutex(event)
-    if structural_mutex is not None:
-        return structural_mutex
-
-    return ClassifiedEvent(
-        event=event,
-        topology_kind=TopologyKind.UNORDERED_GROUP,
-        markets=tuple(ClassifiedMarket(market=market, strike_key=0) for market in event.markets),
-        reason="event lacks a trustworthy monotonic order key and is not explicitly or structurally mutually exclusive",
-    )
+    return _classify_event_without_numeric_split(event)

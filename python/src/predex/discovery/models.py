@@ -99,3 +99,4 @@ class ClassifiedEvent:
     topology_kind: TopologyKind
     markets: tuple[ClassifiedMarket, ...]
     reason: str
+    synthetic_key: str = ""

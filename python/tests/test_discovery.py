@@ -297,6 +297,41 @@ class ClassifierTests(unittest.TestCase):
 
         self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
 
+    def test_mixed_numeric_entities_fail_closed_as_unordered(self) -> None:
+        event = EventRecord(
+            event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+            markets=[
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI1",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=1.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS2",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=2.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI4",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=4.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS5",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=5.5,
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
+
     def test_non_monotonic_event_falls_back_to_unordered_group(self) -> None:
         event = EventRecord(
             event_ticker="EV-UNORDERED",
@@ -452,6 +487,116 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             result.config["kalshi"]["market_tickers"],
             ["MKT-FILTER-C1", "MKT-FILTER-C2"],
+        )
+
+    def test_config_builder_splits_bosphi_1h_spread_into_two_synthetic_events(self) -> None:
+        event = EventRecord(
+            event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+            series_ticker="KXNBA1HSPREAD",
+            markets=[
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI1",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=1.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS2",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=2.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI4",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=4.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS5",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=5.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI7",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=7.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS8",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=8.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI10",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=10.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS11",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=11.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI13",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=13.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI16",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=16.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI19",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=19.5,
+                ),
+            ],
+        )
+
+        result = build_trader_config_result([event])
+
+        self.assertEqual(len(result.included_events), 2)
+        self.assertEqual(len({included.event_id for included in result.included_events}), 2)
+        self.assertEqual(len({included.affinity_key for included in result.included_events}), 1)
+
+        routes_by_event_id: dict[int, list[dict[str, object]]] = {}
+        for route in result.config["market_routes"]:
+            routes_by_event_id.setdefault(route["event_id"], []).append(route)
+
+        self.assertEqual(len(routes_by_event_id), 2)
+        grouped_tickers = {
+            tuple(route["market_ticker"] for route in sorted(routes, key=lambda item: item["strike_key"]))
+            for routes in routes_by_event_id.values()
+        }
+        self.assertEqual(
+            grouped_tickers,
+            {
+                (
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS2",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS5",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS8",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS11",
+                ),
+                (
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI1",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI4",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI7",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI10",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI13",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI16",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI19",
+                ),
+            },
         )
 
     def test_config_builder_raises_when_filters_remove_everything(self) -> None:

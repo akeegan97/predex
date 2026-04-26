@@ -1,9 +1,16 @@
 #include "predex/tape/logger.hpp"
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
 namespace predex::core::tape::kalshi {
+namespace {
+constexpr char kTapeMagic[4] = {'P', 'D', 'T', '2'};
+constexpr std::uint16_t kTapeVersion = 2;
+constexpr std::uint16_t kTapeFlags = 0;
+}  // namespace
+
     Logger::Logger(std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*> input_queues,
                     predex::core::ingest::kalshi::FramePool& frame_pool,
                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle> &recycle_queue,
@@ -14,6 +21,12 @@ namespace predex::core::tape::kalshi {
           output_file_(output_file_path.data(), std::ios::binary | std::ios::out) {
               if(!output_file_.is_open()){
                   throw std::runtime_error("Failed to open log file: " + std::string(output_file_path));
+              }
+              output_file_.write(kTapeMagic, sizeof(kTapeMagic));
+              output_file_.write(reinterpret_cast<const char*>(&kTapeVersion), sizeof(kTapeVersion));
+              output_file_.write(reinterpret_cast<const char*>(&kTapeFlags), sizeof(kTapeFlags));
+              if (output_file_.fail()) {
+                  throw std::runtime_error("Failed to write tape header: " + std::string(output_file_path));
               }
           }
 
@@ -30,7 +43,8 @@ namespace predex::core::tape::kalshi {
             if(queue->try_pop(handle)){
                 const auto* frame = frame_pool_.frame(handle);
                 if(frame != nullptr){
-                    //write frame length followed by frame payload for easier parsing during replay
+                    // write frame receive timestamp, then frame length, then payload.
+                    output_file_.write(reinterpret_cast<const char*>(&frame->recv_ts_ns_), sizeof(frame->recv_ts_ns_));
                     output_file_.write(reinterpret_cast<const char*>(&frame->len_), sizeof(frame->len_));
                     output_file_.write(reinterpret_cast<const char*>(frame->payload.data()), frame->len_);
                     if(output_file_.fail()){

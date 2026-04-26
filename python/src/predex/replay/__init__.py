@@ -11,6 +11,15 @@ from .timeline import (
     write_timeline_parquet,
 )
 from .verify import SignalVerificationResult, verify_signal_bundle
+from .windows import (
+    SignalEdgeLifetime,
+    SignalEdgeLifetimes,
+    SignalWindow,
+    SignalWindows,
+    WindowSignal,
+    build_signal_edge_lifetimes,
+    build_signal_windows,
+)
 
 __all__ = [
     "AuditEvent",
@@ -22,9 +31,16 @@ __all__ = [
     "EventTimeline",
     "SignalHit",
     "TimelineRow",
+    "SignalWindow",
+    "SignalWindows",
+    "SignalEdgeLifetime",
+    "SignalEdgeLifetimes",
+    "WindowSignal",
     "SignalBundle",
     "SignalVerificationResult",
     "build_event_timeline",
+    "build_signal_edge_lifetimes",
+    "build_signal_windows",
     "write_timeline_parquet",
     "write_signal_hits_parquet",
     "build_signal_bundles",

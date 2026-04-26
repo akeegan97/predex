@@ -85,7 +85,6 @@ enum class BookApplyRejectReason : unsigned char {
 };
 enum class DeltaApplyResult: std::uint8_t{
     kSuccess = 0,
-    kClampedNegativeQuantity,
     kStaleSequence,
     kInvalidSide,
     kNegativeQuantityDesync,

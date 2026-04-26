@@ -347,6 +347,7 @@ namespace predex {
         std::vector<std::unique_ptr<OmsDecisionQueue>> oms_to_shard_decision_queues;
         std::vector<std::unique_ptr<OmsLifecycleQueue>> oms_to_shard_lifecycle_queues;
         std::vector<std::unique_ptr<AuditQueue>> shard_audit_queues;
+        std::unique_ptr<AuditQueue> router_audit_queue;
         std::unique_ptr<OmsCommandQueue> oms_command_queue;
         std::unique_ptr<KalshiEventQueue> oms_rest_event_queue;
         std::unique_ptr<KalshiEventQueue> oms_ws_event_queue;
@@ -476,6 +477,8 @@ namespace predex {
             std::make_unique<KalshiEventQueue>(config.pipeline.shard_input_capacity);
         oms_audit_queue =
             std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
+        router_audit_queue =
+            std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
 
         std::vector<std::vector<core::shards::kalshi::EventDefinition>> event_definitions_by_shard;
         std::string event_definition_error;
@@ -513,6 +516,7 @@ namespace predex {
             audit_input_queue_ptrs.push_back(queue.get());
         }
         audit_input_queue_ptrs.push_back(oms_audit_queue.get());
+        audit_input_queue_ptrs.push_back(router_audit_queue.get());
 
         logger_input_queue_ptrs.push_back(router_to_logger_queue.get());
         for (const auto& queue : shard_to_logger_queues) {
@@ -537,6 +541,7 @@ namespace predex {
             market_registry,
             *shard_dispatch,
             *router_to_logger_queue,
+            router_audit_queue.get(),
             *recycle_from_router);
 
         io_writer = std::make_unique<core::ingest::kalshi::IOWriter>(
@@ -1093,7 +1098,7 @@ namespace predex {
             " | oms_shard_requests=%llu | oms_kalshi_events=%llu"
             " | oms_decisions=%llu | oms_transport=%llu"
             " | oms_lifecycle=%llu | oms_rejected=%llu"
-            " | router_frames=%zu | router_drop_bp=%zu | router_drop_lifecycle=%zu"
+            " | router_frames=%zu | router_drop_bp=%zu | router_shard_bp=%zu | router_drop_lifecycle=%zu"
             " | router_drop_invalid=%zu | router_seq_rejects=%zu | desynced_events=%zu\n",
             time_buf,
             halted ? "true" : "false",
@@ -1106,6 +1111,7 @@ namespace predex {
             static_cast<unsigned long long>(oms_rejected_decisions),
             telem.processed_frames_,
             telem.dropped_backpressure_,
+            telem.shard_backpressure_to_logger_,
             telem.dropped_unknown_ticker_lifecycle_,
             telem.dropped_invalid_,
             telem.sequence_rejects_,

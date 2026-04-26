@@ -165,8 +165,8 @@
     "shard_count": 4,
     "io_to_router_capacity": 4096,
     "router_to_logger_capacity": 4096,
-    "shard_input_capacity": 1024,
-    "shard_to_logger_capacity": 1024
+    "shard_input_capacity": 8192,
+    "shard_to_logger_capacity": 8192
   },
   "tape": {
     "output_path": "predex_tape_subset.bin"

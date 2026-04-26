@@ -7,15 +7,10 @@ from pathlib import Path
 from .audit import AuditEvent, SignalBundle
 from .books import ReplayBookStore
 from .config import ConfigIndex, EventRoute
+from .monotonic import SIDE_BUY, SIDE_SELL, evaluate_pair_state
 from .tape import iter_market_events
 
 
-_PRICE_SCALE = 1000.0
-_CENT_SCALE = 100.0
-_TICKS_PER_CENT = 10
-_TAKER_FEE_RATE = 0.07
-_SIDE_BUY = 3
-_SIDE_SELL = 4
 _RISK_REJECT_REASONS = {
     0: "none",
     1: "event_exposure_limit",
@@ -24,6 +19,11 @@ _RISK_REJECT_REASONS = {
     4: "strategy_disabled",
     5: "invalid_signal",
     6: "invalid_intent",
+    7: "net_position_limit",
+    8: "market_close_soon",
+    9: "market_closed",
+    10: "event_desynced",
+    11: "market_desynced",
 }
 _RISK_DECISION_CODES = {
     1: "accepted",
@@ -32,17 +32,6 @@ _RISK_DECISION_CODES = {
     4: "disabled",
     5: "error",
 }
-
-
-def _fee_ticks(price_ticks: int, qty_lots: int) -> int:
-    if qty_lots <= 0 or price_ticks <= 0 or price_ticks >= int(_PRICE_SCALE):
-        return 0
-    price_dollars = float(price_ticks) / _PRICE_SCALE
-    fee_dollars = _TAKER_FEE_RATE * float(qty_lots) * price_dollars * (1.0 - price_dollars)
-    fee_cents = math.ceil(fee_dollars * _CENT_SCALE)
-    return fee_cents * _TICKS_PER_CENT
-
-
 @dataclass(frozen=True, slots=True)
 class SignalVerificationResult:
     matched: bool
@@ -83,8 +72,8 @@ def _risk_summary(bundle: SignalBundle) -> tuple[str, ...]:
 
 def _candidate_legs(bundle: SignalBundle) -> tuple[AuditEvent | None, AuditEvent | None]:
     legs = bundle.legs()
-    buy_leg = next((event for event in legs if event.side == _SIDE_BUY), None)
-    sell_leg = next((event for event in legs if event.side == _SIDE_SELL), None)
+    buy_leg = next((event for event in legs if event.side == SIDE_BUY), None)
+    sell_leg = next((event for event in legs if event.side == SIDE_SELL), None)
     return (buy_leg, sell_leg)
 
 
@@ -229,19 +218,16 @@ def verify_signal_bundle(
         harder_bid = harder_state.best_bid()
         if easier_ask is None or harder_bid is None:
             continue
-        target_qty = max(
-            buy_leg.qty_lots if buy_leg is not None else 0,
-            sell_leg.qty_lots if sell_leg is not None else 0,
-            1,
-        )
-        executable_qty = min(target_qty, easier_ask.qty_lots, harder_bid.qty_lots)
-        if executable_qty <= 0:
-            continue
-        gross_edge_ticks = (harder_bid.price_ticks - easier_ask.price_ticks) * executable_qty
-        net_edge_ticks = gross_edge_ticks - _fee_ticks(easier_ask.price_ticks, executable_qty) - _fee_ticks(
+        pair_state = evaluate_pair_state(
+            easier_ask.price_ticks,
+            easier_ask.qty_lots,
             harder_bid.price_ticks,
-            executable_qty,
+            harder_bid.qty_lots,
         )
+        if pair_state is None:
+            continue
+        executable_qty = pair_state.executable_qty_lots
+        net_edge_ticks = pair_state.net_edge_ticks
         if (
             (buy_leg is None or easier_ask.price_ticks == buy_leg.price_ticks)
             and (sell_leg is None or harder_bid.price_ticks == sell_leg.price_ticks)

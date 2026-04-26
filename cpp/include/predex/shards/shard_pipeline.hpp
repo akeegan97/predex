@@ -308,6 +308,8 @@ class DefaultShardPipeline {
             return false;
         }
         group_signals_buffer_[group_signal_count_++] = group_signal;
+        const SubmissionLeg* leg1 = group_signal.leg_count > 0 ? &group_signal.legs[0] : nullptr;
+        const SubmissionLeg* leg2 = group_signal.leg_count > 1 ? &group_signal.legs[1] : nullptr;
         emit_audit(predex::core::audit::AuditEvent{
             .kind = predex::core::audit::AuditKind::kGroupSignal,
             .ts_ns = group_signal.signal_ts_ns,
@@ -315,7 +317,15 @@ class DefaultShardPipeline {
             .signal_id = group_signal.signal_id,
             .exchange = group_signal.exchange,
             .event_id = group_signal.event_id,
+            .market_id = leg1 != nullptr ? leg1->market_id : 0,
+            .aux_market_id = leg2 != nullptr ? leg2->market_id : 0,
+            .side = leg1 != nullptr ? leg1->side : internal::Side::kUnknown,
+            .aux_side = leg2 != nullptr ? leg2->side : internal::Side::kUnknown,
             .leg_count = static_cast<std::uint16_t>(group_signal.leg_count),
+            .qty_lots = leg1 != nullptr ? leg1->qty_lots : 0,
+            .aux_qty_lots = leg2 != nullptr ? leg2->qty_lots : 0,
+            .price_ticks = leg1 != nullptr ? leg1->limit_price_ticks.value_or(0) : 0,
+            .aux_price_ticks = leg2 != nullptr ? leg2->limit_price_ticks.value_or(0) : 0,
             .edge_ticks = group_signal.edge_ticks,
             .score = group_signal.score,
         });

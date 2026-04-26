@@ -12,11 +12,8 @@ from typing import Iterable
 from .audit import SignalBundle
 from .books import ReplayBookStore
 from .config import ConfigIndex, EventRoute, MarketRoute
+from .monotonic import SIDE_BUY, SIDE_SELL, evaluate_pair_state
 from .tape import iter_market_events
-from .verify import _fee_ticks
-
-_SIDE_BUY = 3
-_SIDE_SELL = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,8 +72,8 @@ def _candidate_from_bundle(bundle: SignalBundle, *, config_index: ConfigIndex) -
         return None
 
     legs = bundle.legs()
-    buy_leg = next((event for event in legs if event.side == _SIDE_BUY), None)
-    sell_leg = next((event for event in legs if event.side == _SIDE_SELL), None)
+    buy_leg = next((event for event in legs if event.side == SIDE_BUY), None)
+    sell_leg = next((event for event in legs if event.side == SIDE_SELL), None)
     easier_market = config_index.markets_by_id.get(buy_leg.market_id) if buy_leg is not None else None
     harder_market = config_index.markets_by_id.get(sell_leg.market_id) if sell_leg is not None else None
 
@@ -218,15 +215,16 @@ def build_event_timeline(
             if easier_ask is None or harder_bid is None:
                 continue
 
-            executable_qty = min(candidate.target_qty_lots, easier_ask.qty_lots, harder_bid.qty_lots)
-            if executable_qty <= 0:
-                continue
-
-            net_edge_ticks = (
-                (harder_bid.price_ticks - easier_ask.price_ticks) * executable_qty
-                - _fee_ticks(easier_ask.price_ticks, executable_qty)
-                - _fee_ticks(harder_bid.price_ticks, executable_qty)
+            pair_state = evaluate_pair_state(
+                easier_ask.price_ticks,
+                easier_ask.qty_lots,
+                harder_bid.price_ticks,
+                harder_bid.qty_lots,
+                default_order_qty_lots=candidate.target_qty_lots,
             )
+            if pair_state is None:
+                continue
+            net_edge_ticks = pair_state.net_edge_ticks
 
             if (
                 (candidate.buy_price_ticks is None or easier_ask.price_ticks == candidate.buy_price_ticks)

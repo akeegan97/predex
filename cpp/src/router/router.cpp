@@ -70,12 +70,14 @@ namespace predex::core::routing::kalshi{
         const predex::core::routing::kalshi::MarketRegistry &market_registry,
         predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
         predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
+                predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
         predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
         : ingress_queue_(ingress_queue),
           frame_pool_(frame_pool),
           market_registry_(market_registry),
           shard_dispatch_(shard_dispatch),
           logger_queue_(logger_queue),
+                    audit_queue_(audit_queue),
           recycle_queue_(recycle_queue) {}
     RouteDecision Router::classify(predex::core::ingest::kalshi::FrameHandle& handle, const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept{
         //Framehandle at this point is only stamped with iowriter timestamp,
@@ -165,6 +167,23 @@ namespace predex::core::routing::kalshi{
         //best effort to forward to logger, if logger queue is full, we just drop the message
         return logger_queue_.try_push(handle);
     }
+    void Router::emit_shard_backpressure_audit(
+        const predex::core::ingest::kalshi::FrameHandle& handle,
+        std::size_t shard_id) noexcept {
+        if (audit_queue_ == nullptr) {
+            return;
+        }
+        static_cast<void>(audit_queue_->try_push(predex::core::audit::AuditEvent{
+            .kind = predex::core::audit::AuditKind::kRouterShardBackpressure,
+            .ts_ns = monotonic_now_ns(),
+            .shard_id = static_cast<std::uint16_t>(shard_id),
+            .frame_seq = handle.seq_,
+            .frame_sid = handle.sid_,
+            .event_id = handle.event_id_,
+            .market_id = handle.market_id_,
+            .reject_reason = static_cast<std::uint8_t>(handle.event_type_),
+        }));
+    }
     bool Router::check_sequence(const predex::core::ingest::kalshi::FrameHandle& handle,
                                 std::string_view market_ticker) noexcept{
         //check if the message is in order, duplicate, or out
@@ -229,6 +248,8 @@ namespace predex::core::routing::kalshi{
             }
             // Shard queue full; fall back to logger so the frame is still captured for tape.
             if(forward_to_logger(handle)){
+                ++telemetry_.shard_backpressure_to_logger_;
+                emit_shard_backpressure_audit(handle, shard_id);
                 ++telemetry_.processed_frames_;
                 return true;
             }

@@ -82,6 +82,8 @@ enum class RiskRejectReason : std::uint8_t {
     kNetPositionLimit = 7,
     kMarketCloseSoon = 8,
     kMarketClosed = 9,
+    kEventDesynced = 10,
+    kMarketDesynced = 11,
 };
 
 struct RiskDecision {

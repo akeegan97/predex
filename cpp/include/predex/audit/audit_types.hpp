@@ -17,6 +17,7 @@ enum class AuditKind : std::uint8_t {
     kShardReconcile = 8,
     kPipelineProbe = 9,
     kShardDesync = 10,
+    kRouterShardBackpressure = 11,
 };
 
 struct AuditEvent {
@@ -28,6 +29,8 @@ struct AuditEvent {
     std::uint64_t group_id{0};
     std::uint64_t local_intent_id{0};
     std::uint64_t oms_request_id{0};
+    std::uint64_t frame_seq{0};
+    std::uint32_t frame_sid{0};
     /*
     Latency tracking fields
     */
@@ -52,7 +55,9 @@ struct AuditEvent {
     internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
     internal::EventId event_id{0};
     internal::MarketId market_id{0};
+    internal::MarketId aux_market_id{0};
     internal::Side side{internal::Side::kUnknown};
+    internal::Side aux_side{internal::Side::kUnknown};
 
     std::uint16_t leg_index{0};
     std::uint16_t leg_count{0};

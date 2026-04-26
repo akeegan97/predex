@@ -18,6 +18,12 @@ from .timeline import (
     write_timeline_summary_json,
 )
 from .verify import verify_signal_bundle
+from .windows import (
+    build_signal_windows,
+    write_signal_windows_csv,
+    write_signal_windows_summary_json,
+    write_window_signals_csv,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +85,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--parquet",
         action="store_true",
         help="Also write parquet outputs (*.parquet, *.signals.parquet). Requires pyarrow.",
+    )
+
+    export_windows = subparsers.add_parser(
+        "export-signal-windows",
+        help="Replay one event into deduplicated opportunity windows with OMS outcome annotations.",
+    )
+    export_windows.add_argument("--config", required=True, help="Generated Predex config JSON.")
+    export_windows.add_argument("--audit", required=True, help="Audit JSONL emitted by trader_app.")
+    export_windows.add_argument("--tape", required=True, help="Binary tape emitted by trader_app.")
+    export_windows.add_argument(
+        "--event-id",
+        type=int,
+        default=None,
+        help="Event id to export. Optional if --market-ticker is supplied.",
+    )
+    export_windows.add_argument(
+        "--market-ticker",
+        default=None,
+        help="Optional single market focus within the selected event.",
+    )
+    export_windows.add_argument(
+        "--output-dir",
+        default="docs/replay",
+        help="Directory for generated files. Default: docs/replay.",
+    )
+    export_windows.add_argument(
+        "--prefix",
+        default="signal_windows",
+        help="Output filename prefix. Default: signal_windows.",
     )
 
     latency_hist = subparsers.add_parser(
@@ -285,6 +320,51 @@ def _export_event_timeline(
     }
 
 
+def _export_signal_windows(
+    config_path: str,
+    audit_path: str,
+    tape_path: str,
+    event_id: int | None,
+    market_ticker: str | None,
+    output_dir: str,
+    prefix: str,
+) -> dict[str, object]:
+    config_index = load_config_index(config_path)
+    bundles = build_signal_bundles(load_audit_events(audit_path))
+    windows = build_signal_windows(
+        config_index=config_index,
+        bundles=bundles,
+        tape_path=tape_path,
+        event_id=event_id,
+        market_ticker=market_ticker,
+    )
+
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    safe_prefix = prefix.strip() or "signal_windows"
+
+    windows_csv = output_root / f"{safe_prefix}.csv"
+    signals_csv = output_root / f"{safe_prefix}.signals.csv"
+    summary_json = output_root / f"{safe_prefix}.summary.json"
+
+    write_signal_windows_csv(windows_csv, windows.windows)
+    write_window_signals_csv(signals_csv, windows.signals)
+    write_signal_windows_summary_json(summary_json, windows)
+
+    return {
+        "event_id": windows.event_id,
+        "event_ticker": windows.event_ticker,
+        "market_tickers": list(windows.market_tickers),
+        "window_count": len(windows.windows),
+        "signal_count": len(windows.signals),
+        "outputs": {
+            "windows_csv": str(windows_csv),
+            "signals_csv": str(signals_csv),
+            "summary_json": str(summary_json),
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -310,6 +390,16 @@ def main(argv: list[str] | None = None) -> int:
             histogram_every_seconds=args.histogram_every_seconds,
             max_bucket_plots=args.max_bucket_plots,
         )
+    elif args.command == "export-signal-windows":
+        payload = _export_signal_windows(
+            args.config,
+            args.audit,
+            args.tape,
+            args.event_id,
+            args.market_ticker,
+            args.output_dir,
+            args.prefix,
+        )
     else:
         payload = _export_event_timeline(
             args.config,
@@ -323,3 +413,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(json.dumps(payload, indent=2, sort_keys=False))
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

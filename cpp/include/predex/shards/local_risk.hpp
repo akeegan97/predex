@@ -61,12 +61,24 @@ class LocalRiskManager {
                 .reason = RiskRejectReason::kInvalidIntent,
             };
         }
+        if (update.event.desynced) {
+            return RiskDecision{
+                .code = RiskDecisionCode::kRejected,
+                .reason = RiskRejectReason::kEventDesynced,
+            };
+        }
+        const auto* market_view = update.event.find_market_view(intent.context.market_id);
+        if (market_view != nullptr && market_view->desynced) {
+            return RiskDecision{
+                .code = RiskDecisionCode::kRejected,
+                .reason = RiskRejectReason::kMarketDesynced,
+            };
+        }
         // Kalshi emits no WS event at natural close_time, so we cannot wait for a
         // deactivation message — every intent must be compared against wall-clock now.
         // The hard post-close reject fires unconditionally; the margin reject is only
         // active when min_seconds_to_close is configured > 0.
         {
-            const auto* market_view = update.event.find_market_view(intent.context.market_id);
             if (market_view != nullptr) {
                 const auto now_s = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::seconds>(

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .affinity import stable_affinity_key, stable_event_id, stable_market_id
-from .classifier import classify_event
+from .classifier import classify_config_events, classify_event
 from .models import ClassifiedEvent, EventRecord, TopologyKind
 
 
@@ -199,6 +199,12 @@ def _validate_classified_event(classified_event: ClassifiedEvent) -> None:
             )
 
 
+def _stable_config_event_id(classified_event: ClassifiedEvent) -> int:
+    if not classified_event.synthetic_key:
+        return stable_event_id(classified_event.event.event_ticker)
+    return stable_event_id(f"{classified_event.event.event_ticker}::{classified_event.synthetic_key}")
+
+
 def build_trader_config_result(
     events: list[EventRecord],
     *,
@@ -241,96 +247,101 @@ def build_trader_config_result(
             continue
         seen_event_tickers.add(event.event_ticker)
 
-        classified_event = classify_event(event)
-        _validate_classified_event(classified_event)
+        for classified_event in classify_config_events(event):
+            _validate_classified_event(classified_event)
 
-        topology = classified_event.topology_kind
-        if included_filter is not None and topology not in included_filter:
-            skipped_events.append(
-                SkippedEventConfig(
-                    event_ticker=event.event_ticker,
-                    series_ticker=event.series_ticker,
+            topology = classified_event.topology_kind
+            if included_filter is not None and topology not in included_filter:
+                skipped_events.append(
+                    SkippedEventConfig(
+                        event_ticker=event.event_ticker,
+                        series_ticker=event.series_ticker,
+                        topology_kind=topology,
+                        market_count=len(classified_event.markets),
+                        reason=f"excluded by include_topologies filter: {topology.value}",
+                    )
+                )
+                continue
+            if topology in excluded_filter:
+                skipped_events.append(
+                    SkippedEventConfig(
+                        event_ticker=event.event_ticker,
+                        series_ticker=event.series_ticker,
+                        topology_kind=topology,
+                        market_count=len(classified_event.markets),
+                        reason=f"excluded by exclude_topologies filter: {topology.value}",
+                    )
+                )
+                continue
+
+            if market_limit is not None and included_market_count + len(classified_event.markets) > market_limit:
+                skipped_events.append(
+                    SkippedEventConfig(
+                        event_ticker=event.event_ticker,
+                        series_ticker=event.series_ticker,
+                        topology_kind=topology,
+                        market_count=len(classified_event.markets),
+                        reason=f"excluded by market_limit: adding {len(classified_event.markets)} markets would exceed limit {market_limit}",
+                    )
+                )
+                continue
+
+            event_id = _stable_config_event_id(classified_event)
+            affinity_key = stable_affinity_key(classified_event.event.event_ticker)
+            existing_event_ticker = seen_event_ids.get(event_id)
+            synthetic_name = (
+                classified_event.event.event_ticker
+                if not classified_event.synthetic_key
+                else f"{classified_event.event.event_ticker}::{classified_event.synthetic_key}"
+            )
+            if existing_event_ticker is not None and existing_event_ticker != synthetic_name:
+                raise ValueError(
+                    f"event_id collision between {existing_event_ticker} and {synthetic_name}"
+                )
+            seen_event_ids[event_id] = synthetic_name
+
+            included_market_tickers: list[str] = []
+            for classified_market in classified_event.markets:
+                market = classified_market.market
+                market_id = stable_market_id(market.ticker)
+                existing_market_ticker = seen_market_ids.get(market_id)
+                if existing_market_ticker is not None and existing_market_ticker != market.ticker:
+                    raise ValueError(f"market_id collision between {existing_market_ticker} and {market.ticker}")
+                seen_market_ids[market_id] = market.ticker
+
+                if market.ticker in seen_market_tickers:
+                    raise ValueError(f"duplicate market ticker across included events: {market.ticker}")
+                seen_market_tickers.add(market.ticker)
+
+                market_tickers.append(market.ticker)
+                included_market_tickers.append(market.ticker)
+                routes.append(
+                    {
+                        "market_ticker": market.ticker,
+                        "market_id": market_id,
+                        "event_id": event_id,
+                        "affinity_key": affinity_key,
+                        "topology_kind": topology.value,
+                        "strike_key": classified_market.strike_key,
+                        "close_time_s": _parse_iso_to_unix_seconds(market.primary_time_reference()),
+                        "tradeable": market.status == "active",
+                    }
+                )
+
+            included_market_count += len(classified_event.markets)
+            topology_counts[topology.value] += 1
+            included_events.append(
+                GeneratedEventConfig(
+                    event_ticker=classified_event.event.event_ticker,
+                    series_ticker=classified_event.event.series_ticker,
                     topology_kind=topology,
                     market_count=len(classified_event.markets),
-                    reason=f"excluded by include_topologies filter: {topology.value}",
+                    market_tickers=tuple(included_market_tickers),
+                    event_id=event_id,
+                    affinity_key=affinity_key,
+                    reason=classified_event.reason,
                 )
             )
-            continue
-        if topology in excluded_filter:
-            skipped_events.append(
-                SkippedEventConfig(
-                    event_ticker=event.event_ticker,
-                    series_ticker=event.series_ticker,
-                    topology_kind=topology,
-                    market_count=len(classified_event.markets),
-                    reason=f"excluded by exclude_topologies filter: {topology.value}",
-                )
-            )
-            continue
-
-        if market_limit is not None and included_market_count + len(classified_event.markets) > market_limit:
-            skipped_events.append(
-                SkippedEventConfig(
-                    event_ticker=event.event_ticker,
-                    series_ticker=event.series_ticker,
-                    topology_kind=topology,
-                    market_count=len(classified_event.markets),
-                    reason=f"excluded by market_limit: adding {len(classified_event.markets)} markets would exceed limit {market_limit}",
-                )
-            )
-            continue
-
-        event_id = stable_event_id(classified_event.event.event_ticker)
-        affinity_key = stable_affinity_key(classified_event.event.event_ticker)
-        existing_event_ticker = seen_event_ids.get(event_id)
-        if existing_event_ticker is not None and existing_event_ticker != classified_event.event.event_ticker:
-            raise ValueError(
-                f"event_id collision between {existing_event_ticker} and {classified_event.event.event_ticker}"
-            )
-        seen_event_ids[event_id] = classified_event.event.event_ticker
-
-        included_market_tickers: list[str] = []
-        for classified_market in classified_event.markets:
-            market = classified_market.market
-            market_id = stable_market_id(market.ticker)
-            existing_market_ticker = seen_market_ids.get(market_id)
-            if existing_market_ticker is not None and existing_market_ticker != market.ticker:
-                raise ValueError(f"market_id collision between {existing_market_ticker} and {market.ticker}")
-            seen_market_ids[market_id] = market.ticker
-
-            if market.ticker in seen_market_tickers:
-                raise ValueError(f"duplicate market ticker across included events: {market.ticker}")
-            seen_market_tickers.add(market.ticker)
-
-            market_tickers.append(market.ticker)
-            included_market_tickers.append(market.ticker)
-            routes.append(
-                {
-                    "market_ticker": market.ticker,
-                    "market_id": market_id,
-                    "event_id": event_id,
-                    "affinity_key": affinity_key,
-                    "topology_kind": topology.value,
-                    "strike_key": classified_market.strike_key,
-                    "close_time_s": _parse_iso_to_unix_seconds(market.primary_time_reference()),
-                    "tradeable": market.status == "active",
-                }
-            )
-
-        included_market_count += len(classified_event.markets)
-        topology_counts[topology.value] += 1
-        included_events.append(
-            GeneratedEventConfig(
-                event_ticker=classified_event.event.event_ticker,
-                series_ticker=classified_event.event.series_ticker,
-                topology_kind=topology,
-                market_count=len(classified_event.markets),
-                market_tickers=tuple(included_market_tickers),
-                event_id=event_id,
-                affinity_key=affinity_key,
-                reason=classified_event.reason,
-            )
-        )
 
     if not routes:
         raise ValueError("no events remained after classification and topology filtering")

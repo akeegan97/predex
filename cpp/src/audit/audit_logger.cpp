@@ -41,6 +41,8 @@ const char* kind_to_string(AuditKind kind) {
             return "pipeline_probe";
         case AuditKind::kShardDesync:
             return "shard_desync";
+        case AuditKind::kRouterShardBackpressure:
+            return "router_shard_backpressure";
         default:
             return "unknown";
     }
@@ -57,10 +59,14 @@ void write_event_json(std::ofstream& output, const AuditEvent& event) {
             << "\"group_id\":" << event.group_id << ','
             << "\"local_intent_id\":" << event.local_intent_id << ','
             << "\"oms_request_id\":" << event.oms_request_id << ','
+            << "\"frame_seq\":" << event.frame_seq << ','
+            << "\"frame_sid\":" << event.frame_sid << ','
             << "\"exchange\":" << static_cast<unsigned>(event.exchange) << ','
             << "\"event_id\":" << event.event_id << ','
             << "\"market_id\":" << event.market_id << ','
+            << "\"aux_market_id\":" << event.aux_market_id << ','
             << "\"side\":" << static_cast<unsigned>(event.side) << ','
+            << "\"aux_side\":" << static_cast<unsigned>(event.aux_side) << ','
             << "\"leg_index\":" << event.leg_index << ','
             << "\"leg_count\":" << event.leg_count << ','
             << "\"qty_lots\":" << event.qty_lots << ','

@@ -46,6 +46,74 @@ enum class LifecycleAuditCode : std::uint8_t {
     kVenueRejected = 6,
 };
 
+struct TransportAuditSample {
+    internal::TimestampNs submit_ts_ns{0};
+    internal::TimestampNs response_ts_ns{0};
+    std::uint8_t decision_code{0};
+    internal::QtyLots qty_lots{0};
+    internal::PriceTicks price_ticks{0};
+};
+
+[[nodiscard]] std::optional<TransportAuditSample> transport_audit_sample_for(
+    const KalshiEventSource source,
+    const KalshiToOmsEvent& event,
+    internal::QtyLots previous_working_qty,
+    std::optional<internal::PriceTicks> previous_working_price) noexcept {
+    if (source != KalshiEventSource::kRest) {
+        return std::nullopt;
+    }
+
+    return std::visit(
+        [&](const auto& typed_event) -> std::optional<TransportAuditSample> {
+            using T = std::decay_t<decltype(typed_event)>;
+            if constexpr (std::is_same_v<T, VenueOrderAck>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
+                    .qty_lots = typed_event.accepted_qty_lots,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            } else if constexpr (std::is_same_v<T, VenueOrderReject>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
+                    .qty_lots = previous_working_qty,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            } else if constexpr (std::is_same_v<T, VenueCancelAck> ||
+                                 std::is_same_v<T, VenueCancelReject>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .qty_lots = previous_working_qty,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            } else if constexpr (std::is_same_v<T, VenueModifyAck>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .qty_lots = typed_event.working_qty_lots,
+                    .price_ticks = typed_event.working_price_ticks.value_or(
+                        previous_working_price.value_or(0)),
+                };
+            } else if constexpr (std::is_same_v<T, VenueModifyReject>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .qty_lots = previous_working_qty,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            }
+            return std::nullopt;
+        },
+        event);
+}
+
 } // namespace
 
 Oms::Oms(std::vector<ShardRequestQueue*> shard_request_queues,
@@ -280,13 +348,6 @@ OmsProcessCode Oms::handle_new_order_intent(const NewOrderIntent& intent) noexce
         }})) {
         return OmsProcessCode::kVenueBackpressure;
     }
-    emit_transport_audit(
-        corr,
-        now_ns,
-        static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
-        intent.qty_lots,
-        intent.limit_price_ticks.value_or(0));
-
     order_store_.mark_submitted(MarkSubmittedTransition{
         .order = order,
         .venue_submit_ts_ns = now_ns,
@@ -361,12 +422,6 @@ OmsProcessCode Oms::handle_cancel_order_intent(const CancelOrderIntent& intent) 
         }})) {
         return OmsProcessCode::kVenueBackpressure;
     }
-    emit_transport_audit(
-        corr,
-        monotonic_now_ns(),
-        static_cast<std::uint8_t>(DecisionAuditCode::kModified),
-        state->working_qty_lots,
-        state->working_limit_price_ticks.value_or(0));
     return OmsProcessCode::kProcessedShardRequest;
 }
 
@@ -468,12 +523,6 @@ OmsProcessCode Oms::handle_modify_order_intent(const ModifyOrderIntent& intent) 
         }})) {
         return OmsProcessCode::kVenueBackpressure;
     }
-    emit_transport_audit(
-        corr,
-        monotonic_now_ns(),
-        static_cast<std::uint8_t>(DecisionAuditCode::kModified),
-        intent.replacement.qty_lots,
-        intent.replacement.limit_price_ticks.value_or(0));
     return OmsProcessCode::kProcessedShardRequest;
 }
 
@@ -543,6 +592,21 @@ OmsProcessCode Oms::handle_kalshi_event(const SourcedKalshiEvent& event) noexcep
                               },
                               event.event));
         corr.has_value()) {
+        if (pre_state != nullptr) {
+            if (const auto transport_sample = transport_audit_sample_for(
+                    event.source, event.event, previous_working_qty, previous_working_price);
+                transport_sample.has_value()) {
+                emit_transport_audit(
+                    *corr,
+                    pre_state->oms_decision_ts_ns,
+                    transport_sample->submit_ts_ns != 0 ? transport_sample->submit_ts_ns
+                                                        : pre_state->venue_submit_ts_ns,
+                    transport_sample->response_ts_ns,
+                    transport_sample->decision_code,
+                    transport_sample->qty_lots,
+                    transport_sample->price_ticks);
+            }
+        }
         OmsToShardLifecycleEvent lifecycle{};
         bool emit = true;
         std::visit(
@@ -794,14 +858,16 @@ void Oms::emit_decision_audit(const IntentContext& context,
 }
 
 void Oms::emit_transport_audit(const ShardOrderCorrelation& corr,
-                               internal::TimestampNs transport_ts_ns,
+                               internal::TimestampNs oms_decision_ts_ns,
+                               internal::TimestampNs transport_submit_ts_ns,
+                               internal::TimestampNs transport_response_ts_ns,
                                std::uint8_t decision_code,
                                internal::QtyLots qty_lots,
                                internal::PriceTicks price_ticks) noexcept {
     ++emitted_transport_count_;
     emit_audit(predex::core::audit::AuditEvent{
         .kind = predex::core::audit::AuditKind::kOmsTransport,
-        .ts_ns = transport_ts_ns,
+        .ts_ns = transport_response_ts_ns,
         .shard_id = corr.context.shard_id,
         .signal_id = corr.context.signal_id,
         .group_id = corr.context.group_intent_id,
@@ -810,11 +876,21 @@ void Oms::emit_transport_audit(const ShardOrderCorrelation& corr,
         .tick_recv_ns = corr.context.tick_recv_ns,
         .signal_ts_ns = corr.context.signal_ts_ns,
         .submission_enqueued_ns = corr.context.submission_enqueued_ns,
-        .transport_submit_ts_ns = transport_ts_ns,
+        .oms_decision_ts_ns = oms_decision_ts_ns,
+        .transport_submit_ts_ns = transport_submit_ts_ns,
+        .transport_response_recv_ns = transport_response_ts_ns,
         .signal_to_submission_ns =
             latency_delta_ns(corr.context.submission_enqueued_ns, corr.context.signal_ts_ns),
+        .submission_to_decision_ns =
+            latency_delta_ns(oms_decision_ts_ns, corr.context.submission_enqueued_ns),
         .decision_to_transport_ns =
-            latency_delta_ns(transport_ts_ns, corr.context.submission_enqueued_ns),
+            latency_delta_ns(transport_submit_ts_ns, oms_decision_ts_ns),
+        .tick_to_transport_submit_ns =
+            latency_delta_ns(transport_submit_ts_ns, corr.context.tick_recv_ns),
+        .transport_submit_to_response_ns =
+            latency_delta_ns(transport_response_ts_ns, transport_submit_ts_ns),
+        .tick_to_transport_response_ns =
+            latency_delta_ns(transport_response_ts_ns, corr.context.tick_recv_ns),
         .event_id = corr.context.event_id,
         .market_id = corr.context.market_id,
         .leg_index = corr.context.leg_index,

@@ -34,10 +34,22 @@ struct OpenOrdersPage {
     std::string error_message;
 };
 
+struct RestTraceInfo {
+    std::string request_target;
+    std::string request_body;
+    int http_status_code{0};
+    std::uint32_t retry_count{0};
+    internal::TimestampNs request_sent_ts_ns{0};
+    internal::TimestampNs response_recv_ts_ns{0};
+    std::string response_body;
+    std::string error_message;
+};
+
 struct CommandResult {
     bool ok{false};
     std::optional<KalshiToOmsEvent> event;
     std::string error_message;
+    RestTraceInfo trace{};
 };
 
 // Kalshi-specific request/response translation layer. This owns endpoint paths,
@@ -71,13 +83,16 @@ class KalshiRestAdapter {
 
     [[nodiscard]] static CommandResult parse_submit_response_(
         const HttpResponse& response,
-        const SubmitOrderCmd& command);
+        const SubmitOrderCmd& command,
+        RestTraceInfo trace);
     [[nodiscard]] static CommandResult parse_cancel_response_(
         const HttpResponse& response,
-        const CancelOrderCmd& command);
+        const CancelOrderCmd& command,
+        RestTraceInfo trace);
     [[nodiscard]] static CommandResult parse_modify_response_(
         const HttpResponse& response,
-        const ModifyOrderCmd& command);
+        const ModifyOrderCmd& command,
+        RestTraceInfo trace);
     [[nodiscard]] static OpenOrdersPage parse_open_orders_response_(
         const HttpResponse& response);
 };

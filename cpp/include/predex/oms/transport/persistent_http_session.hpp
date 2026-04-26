@@ -1,10 +1,12 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 
+#include "predex/internal/market_types.hpp"
 #include "predex/websocket/kalshi/auth_signer.hpp"
 
 namespace predex::core::oms::kalshi::transport {
@@ -26,6 +28,9 @@ struct HttpRequest {
 struct HttpResponse {
     bool ok{false};
     int status_code{0};
+    std::uint32_t retry_count{0};
+    internal::TimestampNs request_sent_ts_ns{0};
+    internal::TimestampNs response_recv_ts_ns{0};
     std::string body;
     std::string error_message;
     bool keep_alive{true};

@@ -25,3 +25,4 @@ docs/replay/*.jsonl
 docs/rest_schemas/*
 docs/private_ws_schemas/*
 .claude/settings.local.json
+predex_rest_trace*.jsonl

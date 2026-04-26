@@ -196,12 +196,18 @@ OrderStore::VenueApplyResult OrderStore::apply_venue_event(const SourcedKalshiEv
             update_identity(event.order);
 
             if constexpr (std::is_same_v<T, VenueOrderAck>) {
+                if (event.transport_submit_ts_ns != 0) {
+                    state->venue_submit_ts_ns = event.transport_submit_ts_ns;
+                }
                 state->venue_ack_ts_ns = event.recv_ts_ns;
                 state->status = OrderStatus::kWorking;
                 state->working_qty_lots = event.accepted_qty_lots > 0 ? event.accepted_qty_lots
                                                                       : state->working_qty_lots;
                 result.remaining_open_qty_lots = state->working_qty_lots;
             } else if constexpr (std::is_same_v<T, VenueOrderReject>) {
+                if (event.transport_submit_ts_ns != 0) {
+                    state->venue_submit_ts_ns = event.transport_submit_ts_ns;
+                }
                 state->venue_ack_ts_ns = event.recv_ts_ns;
                 state->status = OrderStatus::kRejected;
                 state->last_venue_reject_reason = event.reason;
@@ -244,12 +250,21 @@ OrderStore::VenueApplyResult OrderStore::apply_venue_event(const SourcedKalshiEv
                 result.remaining_open_qty_lots = state->working_qty_lots;
                 result.became_terminal = true;
             } else if constexpr (std::is_same_v<T, VenueCancelAck>) {
+                if (event.transport_submit_ts_ns != 0) {
+                    state->venue_submit_ts_ns = event.transport_submit_ts_ns;
+                }
                 state->status = OrderStatus::kPendingCancel;
             } else if constexpr (std::is_same_v<T, VenueCancelReject>) {
+                if (event.transport_submit_ts_ns != 0) {
+                    state->venue_submit_ts_ns = event.transport_submit_ts_ns;
+                }
                 state->status = restored_working_status(*state);
                 state->status_before_pending_transition.reset();
                 state->last_venue_reject_reason = event.reason;
             } else if constexpr (std::is_same_v<T, VenueModifyAck>) {
+                if (event.transport_submit_ts_ns != 0) {
+                    state->venue_submit_ts_ns = event.transport_submit_ts_ns;
+                }
                 state->working_qty_lots = event.working_qty_lots;
                 state->working_limit_price_ticks = event.working_price_ticks;
                 state->status = restored_working_status(*state);
@@ -257,6 +272,9 @@ OrderStore::VenueApplyResult OrderStore::apply_venue_event(const SourcedKalshiEv
                 state->pending_replacement.reset();
                 result.remaining_open_qty_lots = state->working_qty_lots;
             } else if constexpr (std::is_same_v<T, VenueModifyReject>) {
+                if (event.transport_submit_ts_ns != 0) {
+                    state->venue_submit_ts_ns = event.transport_submit_ts_ns;
+                }
                 state->status = restored_working_status(*state);
                 state->status_before_pending_transition.reset();
                 state->pending_replacement.reset();

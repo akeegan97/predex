@@ -37,6 +37,7 @@
 #include <vector>
 #include <mutex>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <system_error>
 
@@ -85,6 +86,23 @@ namespace predex {
                 return 0;
             }
             return qty_lots;
+        }
+
+        [[nodiscard]] std::string rest_trace_output_path(std::string_view base_path,
+                                                         std::size_t worker_index,
+                                                         std::size_t worker_count) {
+            if (base_path.empty() || worker_count <= 1) {
+                return std::string{base_path};
+            }
+
+            const auto dot_pos = base_path.rfind('.');
+            if (dot_pos == std::string_view::npos) {
+                return std::string{base_path} + ".worker" + std::to_string(worker_index);
+            }
+
+            return std::string{base_path.substr(0, dot_pos)} +
+                ".worker" + std::to_string(worker_index) +
+                std::string{base_path.substr(dot_pos)};
         }
 
         [[nodiscard]] bool parse_non_negative_dollars_to_ticks(
@@ -328,8 +346,8 @@ namespace predex {
         websocket::kalshi::WsAdapter ws_adapter;
         websocket::BoostBeastWsTransport ws_transport;
         websocket::WsSession ws_session;
-        predex::core::oms::kalshi::transport::RestWorkerConfig oms_rest_worker_config{};
-        std::unique_ptr<predex::core::oms::kalshi::transport::RestWorker> oms_rest_worker;
+        std::vector<std::unique_ptr<predex::core::oms::kalshi::transport::RestWorker>>
+            oms_rest_workers;
         std::unique_ptr<predex::core::oms::kalshi::transport::PrivateWsWorker> oms_private_ws_worker;
 
         core::ingest::kalshi::FramePool frame_pool;
@@ -348,8 +366,8 @@ namespace predex {
         std::vector<std::unique_ptr<OmsLifecycleQueue>> oms_to_shard_lifecycle_queues;
         std::vector<std::unique_ptr<AuditQueue>> shard_audit_queues;
         std::unique_ptr<AuditQueue> router_audit_queue;
-        std::unique_ptr<OmsCommandQueue> oms_command_queue;
-        std::unique_ptr<KalshiEventQueue> oms_rest_event_queue;
+        std::vector<std::unique_ptr<OmsCommandQueue>> oms_command_queues;
+        std::vector<std::unique_ptr<KalshiEventQueue>> oms_rest_event_queues;
         std::unique_ptr<KalshiEventQueue> oms_ws_event_queue;
         std::unique_ptr<AuditQueue> oms_audit_queue;
 
@@ -359,6 +377,8 @@ namespace predex {
         std::vector<OmsIntentQueue*> shard_to_oms_intent_queue_ptrs;
         std::vector<OmsDecisionQueue*> oms_to_shard_decision_queue_ptrs;
         std::vector<OmsLifecycleQueue*> oms_to_shard_lifecycle_queue_ptrs;
+        std::vector<OmsCommandQueue*> oms_command_queue_ptrs;
+        std::vector<KalshiEventQueue*> oms_rest_event_queue_ptrs;
         std::vector<AuditQueue*> audit_input_queue_ptrs;
 
         std::unique_ptr<core::routing::kalshi::ShardDispatch> shard_dispatch;
@@ -374,7 +394,7 @@ namespace predex {
         std::jthread router_thread;
         std::vector<std::jthread> shard_threads; // will house strategy & risk eventually on the same thread as shard 
         std::jthread oms_thread;
-        std::jthread oms_rest_thread;
+        std::vector<std::jthread> oms_rest_threads;
         std::jthread oms_private_ws_thread;
         std::jthread logger_thread;
         std::jthread audit_thread;
@@ -388,11 +408,12 @@ namespace predex {
         void stop();
 
         void io_loop(const std::stop_token& stop_token);
-        void oms_rest_loop(const std::stop_token& stop_token);
+        void oms_rest_loop(std::size_t worker_index, const std::stop_token& stop_token);
         void oms_private_ws_loop(const std::stop_token& stop_token);
         [[nodiscard]] bool reconcile_open_orders_from_rest(bool is_startup);
         [[nodiscard]] predex::core::oms::kalshi::transport::RestWorkerConfig
-        build_oms_rest_worker_config() const;
+        build_oms_rest_worker_config(std::size_t worker_index,
+                         std::size_t worker_count) const;
         [[nodiscard]] std::optional<
             predex::core::oms::kalshi::transport::RestWorkerConfig::ReconcileOrderSeed>
         resolve_oms_reconcile_seed(std::string_view ticker) const;
@@ -451,6 +472,14 @@ namespace predex {
         event_stores.reserve(config.pipeline.shard_count);
         shards.reserve(config.pipeline.shard_count);
 
+        const std::size_t rest_worker_count =
+            std::max<std::size_t>(1, config.oms_transport.rest_worker_count);
+        oms_command_queues.reserve(rest_worker_count);
+        oms_rest_event_queues.reserve(rest_worker_count);
+        oms_command_queue_ptrs.reserve(rest_worker_count);
+        oms_rest_event_queue_ptrs.reserve(rest_worker_count);
+        oms_rest_workers.reserve(rest_worker_count);
+
         for (std::size_t i = 0; i < config.pipeline.shard_count; ++i) {
             shard_input_queues.push_back(
                 std::make_unique<FrameQueue>(config.pipeline.shard_input_capacity));
@@ -469,10 +498,14 @@ namespace predex {
             event_stores.emplace_back();
         }
 
-        oms_command_queue =
-            std::make_unique<OmsCommandQueue>(config.pipeline.shard_input_capacity);
-        oms_rest_event_queue =
-            std::make_unique<KalshiEventQueue>(config.pipeline.shard_input_capacity);
+        for (std::size_t worker_index = 0; worker_index < rest_worker_count; ++worker_index) {
+            oms_command_queues.push_back(
+                std::make_unique<OmsCommandQueue>(config.pipeline.shard_input_capacity));
+            oms_rest_event_queues.push_back(
+                std::make_unique<KalshiEventQueue>(config.pipeline.shard_input_capacity));
+            oms_command_queue_ptrs.push_back(oms_command_queues.back().get());
+            oms_rest_event_queue_ptrs.push_back(oms_rest_event_queues.back().get());
+        }
         oms_ws_event_queue =
             std::make_unique<KalshiEventQueue>(config.pipeline.shard_input_capacity);
         oms_audit_queue =
@@ -562,17 +595,20 @@ namespace predex {
         global_risk_limits.available_capital_ticks = config.oms_transport.available_capital_ticks;
         global_risk_limits.trading_enabled = config.local_risk.trading_enabled;
 
-        oms_rest_worker_config = build_oms_rest_worker_config();
-        oms_rest_worker = std::make_unique<predex::core::oms::kalshi::transport::RestWorker>(
-            predex::core::oms::kalshi::transport::RestWorkerQueues{
-                .command_queue = oms_command_queue.get(),
-                .event_queue = oms_rest_event_queue.get(),
-            },
-            predex::core::oms::kalshi::transport::KalshiRestAdapter{
-                predex::core::oms::kalshi::transport::PersistentHttpSession{
-                    websocket::kalshi::AuthSigner{auth_signer},
-                    config.oms_transport.rest_endpoint}},
-            oms_rest_worker_config);
+        for (std::size_t worker_index = 0; worker_index < rest_worker_count; ++worker_index) {
+            auto worker_config = build_oms_rest_worker_config(worker_index, rest_worker_count);
+            oms_rest_workers.push_back(
+                std::make_unique<predex::core::oms::kalshi::transport::RestWorker>(
+                    predex::core::oms::kalshi::transport::RestWorkerQueues{
+                        .command_queue = oms_command_queues[worker_index].get(),
+                        .event_queue = oms_rest_event_queues[worker_index].get(),
+                    },
+                    predex::core::oms::kalshi::transport::KalshiRestAdapter{
+                        predex::core::oms::kalshi::transport::PersistentHttpSession{
+                            websocket::kalshi::AuthSigner{auth_signer},
+                            config.oms_transport.rest_endpoint}},
+                    std::move(worker_config)));
+        }
         oms_private_ws_worker =
             std::make_unique<predex::core::oms::kalshi::transport::PrivateWsWorker>(
                 predex::core::oms::kalshi::transport::PrivateWsWorkerQueues{
@@ -592,8 +628,8 @@ namespace predex {
             oms_to_shard_decision_queue_ptrs,
             oms_to_shard_lifecycle_queue_ptrs,
             predex::core::oms::kalshi::ExecutionTransportQueues{
-                .command_queue = oms_command_queue.get(),
-                .rest_event_queue = oms_rest_event_queue.get(),
+                .command_queues = oms_command_queue_ptrs,
+                .rest_event_queues = oms_rest_event_queue_ptrs,
                 .ws_event_queue = oms_ws_event_queue.get(),
             },
             global_risk_limits,
@@ -641,7 +677,8 @@ namespace predex {
     }
 
     predex::core::oms::kalshi::transport::RestWorkerConfig
-    App::Runtime::build_oms_rest_worker_config() const {
+    App::Runtime::build_oms_rest_worker_config(std::size_t worker_index,
+                                               std::size_t worker_count) const {
         using RestWorkerConfig = predex::core::oms::kalshi::transport::RestWorkerConfig;
 
         return RestWorkerConfig{
@@ -650,6 +687,8 @@ namespace predex {
                     -> std::optional<RestWorkerConfig::ReconcileOrderSeed> {
                     return resolve_oms_reconcile_seed(ticker);
                 },
+            .trace_output_path = rest_trace_output_path(
+                RestWorkerConfig{}.trace_output_path, worker_index, worker_count),
         };
     }
 
@@ -741,9 +780,13 @@ namespace predex {
         oms_thread = std::jthread([this](const std::stop_token& stop_token){
             oms_loop(stop_token);
         });
-        oms_rest_thread = std::jthread([this](const std::stop_token& stop_token){
-            oms_rest_loop(stop_token);
-        });
+        oms_rest_threads.clear();
+        oms_rest_threads.reserve(oms_rest_workers.size());
+        for (std::size_t worker_index = 0; worker_index < oms_rest_workers.size(); ++worker_index) {
+            oms_rest_threads.emplace_back([this, worker_index](const std::stop_token& stop_token){
+                oms_rest_loop(worker_index, stop_token);
+            });
+        }
         if (config.oms_transport.enabled) {
             oms_private_ws_thread = std::jthread([this](const std::stop_token& stop_token) {
                 oms_private_ws_loop(stop_token);
@@ -851,14 +894,15 @@ namespace predex {
         ws_session.close();
     }
 
-    void App::Runtime::oms_rest_loop(const std::stop_token& stop_token) {
-        if (!config.oms_transport.enabled || oms_rest_worker == nullptr) {
+    void App::Runtime::oms_rest_loop(std::size_t worker_index, const std::stop_token& stop_token) {
+        if (!config.oms_transport.enabled || worker_index >= oms_rest_workers.size() ||
+            oms_rest_workers[worker_index] == nullptr) {
             while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds{kDefaultSleepMs});
             }
             return;
         }
-        oms_rest_worker->run(stop_token);
+        oms_rest_workers[worker_index]->run(stop_token);
     }
 
     void App::Runtime::oms_private_ws_loop(const std::stop_token& stop_token) {
@@ -872,10 +916,11 @@ namespace predex {
     }
 
     [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest(bool is_startup) {
-        if (!config.oms_transport.enabled || oms_rest_worker == nullptr) {
+        if (!config.oms_transport.enabled || oms_rest_workers.empty() ||
+            oms_rest_workers.front() == nullptr) {
             return true;
         }
-        if (!oms_rest_worker->reconcile_open_orders()) {
+        if (!oms_rest_workers.front()->reconcile_open_orders()) {
             set_error("Failed to reconcile open orders from REST");
             return false;
         }
@@ -948,8 +993,9 @@ namespace predex {
             if (oms_private_ws_worker != nullptr) {
                 const auto reconcile_request =
                     oms_private_ws_worker->take_reconciliation_request();
-                if (reconcile_request.has_value() && oms_rest_worker != nullptr) {
-                    oms_rest_worker->request_reconcile();
+                if (reconcile_request.has_value() && !oms_rest_workers.empty() &&
+                    oms_rest_workers.front() != nullptr) {
+                    oms_rest_workers.front()->request_reconcile();
                 }
             }
             if (result.code == predex::core::oms::kalshi::OmsProcessCode::kError) {
@@ -1160,10 +1206,13 @@ namespace predex {
             oms_thread.join();
         }
 
-        if (oms_rest_thread.joinable()) {
-            oms_rest_thread.request_stop();
-            oms_rest_thread.join();
+        for (auto& thread : oms_rest_threads) {
+            if (thread.joinable()) {
+                thread.request_stop();
+                thread.join();
+            }
         }
+        oms_rest_threads.clear();
 
         if (oms_private_ws_thread.joinable()) {
             oms_private_ws_thread.request_stop();

@@ -40,6 +40,23 @@ std::optional<std::string> get_env(const char* name) {
     return std::string(value);
 }
 
+std::optional<std::string> resolve_credential_env(std::string_view env_name) {
+    if (env_name == "KALSHI_KEY_ID") {
+        if (auto read_only_value = get_env("READ_ONLY_KALSHI_KEY_ID");
+            read_only_value.has_value()) {
+            return read_only_value;
+        }
+    } else if (env_name == "KALSHI_PRIVATE_KEY_PEM") {
+        if (auto read_only_value = get_env("READ_ONLY_KALSHI_PRIVATE_KEY_PEM");
+            read_only_value.has_value()) {
+            return read_only_value;
+        }
+    }
+
+    const std::string env_name_string{env_name};
+    return get_env(env_name_string.c_str());
+}
+
 std::optional<std::string> resolve_config_path(int argc, char** argv) {
     for (int index = 1; index < argc; ++index) {
         if (argv[index] == nullptr) {
@@ -214,7 +231,7 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         if (config.kalshi_ws.key_id.empty()) {
             const auto env_name = read_string(credentials, "key_id_env");
             if (!env_name.empty()) {
-                config.kalshi_ws.key_id = get_env(env_name.c_str()).value_or("");
+                config.kalshi_ws.key_id = resolve_credential_env(env_name).value_or("");
             }
         }
 
@@ -222,16 +239,16 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         if (config.kalshi_ws.private_key_pem.empty()) {
             const auto env_name = read_string(credentials, "private_key_pem_env");
             if (!env_name.empty()) {
-                config.kalshi_ws.private_key_pem = get_env(env_name.c_str()).value_or("");
+                config.kalshi_ws.private_key_pem = resolve_credential_env(env_name).value_or("");
             }
         }
     }
 
     if (config.kalshi_ws.key_id.empty()) {
-        config.kalshi_ws.key_id = get_env("KALSHI_KEY_ID").value_or("");
+        config.kalshi_ws.key_id = get_env("READ_ONLY_KALSHI_KEY_ID").value_or("");
     }
     if (config.kalshi_ws.private_key_pem.empty()) {
-        config.kalshi_ws.private_key_pem = get_env("KALSHI_PRIVATE_KEY_PEM").value_or("");
+        config.kalshi_ws.private_key_pem = get_env("READ_ONLY_KALSHI_PRIVATE_KEY_PEM").value_or("");
     }
 
     const auto pipeline_it = root.find("pipeline");
@@ -273,6 +290,9 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
             oms_transport, "private_ws_endpoint", config.oms_transport.private_ws_endpoint);
         config.oms_transport.private_ws_channels =
             read_string_array(oms_transport, "private_ws_channels");
+        config.oms_transport.rest_worker_count =
+            read_size(oms_transport, "rest_worker_count",
+                      config.oms_transport.rest_worker_count);
         if (config.oms_transport.enabled &&
             config.oms_transport.private_ws_channels.empty()) {
             config.oms_transport.private_ws_channels = {"user_orders"};

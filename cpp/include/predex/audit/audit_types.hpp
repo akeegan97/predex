@@ -39,6 +39,7 @@ struct AuditEvent {
     internal::TimestampNs submission_enqueued_ns{0};
     internal::TimestampNs oms_decision_ts_ns{0};
     internal::TimestampNs transport_submit_ts_ns{0};
+    internal::TimestampNs transport_response_recv_ns{0};
     internal::TimestampNs first_fill_recv_ns{0};
     internal::TimestampNs terminal_recv_ns{0};
     /*
@@ -48,6 +49,9 @@ struct AuditEvent {
     std::int64_t signal_to_submission_ns{0};
     std::int64_t submission_to_decision_ns{0};
     std::int64_t decision_to_transport_ns{0};
+    std::int64_t tick_to_transport_submit_ns{0};
+    std::int64_t transport_submit_to_response_ns{0};
+    std::int64_t tick_to_transport_response_ns{0};
     std::int64_t transport_to_first_fill_ns{0};
     std::int64_t tick_to_first_fill_ns{0};
     std::int64_t tick_to_terminal_ns{0};

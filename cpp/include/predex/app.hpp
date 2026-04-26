@@ -78,6 +78,7 @@ namespace predex{
         std::string rest_endpoint{"https://api.elections.kalshi.com"};
         std::string private_ws_endpoint{"wss://api.elections.kalshi.com/trade-api/ws/v2"};
         std::vector<std::string> private_ws_channels;
+        std::size_t rest_worker_count{4};
         std::int64_t max_session_loss_ticks{0};
         std::int64_t available_capital_ticks{0};
     };

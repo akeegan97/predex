@@ -141,7 +141,9 @@ class Oms {
                              std::uint8_t reject_reason,
                              internal::QtyLots qty_lots) noexcept;
     void emit_transport_audit(const ShardOrderCorrelation& corr,
-                              internal::TimestampNs transport_ts_ns,
+                              internal::TimestampNs oms_decision_ts_ns,
+                              internal::TimestampNs transport_submit_ts_ns,
+                              internal::TimestampNs transport_response_ts_ns,
                               std::uint8_t decision_code,
                               internal::QtyLots qty_lots,
                               internal::PriceTicks price_ticks) noexcept;

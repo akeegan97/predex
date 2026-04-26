@@ -2,8 +2,10 @@
 
 #include <atomic>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <stop_token>
+#include <string>
 #include <string_view>
 
 #include "predex/oms/oms_types.hpp"
@@ -27,6 +29,7 @@ struct RestWorkerConfig {
 
     std::function<std::optional<ReconcileOrderSeed>(std::string_view ticker)>
         ticker_seed_resolver;
+  std::string trace_output_path{"predex_rest_trace.jsonl"};
 };
 
 // Owns the blocking REST thread loop. Consumes OMS commands, calls the Kalshi
@@ -50,6 +53,7 @@ class RestWorker {
     RestWorkerQueues queues_{};
     KalshiRestAdapter adapter_;
     RestWorkerConfig config_{};
+    std::ofstream trace_output_;
     std::deque<KalshiToOmsEvent> pending_events_;
     std::atomic<bool> reconcile_requested_{false};
 
@@ -58,6 +62,8 @@ class RestWorker {
     [[nodiscard]] bool process_one_command();
     [[nodiscard]] bool handle_command(const OmsToKalshiCommand& command);
     [[nodiscard]] bool emit_event(const KalshiToOmsEvent& event);
+    void write_trace_record(const OmsToKalshiCommand& command,
+                const CommandResult& result) noexcept;
 };
 
 } // namespace predex::core::oms::kalshi::transport

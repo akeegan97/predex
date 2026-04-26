@@ -24,6 +24,13 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = net::ip::tcp;
 
+[[nodiscard]] internal::TimestampNs monotonic_now_ns() noexcept {
+    return static_cast<internal::TimestampNs>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
 constexpr std::size_t kHttpVersion = 11;
 
 void join_path_into(std::string& out, std::string_view base, std::string_view target) {
@@ -108,6 +115,9 @@ HttpResponse PersistentHttpSession::send_json_request(const HttpRequest& request
         return {
             .ok = false,
             .status_code = 0,
+            .retry_count = 0,
+            .request_sent_ts_ns = 0,
+            .response_recv_ts_ns = 0,
             .body = {},
             .error_message = endpoint_parse_error_,
             .keep_alive = false,
@@ -115,17 +125,21 @@ HttpResponse PersistentHttpSession::send_json_request(const HttpRequest& request
     }
 
     auto response = send_json_request_once_(request);
-    if(response.ok || response.error_message != "transport_retry") {
+    if (response.ok || response.error_message != "transport_retry") {
         return response;
     }
     auto retry_response = send_json_request_once_(request);
-    if(retry_response.ok || retry_response.error_message != "transport_retry") {
+    ++retry_response.retry_count;
+    if (retry_response.ok || retry_response.error_message != "transport_retry") {
         return retry_response;
     }
 
     return {
         .ok = false,
         .status_code = 0,
+        .retry_count = retry_response.retry_count,
+        .request_sent_ts_ns = retry_response.request_sent_ts_ns,
+        .response_recv_ts_ns = retry_response.response_recv_ts_ns,
         .body = {},
         .error_message = "transport_retry_failed",
         .keep_alive = false,
@@ -265,6 +279,9 @@ HttpResponse PersistentHttpSession::send_json_request_once_(const HttpRequest& r
         return {
             .ok = false,
             .status_code = 0,
+            .retry_count = 0,
+            .request_sent_ts_ns = 0,
+            .response_recv_ts_ns = 0,
             .body = {},
             .error_message = "transport_disconnected",
             .keep_alive = false,
@@ -304,11 +321,13 @@ HttpResponse PersistentHttpSession::send_json_request_once_(const HttpRequest& r
         auto& lowest = beast::get_lowest_layer(stream);
         lowest.expires_after(kIoTimeout);
         http::write(stream, raw_request);
+        const auto request_sent_ts_ns = monotonic_now_ns();
 
         beast::flat_buffer buffer;
         http::response<http::string_body> response;
         lowest.expires_after(kIoTimeout);
         http::read(stream, buffer, response);
+        const auto response_recv_ts_ns = monotonic_now_ns();
         lowest.expires_never();
 
         last_call_ts_ = std::chrono::steady_clock::now();
@@ -321,6 +340,9 @@ HttpResponse PersistentHttpSession::send_json_request_once_(const HttpRequest& r
         return {
             .ok = ok,
             .status_code = static_cast<int>(response.result_int()),
+            .retry_count = 0,
+            .request_sent_ts_ns = request_sent_ts_ns,
+            .response_recv_ts_ns = response_recv_ts_ns,
             .body = response.body(),
             .error_message = ok
                 ? std::string{}
@@ -332,6 +354,9 @@ HttpResponse PersistentHttpSession::send_json_request_once_(const HttpRequest& r
         return {
             .ok = false,
             .status_code = 0,
+            .retry_count = 0,
+            .request_sent_ts_ns = 0,
+            .response_recv_ts_ns = 0,
             .body = {},
             .error_message = "transport_retry",
             .keep_alive = false,

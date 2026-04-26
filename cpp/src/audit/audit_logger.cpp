@@ -89,12 +89,18 @@ void write_event_json(std::ofstream& output, const AuditEvent& event) {
             << ",\"submission_enqueued_ns\":" << event.submission_enqueued_ns
             << ",\"oms_decision_ts_ns\":" << event.oms_decision_ts_ns
             << ",\"transport_submit_ts_ns\":" << event.transport_submit_ts_ns
+            << ",\"transport_response_recv_ns\":" << event.transport_response_recv_ns
             << ",\"first_fill_recv_ns\":" << event.first_fill_recv_ns
             << ",\"terminal_recv_ns\":" << event.terminal_recv_ns
             << ",\"tick_to_signal_ns\":" << event.tick_to_signal_ns
             << ",\"signal_to_submission_ns\":" << event.signal_to_submission_ns
             << ",\"submission_to_decision_ns\":" << event.submission_to_decision_ns
             << ",\"decision_to_transport_ns\":" << event.decision_to_transport_ns
+            << ",\"tick_to_transport_submit_ns\":" << event.tick_to_transport_submit_ns
+            << ",\"transport_submit_to_response_ns\":"
+            << event.transport_submit_to_response_ns
+            << ",\"tick_to_transport_response_ns\":"
+            << event.tick_to_transport_response_ns
             << ",\"transport_to_first_fill_ns\":" << event.transport_to_first_fill_ns
             << ",\"tick_to_first_fill_ns\":" << event.tick_to_first_fill_ns
             << ",\"tick_to_terminal_ns\":" << event.tick_to_terminal_ns

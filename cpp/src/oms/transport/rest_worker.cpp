@@ -11,6 +11,72 @@ namespace {
 constexpr auto kIdleSleep = std::chrono::milliseconds{1};
 constexpr std::size_t kMaxPendingRestEvents = 4096;
 
+void append_json_escaped(std::ostream& output, std::string_view value) {
+    output.put('"');
+    for (const char car : value) {
+        switch (car) {
+            case '\\':
+                output << "\\\\";
+                break;
+            case '"':
+                output << "\\\"";
+                break;
+            case '\n':
+                output << "\\n";
+                break;
+            case '\r':
+                output << "\\r";
+                break;
+            case '\t':
+                output << "\\t";
+                break;
+            default:
+                output.put(car);
+                break;
+        }
+    }
+    output.put('"');
+}
+
+const char* command_kind_string(const OmsToKalshiCommand& command) noexcept {
+    return std::visit(
+        [](const auto& typed_command) -> const char* {
+            using T = std::decay_t<decltype(typed_command)>;
+            if constexpr (std::is_same_v<T, SubmitOrderCmd>) {
+                return "submit";
+            } else if constexpr (std::is_same_v<T, CancelOrderCmd>) {
+                return "cancel";
+            }
+            return "modify";
+        },
+        command);
+}
+
+const char* result_event_kind_string(const CommandResult& result) noexcept {
+    if (!result.event.has_value()) {
+        return "none";
+    }
+    return std::visit(
+        [](const auto& typed_event) -> const char* {
+            using T = std::decay_t<decltype(typed_event)>;
+            if constexpr (std::is_same_v<T, VenueOrderAck>) {
+                return "order_ack";
+            } else if constexpr (std::is_same_v<T, VenueOrderReject>) {
+                return "order_reject";
+            } else if constexpr (std::is_same_v<T, VenueCancelAck>) {
+                return "cancel_ack";
+            } else if constexpr (std::is_same_v<T, VenueCancelReject>) {
+                return "cancel_reject";
+            } else if constexpr (std::is_same_v<T, VenueModifyAck>) {
+                return "modify_ack";
+            } else if constexpr (std::is_same_v<T, VenueModifyReject>) {
+                return "modify_reject";
+            }
+            return "other";
+        },
+        *result.event);
+}
+
 [[nodiscard]] internal::TimestampNs monotonic_now_ns() {
     return static_cast<internal::TimestampNs>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -69,30 +135,39 @@ constexpr std::size_t kMaxPendingRestEvents = 4096;
     return qty_lots;
 }
 
-[[nodiscard]] KalshiToOmsEvent make_submit_reject_event(const SubmitOrderCmd& command) {
+[[nodiscard]] KalshiToOmsEvent make_submit_reject_event(const SubmitOrderCmd& command,
+                                                        const CommandResult& result) {
     return VenueOrderReject{
         .order = command.order,
-        .recv_ts_ns = monotonic_now_ns(),
+        .transport_submit_ts_ns = result.trace.request_sent_ts_ns,
+        .recv_ts_ns = result.trace.response_recv_ts_ns != 0 ? result.trace.response_recv_ts_ns
+                                                            : monotonic_now_ns(),
         .reason = VenueRejectReason::kUnknown,
         .raw_reason_code = "rest_submit_failed",
         .raw_reason_message = "REST submit failed",
     };
 }
 
-[[nodiscard]] KalshiToOmsEvent make_cancel_reject_event(const CancelOrderCmd& command) {
+[[nodiscard]] KalshiToOmsEvent make_cancel_reject_event(const CancelOrderCmd& command,
+                                                        const CommandResult& result) {
     return VenueCancelReject{
         .order = command.corr.order,
-        .recv_ts_ns = monotonic_now_ns(),
+        .transport_submit_ts_ns = result.trace.request_sent_ts_ns,
+        .recv_ts_ns = result.trace.response_recv_ts_ns != 0 ? result.trace.response_recv_ts_ns
+                                                            : monotonic_now_ns(),
         .reason = VenueRejectReason::kUnknown,
         .raw_reason_code = "rest_cancel_failed",
         .raw_reason_message = "REST cancel failed",
     };
 }
 
-[[nodiscard]] KalshiToOmsEvent make_modify_reject_event(const ModifyOrderCmd& command) {
+[[nodiscard]] KalshiToOmsEvent make_modify_reject_event(const ModifyOrderCmd& command,
+                                                        const CommandResult& result) {
     return VenueModifyReject{
         .order = command.corr.order,
-        .recv_ts_ns = monotonic_now_ns(),
+        .transport_submit_ts_ns = result.trace.request_sent_ts_ns,
+        .recv_ts_ns = result.trace.response_recv_ts_ns != 0 ? result.trace.response_recv_ts_ns
+                                                            : monotonic_now_ns(),
         .reason = VenueRejectReason::kUnknown,
         .raw_reason_code = "rest_modify_failed",
         .raw_reason_message = "REST modify failed",
@@ -119,7 +194,11 @@ constexpr std::size_t kMaxPendingRestEvents = 4096;
 RestWorker::RestWorker(RestWorkerQueues queues,
                        KalshiRestAdapter adapter,
                        RestWorkerConfig config)
-    : queues_(queues), adapter_(std::move(adapter)), config_(std::move(config)) {}
+    : queues_(queues), adapter_(std::move(adapter)), config_(std::move(config)) {
+    if (!config_.trace_output_path.empty()) {
+        trace_output_.open(config_.trace_output_path, std::ios::out | std::ios::trunc);
+    }
+}
 
 void RestWorker::run(const std::stop_token& stop_token) {
     while (!stop_token.stop_requested()) {
@@ -161,7 +240,7 @@ bool RestWorker::reconcile_open_orders() {
             if (config_.ticker_seed_resolver != nullptr) {
                 if (auto seed = config_.ticker_seed_resolver(snapshot.ticker);
                     seed.has_value()) {
-                    reconcile_event.context = std::move(seed->context);
+                    reconcile_event.context = seed->context;
                     reconcile_event.exchange = seed->exchange;
                     reconcile_event.side = seed->side;
                     reconcile_event.outcome = seed->outcome;
@@ -221,7 +300,7 @@ bool RestWorker::process_one_command() {
 
 bool RestWorker::handle_command(const OmsToKalshiCommand& command) {
     return std::visit(
-        [this](const auto& typed_command) -> bool {
+        [this, &command](const auto& typed_command) -> bool {
             auto result = [&]() {
                 using T = std::decay_t<decltype(typed_command)>;
                 if constexpr (std::is_same_v<T, SubmitOrderCmd>) {
@@ -232,6 +311,8 @@ bool RestWorker::handle_command(const OmsToKalshiCommand& command) {
                     return adapter_.modify_order(typed_command);
                 }
             }();
+
+            write_trace_record(command, result);
 
             if (result.event.has_value()) {
                 return enqueue_event(std::move(*result.event));
@@ -244,17 +325,17 @@ bool RestWorker::handle_command(const OmsToKalshiCommand& command) {
             KalshiToOmsEvent reject_event = [&]() -> KalshiToOmsEvent {
                 using T = std::decay_t<decltype(typed_command)>;
                 if constexpr (std::is_same_v<T, SubmitOrderCmd>) {
-                    auto event = make_submit_reject_event(typed_command);
+                    auto event = make_submit_reject_event(typed_command, result);
                     auto& reject = std::get<VenueOrderReject>(event);
                     reject.raw_reason_message = result.error_message;
                     return event;
                 } else if constexpr (std::is_same_v<T, CancelOrderCmd>) {
-                    auto event = make_cancel_reject_event(typed_command);
+                    auto event = make_cancel_reject_event(typed_command, result);
                     auto& reject = std::get<VenueCancelReject>(event);
                     reject.raw_reason_message = result.error_message;
                     return event;
                 } else {
-                    auto event = make_modify_reject_event(typed_command);
+                    auto event = make_modify_reject_event(typed_command, result);
                     auto& reject = std::get<VenueModifyReject>(event);
                     reject.raw_reason_message = result.error_message;
                     return event;
@@ -268,6 +349,70 @@ bool RestWorker::handle_command(const OmsToKalshiCommand& command) {
 
 bool RestWorker::emit_event(const KalshiToOmsEvent& event) {
     return enqueue_event(event);
+}
+
+void RestWorker::write_trace_record(const OmsToKalshiCommand& command,
+                                    const CommandResult& result) noexcept {
+    if (!trace_output_.is_open()) {
+        return;
+    }
+
+    trace_output_ << '{';
+    trace_output_ << "\"ts_ns\":" << monotonic_now_ns() << ',';
+    trace_output_ << "\"command\":";
+    append_json_escaped(trace_output_, command_kind_string(command));
+    trace_output_ << ",\"event_kind\":";
+    append_json_escaped(trace_output_, result_event_kind_string(result));
+    trace_output_ << ",\"ok\":" << (result.ok ? "true" : "false") << ',';
+    trace_output_ << "\"http_status_code\":" << result.trace.http_status_code << ',';
+    trace_output_ << "\"retry_count\":" << result.trace.retry_count << ',';
+    trace_output_ << "\"request_sent_ts_ns\":" << result.trace.request_sent_ts_ns << ',';
+    trace_output_ << "\"response_recv_ts_ns\":" << result.trace.response_recv_ts_ns << ',';
+    trace_output_ << "\"request_target\":";
+    append_json_escaped(trace_output_, result.trace.request_target);
+    trace_output_ << ",\"request_body\":";
+    append_json_escaped(trace_output_, result.trace.request_body);
+    trace_output_ << ",\"response_body\":";
+    append_json_escaped(trace_output_, result.trace.response_body);
+    trace_output_ << ",\"error_message\":";
+    append_json_escaped(trace_output_,
+                        result.trace.error_message.empty() ? result.error_message
+                                                           : result.trace.error_message);
+
+    std::visit(
+        [this](const auto& typed_command) {
+            using T = std::decay_t<decltype(typed_command)>;
+            if constexpr (std::is_same_v<T, SubmitOrderCmd>) {
+                trace_output_ << ",\"oms_request_id\":" << typed_command.order.oms_request_id;
+                trace_output_ << ",\"client_order_id\":";
+                append_json_escaped(trace_output_, typed_command.order.client_order_id.value);
+                trace_output_ << ",\"exchange_order_id\":\"\"";
+                trace_output_ << ",\"market_ticker\":";
+                append_json_escaped(trace_output_, typed_command.market_ticker);
+            } else if constexpr (std::is_same_v<T, CancelOrderCmd>) {
+                trace_output_ << ",\"oms_request_id\":" << typed_command.corr.order.oms_request_id;
+                trace_output_ << ",\"client_order_id\":";
+                append_json_escaped(trace_output_, typed_command.corr.order.client_order_id.value);
+                trace_output_ << ",\"exchange_order_id\":";
+                append_json_escaped(trace_output_, typed_command.corr.order.exchange_order_id.has_value()
+                                                       ? typed_command.corr.order.exchange_order_id->value
+                                                       : std::string_view{});
+                trace_output_ << ",\"market_ticker\":\"\"";
+            } else {
+                trace_output_ << ",\"oms_request_id\":" << typed_command.corr.order.oms_request_id;
+                trace_output_ << ",\"client_order_id\":";
+                append_json_escaped(trace_output_, typed_command.corr.order.client_order_id.value);
+                trace_output_ << ",\"exchange_order_id\":";
+                append_json_escaped(trace_output_, typed_command.corr.order.exchange_order_id.has_value()
+                                                       ? typed_command.corr.order.exchange_order_id->value
+                                                       : std::string_view{});
+                trace_output_ << ",\"market_ticker\":\"\"";
+            }
+        },
+        command);
+
+    trace_output_ << "}\n";
+    trace_output_.flush();
 }
 
 } // namespace predex::core::oms::kalshi::transport

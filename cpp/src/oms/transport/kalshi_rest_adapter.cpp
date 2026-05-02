@@ -57,6 +57,17 @@ namespace {
     return {};
 }
 
+[[nodiscard]] VenueRejectReason venue_reject_reason_for_response(
+    const HttpResponse& response) noexcept {
+    if (response.status_code == 429) {
+        return VenueRejectReason::kRateLimit;
+    }
+    if (response.status_code >= 500 && response.status_code < 600) {
+        return VenueRejectReason::kVenueDown;
+    }
+    return VenueRejectReason::kUnknown;
+}
+
 void append_json_escaped(std::string& out, std::string_view value) {
     out.push_back('"');
     for (const char car : value) {
@@ -239,6 +250,63 @@ KalshiRestAdapter::KalshiRestAdapter(PersistentHttpSession session)
     : session_(std::move(session)) {}
 
 CommandResult KalshiRestAdapter::submit_order(const SubmitOrderCmd& command) {
+    const auto prepared = prepare_submit_order(command);
+    if (!prepared.ok) {
+        return {.ok = false, .error_message = prepared.error_message};
+    }
+    const auto response = session_.send_json_request(prepared.request);
+    RestTraceInfo trace = prepared.trace;
+    trace.http_status_code = response.status_code;
+    trace.retry_count = response.retry_count;
+    trace.request_sent_ts_ns = response.request_sent_ts_ns;
+    trace.response_recv_ts_ns = response.response_recv_ts_ns;
+    trace.response_body = response.body;
+    trace.error_message = response.error_message;
+    return parse_submit_response_(response, command, std::move(trace));
+}
+
+CommandResult KalshiRestAdapter::cancel_order(const CancelOrderCmd& command) {
+    const auto prepared = prepare_cancel_order(command);
+    if (!prepared.ok) {
+        return {.ok = false, .error_message = prepared.error_message};
+    }
+    const auto response = session_.send_json_request(prepared.request);
+    RestTraceInfo trace = prepared.trace;
+    trace.http_status_code = response.status_code;
+    trace.retry_count = response.retry_count;
+    trace.request_sent_ts_ns = response.request_sent_ts_ns;
+    trace.response_recv_ts_ns = response.response_recv_ts_ns;
+    trace.response_body = response.body;
+    trace.error_message = response.error_message;
+    return parse_cancel_response_(response, command, std::move(trace));
+}
+
+CommandResult KalshiRestAdapter::modify_order(const ModifyOrderCmd& command) {
+    const auto prepared = prepare_modify_order(command);
+    if (!prepared.ok) {
+        return {.ok = false, .error_message = prepared.error_message};
+    }
+    const auto response = session_.send_json_request(prepared.request);
+    RestTraceInfo trace = prepared.trace;
+    trace.http_status_code = response.status_code;
+    trace.retry_count = response.retry_count;
+    trace.request_sent_ts_ns = response.request_sent_ts_ns;
+    trace.response_recv_ts_ns = response.response_recv_ts_ns;
+    trace.response_body = response.body;
+    trace.error_message = response.error_message;
+    return parse_modify_response_(response, command, std::move(trace));
+}
+
+OpenOrdersPage KalshiRestAdapter::fetch_open_orders(std::size_t limit,
+                                                    std::optional<std::string> cursor) {
+    const auto response = session_.send_json_request(HttpRequest{
+        .method = HttpMethod::kGet,
+        .target = build_open_orders_target_(limit, cursor),
+    });
+    return parse_open_orders_response_(response);
+}
+
+PreparedCommandRequest KalshiRestAdapter::prepare_submit_order(const SubmitOrderCmd& command) const {
     if (command.market_ticker.empty()) {
         return {.ok = false, .error_message = "market_ticker is required for submit"};
     }
@@ -262,53 +330,41 @@ CommandResult KalshiRestAdapter::submit_order(const SubmitOrderCmd& command) {
     build_submit_body(command, action, outcome_side, tif, price_field, body_scratch);
 
     const auto target = build_submit_target_();
-    const auto response = session_.send_json_request(HttpRequest{
-        .method = HttpMethod::kPost,
-        .target = target,
-        .body = body_scratch,
-    });
-    return parse_submit_response_(
-        response,
-        command,
-        RestTraceInfo{
+    return PreparedCommandRequest{
+        .ok = true,
+        .request = HttpRequest{
+            .method = HttpMethod::kPost,
+            .target = target,
+            .body = body_scratch,
+        },
+        .trace = RestTraceInfo{
             .request_target = target,
             .request_body = body_scratch,
-            .http_status_code = response.status_code,
-            .retry_count = response.retry_count,
-            .request_sent_ts_ns = response.request_sent_ts_ns,
-            .response_recv_ts_ns = response.response_recv_ts_ns,
-            .response_body = response.body,
-            .error_message = response.error_message,
-        });
+        },
+    };
 }
 
-CommandResult KalshiRestAdapter::cancel_order(const CancelOrderCmd& command) {
+PreparedCommandRequest KalshiRestAdapter::prepare_cancel_order(const CancelOrderCmd& command) const {
     if (!command.corr.order.exchange_order_id.has_value() ||
         command.corr.order.exchange_order_id->value.empty()) {
         return {.ok = false, .error_message = "exchange order id required for cancel"};
     }
 
     const auto target = build_cancel_target_(*command.corr.order.exchange_order_id);
-    const auto response = session_.send_json_request(HttpRequest{
-        .method = HttpMethod::kDelete,
-        .target = target,
-    });
-    return parse_cancel_response_(
-        response,
-        command,
-        RestTraceInfo{
+    return PreparedCommandRequest{
+        .ok = true,
+        .request = HttpRequest{
+            .method = HttpMethod::kDelete,
+            .target = target,
+        },
+        .trace = RestTraceInfo{
             .request_target = target,
             .request_body = {},
-            .http_status_code = response.status_code,
-            .retry_count = response.retry_count,
-            .request_sent_ts_ns = response.request_sent_ts_ns,
-            .response_recv_ts_ns = response.response_recv_ts_ns,
-            .response_body = response.body,
-            .error_message = response.error_message,
-        });
+        },
+    };
 }
 
-CommandResult KalshiRestAdapter::modify_order(const ModifyOrderCmd& command) {
+PreparedCommandRequest KalshiRestAdapter::prepare_modify_order(const ModifyOrderCmd& command) const {
     if (!command.corr.order.exchange_order_id.has_value() ||
         command.corr.order.exchange_order_id->value.empty()) {
         return {.ok = false, .error_message = "exchange order id required for amend"};
@@ -332,37 +388,55 @@ CommandResult KalshiRestAdapter::modify_order(const ModifyOrderCmd& command) {
     build_modify_body(command, action, outcome_side, price_field, body_scratch);
 
     const auto target = build_modify_target_(*command.corr.order.exchange_order_id);
-    const auto response = session_.send_json_request(HttpRequest{
-        .method = HttpMethod::kPost,
-        .target = target,
-        .body = body_scratch,
-    });
-    return parse_modify_response_(
-        response,
-        command,
-        RestTraceInfo{
+    return PreparedCommandRequest{
+        .ok = true,
+        .request = HttpRequest{
+            .method = HttpMethod::kPost,
+            .target = target,
+            .body = body_scratch,
+        },
+        .trace = RestTraceInfo{
             .request_target = target,
             .request_body = body_scratch,
-            .http_status_code = response.status_code,
-            .retry_count = response.retry_count,
-            .request_sent_ts_ns = response.request_sent_ts_ns,
-            .response_recv_ts_ns = response.response_recv_ts_ns,
-            .response_body = response.body,
-            .error_message = response.error_message,
-        });
+        },
+    };
 }
 
-OpenOrdersPage KalshiRestAdapter::fetch_open_orders(std::size_t limit,
-                                                    std::optional<std::string> cursor) {
-    const auto response = session_.send_json_request(HttpRequest{
-        .method = HttpMethod::kGet,
-        .target = build_open_orders_target_(limit, cursor),
-    });
-    return parse_open_orders_response_(response);
+CommandResult KalshiRestAdapter::complete_submit_order(const SubmitOrderCmd& command,
+                                                       const HttpResponse& response,
+                                                       RestTraceInfo trace) const {
+    return parse_submit_response_(response, command, std::move(trace));
+}
+
+CommandResult KalshiRestAdapter::complete_cancel_order(const CancelOrderCmd& command,
+                                                       const HttpResponse& response,
+                                                       RestTraceInfo trace) const {
+    return parse_cancel_response_(response, command, std::move(trace));
+}
+
+CommandResult KalshiRestAdapter::complete_modify_order(const ModifyOrderCmd& command,
+                                                       const HttpResponse& response,
+                                                       RestTraceInfo trace) const {
+    return parse_modify_response_(response, command, std::move(trace));
+}
+
+bool KalshiRestAdapter::start_prepared_request(const PreparedCommandRequest& request) {
+    if (!request.ok) {
+        return false;
+    }
+    return session_.start_json_request(request.request);
+}
+
+AsyncHttpPollResult KalshiRestAdapter::poll_active_request() {
+    return session_.poll_json_request();
 }
 
 void KalshiRestAdapter::check_and_keep_warm(std::uint64_t threshold_seconds) {
     session_.check_and_keep_warm(threshold_seconds);
+}
+
+void KalshiRestAdapter::close() noexcept {
+    session_.close();
 }
 
 std::string KalshiRestAdapter::build_submit_target_() {
@@ -392,7 +466,24 @@ CommandResult KalshiRestAdapter::parse_submit_response_(const HttpResponse& resp
                                                         const SubmitOrderCmd& command,
                                                         RestTraceInfo trace) {
     if (!response.ok) {
-        return {.ok = false, .error_message = response.error_message, .trace = std::move(trace)};
+        CommandResult result{
+            .ok = false,
+            .error_message = response.error_message,
+            .trace = std::move(trace),
+        };
+        if (response.status_code != 0) {
+            result.event = VenueOrderReject{
+                .order = command.order,
+                .transport_submit_ts_ns = result.trace.request_sent_ts_ns,
+                .recv_ts_ns = result.trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(response.status_code),
+                .retry_count = static_cast<std::uint16_t>(response.retry_count),
+                .reason = venue_reject_reason_for_response(response),
+                .raw_reason_code = std::to_string(response.status_code),
+                .raw_reason_message = response.body,
+            };
+        }
+        return result;
     }
 
     try {
@@ -417,6 +508,8 @@ CommandResult KalshiRestAdapter::parse_submit_response_(const HttpResponse& resp
                 .order = std::move(order),
                 .transport_submit_ts_ns = trace.request_sent_ts_ns,
                 .recv_ts_ns = trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+                .retry_count = static_cast<std::uint16_t>(trace.retry_count),
                 .accepted_qty_lots = command.intent.qty_lots,
             },
             .trace = std::move(trace),
@@ -431,7 +524,24 @@ CommandResult KalshiRestAdapter::parse_cancel_response_(const HttpResponse& resp
                                                         const CancelOrderCmd& command,
                                                         RestTraceInfo trace) {
     if (!response.ok) {
-        return {.ok = false, .error_message = response.error_message, .trace = std::move(trace)};
+        CommandResult result{
+            .ok = false,
+            .error_message = response.error_message,
+            .trace = std::move(trace),
+        };
+        if (response.status_code != 0) {
+            result.event = VenueCancelReject{
+                .order = command.corr.order,
+                .transport_submit_ts_ns = result.trace.request_sent_ts_ns,
+                .recv_ts_ns = result.trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(response.status_code),
+                .retry_count = static_cast<std::uint16_t>(response.retry_count),
+                .reason = venue_reject_reason_for_response(response),
+                .raw_reason_code = std::to_string(response.status_code),
+                .raw_reason_message = response.body,
+            };
+        }
+        return result;
     }
 
     return {
@@ -440,6 +550,8 @@ CommandResult KalshiRestAdapter::parse_cancel_response_(const HttpResponse& resp
             .order = command.corr.order,
             .transport_submit_ts_ns = trace.request_sent_ts_ns,
             .recv_ts_ns = trace.response_recv_ts_ns,
+            .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+            .retry_count = static_cast<std::uint16_t>(trace.retry_count),
         },
         .trace = std::move(trace),
     };
@@ -449,7 +561,24 @@ CommandResult KalshiRestAdapter::parse_modify_response_(const HttpResponse& resp
                                                         const ModifyOrderCmd& command,
                                                         RestTraceInfo trace) {
     if (!response.ok) {
-        return {.ok = false, .error_message = response.error_message, .trace = std::move(trace)};
+        CommandResult result{
+            .ok = false,
+            .error_message = response.error_message,
+            .trace = std::move(trace),
+        };
+        if (response.status_code != 0) {
+            result.event = VenueModifyReject{
+                .order = command.corr.order,
+                .transport_submit_ts_ns = result.trace.request_sent_ts_ns,
+                .recv_ts_ns = result.trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(response.status_code),
+                .retry_count = static_cast<std::uint16_t>(response.retry_count),
+                .reason = venue_reject_reason_for_response(response),
+                .raw_reason_code = std::to_string(response.status_code),
+                .raw_reason_message = response.body,
+            };
+        }
+        return result;
     }
 
     OmsOrderRef order = command.corr.order;
@@ -461,6 +590,8 @@ CommandResult KalshiRestAdapter::parse_modify_response_(const HttpResponse& resp
             .order = std::move(order),
             .transport_submit_ts_ns = trace.request_sent_ts_ns,
             .recv_ts_ns = trace.response_recv_ts_ns,
+            .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+            .retry_count = static_cast<std::uint16_t>(trace.retry_count),
             .working_qty_lots = command.replacement.qty_lots,
             .working_price_ticks = command.replacement.limit_price_ticks,
         },

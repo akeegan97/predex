@@ -105,7 +105,8 @@ class Oms {
 
     [[nodiscard]] OmsProcessCode handle_shard_request(const ShardOmsRequest& request) noexcept;
     [[nodiscard]] OmsProcessCode handle_new_order_intent(
-        const NewOrderIntent& intent) noexcept;
+        const NewOrderIntent& intent,
+        std::optional<GroupExecutionPolicy> group_execution_policy = std::nullopt) noexcept;
     [[nodiscard]] OmsProcessCode handle_group_order_intent(
         const GroupOrderIntent& intent) noexcept;
     [[nodiscard]] OmsProcessCode handle_cancel_order_intent(
@@ -145,6 +146,8 @@ class Oms {
                               internal::TimestampNs transport_submit_ts_ns,
                               internal::TimestampNs transport_response_ts_ns,
                               std::uint8_t decision_code,
+                              std::uint16_t transport_http_status,
+                              std::uint16_t transport_retry_count,
                               internal::QtyLots qty_lots,
                               internal::PriceTicks price_ticks) noexcept;
     void emit_lifecycle_audit(const ShardOrderCorrelation& corr,

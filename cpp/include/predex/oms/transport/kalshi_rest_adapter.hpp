@@ -52,6 +52,13 @@ struct CommandResult {
     RestTraceInfo trace{};
 };
 
+struct PreparedCommandRequest {
+    bool ok{false};
+    HttpRequest request{};
+    RestTraceInfo trace{};
+    std::string error_message;
+};
+
 // Kalshi-specific request/response translation layer. This owns endpoint paths,
 // JSON payload shaping, and response parsing, but delegates raw HTTPS I/O to the
 // persistent session below it.
@@ -67,7 +74,24 @@ class KalshiRestAdapter {
         std::size_t limit = kDefaultOpenOrderFetchLimit,
         std::optional<std::string> cursor = std::nullopt);
 
+    [[nodiscard]] PreparedCommandRequest prepare_submit_order(const SubmitOrderCmd& command) const;
+    [[nodiscard]] PreparedCommandRequest prepare_cancel_order(const CancelOrderCmd& command) const;
+    [[nodiscard]] PreparedCommandRequest prepare_modify_order(const ModifyOrderCmd& command) const;
+    [[nodiscard]] CommandResult complete_submit_order(const SubmitOrderCmd& command,
+                                                      const HttpResponse& response,
+                                                      RestTraceInfo trace) const;
+    [[nodiscard]] CommandResult complete_cancel_order(const CancelOrderCmd& command,
+                                                      const HttpResponse& response,
+                                                      RestTraceInfo trace) const;
+    [[nodiscard]] CommandResult complete_modify_order(const ModifyOrderCmd& command,
+                                                      const HttpResponse& response,
+                                                      RestTraceInfo trace) const;
+
+    [[nodiscard]] bool start_prepared_request(const PreparedCommandRequest& request);
+    [[nodiscard]] AsyncHttpPollResult poll_active_request();
+
     void check_and_keep_warm(std::uint64_t threshold_seconds);
+    void close() noexcept;
 
   private:
     PersistentHttpSession session_;

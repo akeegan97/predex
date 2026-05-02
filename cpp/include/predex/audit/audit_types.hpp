@@ -31,6 +31,8 @@ struct AuditEvent {
     std::uint64_t oms_request_id{0};
     std::uint64_t frame_seq{0};
     std::uint32_t frame_sid{0};
+    std::uint16_t transport_http_status{0};
+    std::uint16_t transport_retry_count{0};
     /*
     Latency tracking fields
     */

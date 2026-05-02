@@ -50,6 +50,8 @@ struct TransportAuditSample {
     internal::TimestampNs submit_ts_ns{0};
     internal::TimestampNs response_ts_ns{0};
     std::uint8_t decision_code{0};
+    std::uint16_t transport_http_status{0};
+    std::uint16_t transport_retry_count{0};
     internal::QtyLots qty_lots{0};
     internal::PriceTicks price_ticks{0};
 };
@@ -71,6 +73,8 @@ struct TransportAuditSample {
                     .submit_ts_ns = typed_event.transport_submit_ts_ns,
                     .response_ts_ns = typed_event.recv_ts_ns,
                     .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
                     .qty_lots = typed_event.accepted_qty_lots,
                     .price_ticks = previous_working_price.value_or(0),
                 };
@@ -78,7 +82,9 @@ struct TransportAuditSample {
                 return TransportAuditSample{
                     .submit_ts_ns = typed_event.transport_submit_ts_ns,
                     .response_ts_ns = typed_event.recv_ts_ns,
-                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
                     .qty_lots = previous_working_qty,
                     .price_ticks = previous_working_price.value_or(0),
                 };
@@ -87,7 +93,11 @@ struct TransportAuditSample {
                 return TransportAuditSample{
                     .submit_ts_ns = typed_event.transport_submit_ts_ns,
                     .response_ts_ns = typed_event.recv_ts_ns,
-                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .decision_code = static_cast<std::uint8_t>(
+                        std::is_same_v<T, VenueCancelReject> ? DecisionAuditCode::kRejected
+                                                             : DecisionAuditCode::kModified),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
                     .qty_lots = previous_working_qty,
                     .price_ticks = previous_working_price.value_or(0),
                 };
@@ -96,6 +106,8 @@ struct TransportAuditSample {
                     .submit_ts_ns = typed_event.transport_submit_ts_ns,
                     .response_ts_ns = typed_event.recv_ts_ns,
                     .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
                     .qty_lots = typed_event.working_qty_lots,
                     .price_ticks = typed_event.working_price_ticks.value_or(
                         previous_working_price.value_or(0)),
@@ -104,7 +116,9 @@ struct TransportAuditSample {
                 return TransportAuditSample{
                     .submit_ts_ns = typed_event.transport_submit_ts_ns,
                     .response_ts_ns = typed_event.recv_ts_ns,
-                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
                     .qty_lots = previous_working_qty,
                     .price_ticks = previous_working_price.value_or(0),
                 };
@@ -270,7 +284,9 @@ OmsProcessCode Oms::process_one_kalshi_event() noexcept {
     return handle_kalshi_event(event);
 }
 
-OmsProcessCode Oms::handle_new_order_intent(const NewOrderIntent& intent) noexcept {
+OmsProcessCode Oms::handle_new_order_intent(
+    const NewOrderIntent& intent,
+    std::optional<GroupExecutionPolicy> group_execution_policy) noexcept {
     if (halt_mode_.load(std::memory_order_acquire) >= static_cast<std::uint8_t>(HaltMode::kSoft)) {
         const auto now_ns = monotonic_now_ns();
         emit_decision_audit(
@@ -345,6 +361,7 @@ OmsProcessCode Oms::handle_new_order_intent(const NewOrderIntent& intent) noexce
             .order = order,
             .intent = intent,
             .market_ticker = market_ticker,
+            .group_execution_policy = group_execution_policy,
         }})) {
         return OmsProcessCode::kVenueBackpressure;
     }
@@ -357,7 +374,8 @@ OmsProcessCode Oms::handle_new_order_intent(const NewOrderIntent& intent) noexce
 
 OmsProcessCode Oms::handle_group_order_intent(const GroupOrderIntent& intent) noexcept {
     for (std::size_t leg_index = 0; leg_index < intent.leg_count; ++leg_index) {
-        const auto code = handle_new_order_intent(intent.legs[leg_index]);
+        const auto code =
+            handle_new_order_intent(intent.legs[leg_index], intent.execution_policy);
         if (code != OmsProcessCode::kProcessedShardRequest &&
             code != OmsProcessCode::kIdle) {
             return code;
@@ -603,6 +621,8 @@ OmsProcessCode Oms::handle_kalshi_event(const SourcedKalshiEvent& event) noexcep
                                                         : pre_state->venue_submit_ts_ns,
                     transport_sample->response_ts_ns,
                     transport_sample->decision_code,
+                    transport_sample->transport_http_status,
+                    transport_sample->transport_retry_count,
                     transport_sample->qty_lots,
                     transport_sample->price_ticks);
             }
@@ -862,6 +882,8 @@ void Oms::emit_transport_audit(const ShardOrderCorrelation& corr,
                                internal::TimestampNs transport_submit_ts_ns,
                                internal::TimestampNs transport_response_ts_ns,
                                std::uint8_t decision_code,
+                               std::uint16_t transport_http_status,
+                               std::uint16_t transport_retry_count,
                                internal::QtyLots qty_lots,
                                internal::PriceTicks price_ticks) noexcept {
     ++emitted_transport_count_;
@@ -873,6 +895,8 @@ void Oms::emit_transport_audit(const ShardOrderCorrelation& corr,
         .group_id = corr.context.group_intent_id,
         .local_intent_id = corr.context.local_intent_id,
         .oms_request_id = corr.order.oms_request_id,
+        .transport_http_status = transport_http_status,
+        .transport_retry_count = transport_retry_count,
         .tick_recv_ns = corr.context.tick_recv_ns,
         .signal_ts_ns = corr.context.signal_ts_ns,
         .submission_enqueued_ns = corr.context.submission_enqueued_ns,

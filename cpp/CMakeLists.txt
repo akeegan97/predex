@@ -20,11 +20,10 @@ add_library(
   src/websocket/session.cpp
   src/websocket/kalshi/auth_signer.cpp
   src/websocket/kalshi/ws_adapter.cpp
+  src/oms/gateway/async_rest_connection.cpp
   src/oms/transport/persistent_http_session.cpp
   src/oms/transport/kalshi_rest_adapter.cpp
-  src/oms/transport/rest_worker.cpp
   src/oms/transport/kalshi_private_ws_adapter.cpp
-  src/oms/transport/private_ws_worker.cpp
 )
 
 add_library(predex::websocket ALIAS predex_websocket)

@@ -61,6 +61,8 @@ void write_event_json(std::ofstream& output, const AuditEvent& event) {
             << "\"oms_request_id\":" << event.oms_request_id << ','
             << "\"frame_seq\":" << event.frame_seq << ','
             << "\"frame_sid\":" << event.frame_sid << ','
+            << "\"transport_http_status\":" << event.transport_http_status << ','
+            << "\"transport_retry_count\":" << event.transport_retry_count << ','
             << "\"exchange\":" << static_cast<unsigned>(event.exchange) << ','
             << "\"event_id\":" << event.event_id << ','
             << "\"market_id\":" << event.market_id << ','

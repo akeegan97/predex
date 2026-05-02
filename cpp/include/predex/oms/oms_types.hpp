@@ -224,6 +224,7 @@ struct SubmitOrderCmd {
     OmsOrderRef order{};
     NewOrderIntent intent{};
     std::string market_ticker;
+    std::optional<GroupExecutionPolicy> group_execution_policy;
 };
 
 struct CancelOrderCmd {
@@ -249,6 +250,8 @@ struct VenueOrderAck {
     OmsOrderRef order{};
     internal::TimestampNs transport_submit_ts_ns{0};
     internal::TimestampNs recv_ts_ns{0};
+    std::uint16_t http_status_code{0};
+    std::uint16_t retry_count{0};
     internal::QtyLots accepted_qty_lots{0};
 };
 
@@ -256,6 +259,8 @@ struct VenueOrderReject {
     OmsOrderRef order{};
     internal::TimestampNs transport_submit_ts_ns{0};
     internal::TimestampNs recv_ts_ns{0};
+    std::uint16_t http_status_code{0};
+    std::uint16_t retry_count{0};
     VenueRejectReason reason{VenueRejectReason::kNone};
     std::string raw_reason_code;
     std::string raw_reason_message;
@@ -281,12 +286,16 @@ struct VenueCancelAck {
     OmsOrderRef order{};
     internal::TimestampNs transport_submit_ts_ns{0};
     internal::TimestampNs recv_ts_ns{0};
+    std::uint16_t http_status_code{0};
+    std::uint16_t retry_count{0};
 };
 
 struct VenueCancelReject {
     OmsOrderRef order{};
     internal::TimestampNs transport_submit_ts_ns{0};
     internal::TimestampNs recv_ts_ns{0};
+    std::uint16_t http_status_code{0};
+    std::uint16_t retry_count{0};
     VenueRejectReason reason{VenueRejectReason::kNone};
     std::string raw_reason_code;
     std::string raw_reason_message;
@@ -296,6 +305,8 @@ struct VenueModifyAck {
     OmsOrderRef order{};
     internal::TimestampNs transport_submit_ts_ns{0};
     internal::TimestampNs recv_ts_ns{0};
+    std::uint16_t http_status_code{0};
+    std::uint16_t retry_count{0};
     internal::QtyLots working_qty_lots{0};
     std::optional<internal::PriceTicks> working_price_ticks;
 };
@@ -304,6 +315,8 @@ struct VenueModifyReject {
     OmsOrderRef order{};
     internal::TimestampNs transport_submit_ts_ns{0};
     internal::TimestampNs recv_ts_ns{0};
+    std::uint16_t http_status_code{0};
+    std::uint16_t retry_count{0};
     VenueRejectReason reason{VenueRejectReason::kNone};
     std::string raw_reason_code;
     std::string raw_reason_message;

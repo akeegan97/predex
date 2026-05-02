@@ -1,12 +1,10 @@
 #pragma once
 
-#include <atomic>
-#include <deque>
-#include <fstream>
 #include <functional>
-#include <stop_token>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include "predex/oms/oms_types.hpp"
 #include "predex/oms/transport/kalshi_rest_adapter.hpp"
@@ -27,43 +25,33 @@ struct RestWorkerConfig {
         Outcome outcome{Outcome::kYes};
     };
 
-    std::function<std::optional<ReconcileOrderSeed>(std::string_view ticker)>
-        ticker_seed_resolver;
-  std::string trace_output_path{"predex_rest_trace.jsonl"};
+    std::function<std::optional<ReconcileOrderSeed>(std::string_view)> ticker_seed_resolver;
+    std::string trace_output_path{"predex_rest_trace.jsonl"};
 };
 
-// Owns the blocking REST thread loop. Consumes OMS commands, calls the Kalshi
-// REST adapter, and emits normalized venue events back toward OMS.
+// Temporary compatibility stub while the new gateway runtime replaces the old
+// worker-based transport implementation.
 class RestWorker {
   public:
     explicit RestWorker(RestWorkerQueues queues,
                         KalshiRestAdapter adapter,
-                        RestWorkerConfig config = {});
+                        RestWorkerConfig config = {})
+        : queues_(queues), adapter_(std::move(adapter)), config_(std::move(config)) {}
 
-    void run(const std::stop_token& stop_token);
-    void request_reconcile() noexcept;
+    void run(const std::stop_token& stop_token) {
+        while (!stop_token.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        }
+    }
 
-    // REST-side reconciliation hook. OMS/transport control can trigger this
-    // when reconnect or sequence repair requires a fresh open-order snapshot.
-    // Intended to be invoked only by the control path that owns this worker's
-    // lifecycle / thread coordination; not safe as a general concurrent API.
-    [[nodiscard]] bool reconcile_open_orders();
+    [[nodiscard]] bool reconcile_open_orders() { return true; }
+
+    void request_reconcile() noexcept {}
 
   private:
     RestWorkerQueues queues_{};
     KalshiRestAdapter adapter_;
     RestWorkerConfig config_{};
-    std::ofstream trace_output_;
-    std::deque<KalshiToOmsEvent> pending_events_;
-    std::atomic<bool> reconcile_requested_{false};
-
-    [[nodiscard]] bool flush_pending_events();
-    [[nodiscard]] bool enqueue_event(KalshiToOmsEvent event);
-    [[nodiscard]] bool process_one_command();
-    [[nodiscard]] bool handle_command(const OmsToKalshiCommand& command);
-    [[nodiscard]] bool emit_event(const KalshiToOmsEvent& event);
-    void write_trace_record(const OmsToKalshiCommand& command,
-                const CommandResult& result) noexcept;
 };
 
 } // namespace predex::core::oms::kalshi::transport

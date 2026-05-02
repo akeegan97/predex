@@ -48,6 +48,7 @@ struct RestTraceInfo {
 struct CommandResult {
     bool ok{false};
     std::optional<KalshiToOmsEvent> event;
+    std::vector<KalshiToOmsEvent> events;
     std::string error_message;
     RestTraceInfo trace{};
 };
@@ -75,11 +76,17 @@ class KalshiRestAdapter {
         std::optional<std::string> cursor = std::nullopt);
 
     [[nodiscard]] PreparedCommandRequest prepare_submit_order(const SubmitOrderCmd& command) const;
+    [[nodiscard]] PreparedCommandRequest prepare_batched_submit_orders(
+        const std::vector<SubmitOrderCmd>& commands) const;
     [[nodiscard]] PreparedCommandRequest prepare_cancel_order(const CancelOrderCmd& command) const;
     [[nodiscard]] PreparedCommandRequest prepare_modify_order(const ModifyOrderCmd& command) const;
     [[nodiscard]] CommandResult complete_submit_order(const SubmitOrderCmd& command,
                                                       const HttpResponse& response,
                                                       RestTraceInfo trace) const;
+    [[nodiscard]] CommandResult complete_batched_submit_orders(
+        const std::vector<SubmitOrderCmd>& commands,
+        const HttpResponse& response,
+        RestTraceInfo trace) const;
     [[nodiscard]] CommandResult complete_cancel_order(const CancelOrderCmd& command,
                                                       const HttpResponse& response,
                                                       RestTraceInfo trace) const;
@@ -97,6 +104,7 @@ class KalshiRestAdapter {
     PersistentHttpSession session_;
 
     [[nodiscard]] static std::string build_submit_target_();
+    [[nodiscard]] static std::string build_batched_submit_target_();
     [[nodiscard]] static std::string build_cancel_target_(
         const ExchangeOrderId& exchange_order_id);
     [[nodiscard]] static std::string build_modify_target_(
@@ -108,6 +116,10 @@ class KalshiRestAdapter {
     [[nodiscard]] static CommandResult parse_submit_response_(
         const HttpResponse& response,
         const SubmitOrderCmd& command,
+        RestTraceInfo trace);
+    [[nodiscard]] static CommandResult parse_batched_submit_response_(
+        const HttpResponse& response,
+        const std::vector<SubmitOrderCmd>& commands,
         RestTraceInfo trace);
     [[nodiscard]] static CommandResult parse_cancel_response_(
         const HttpResponse& response,

@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <thread>
 #include <string_view>
 #include <utility>
@@ -76,6 +77,30 @@ void join_path_into(std::string& out, std::string_view base, std::string_view ta
     return "GET";
 }
 
+[[nodiscard]] std::string transport_error_message(std::string_view kind,
+                                                  std::string_view stage,
+                                                  const beast::error_code& ec) {
+    std::string message{kind};
+    if (!stage.empty()) {
+        message.push_back(':');
+        message.append(stage);
+    }
+    if (ec) {
+        message.push_back(':');
+        message.append(ec.message());
+        message.append(" (");
+        message.append(ec.category().name());
+        message.push_back(':');
+        message.append(std::to_string(ec.value()));
+        message.push_back(')');
+    }
+    return message;
+}
+
+[[nodiscard]] bool is_transport_retry_error(std::string_view error_message) noexcept {
+    return error_message.rfind("transport_retry", 0) == 0;
+}
+
 } // namespace
 
 struct PersistentHttpSession::ConnectionState {
@@ -131,12 +156,12 @@ HttpResponse PersistentHttpSession::send_json_request(const HttpRequest& request
     }
 
     auto response = run_async_request_to_completion_(request);
-    if (response.ok || response.error_message != "transport_retry") {
+    if (response.ok || !is_transport_retry_error(response.error_message)) {
         return response;
     }
     auto retry_response = run_async_request_to_completion_(request);
     ++retry_response.retry_count;
-    if (retry_response.ok || retry_response.error_message != "transport_retry") {
+    if (retry_response.ok || !is_transport_retry_error(retry_response.error_message)) {
         return retry_response;
     }
 
@@ -404,7 +429,8 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
         endpoint_port_,
         [this](const beast::error_code& ec, tcp::resolver::results_type results) {
             if (ec) {
-                complete_async_request_(build_disconnected_response_("transport_retry"));
+                complete_async_request_(build_disconnected_response_(
+                    transport_error_message("transport_retry", "resolve", ec)));
                 return;
             }
 
@@ -416,7 +442,8 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
                        const tcp::resolver::results_type::endpoint_type&) {
                     if (connect_ec) {
                         close_connection_();
-                        complete_async_request_(build_disconnected_response_("transport_retry"));
+                        complete_async_request_(build_disconnected_response_(
+                            transport_error_message("transport_retry", "connect", connect_ec)));
                         return;
                     }
 
@@ -429,7 +456,10 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
                             if (handshake_ec) {
                                 close_connection_();
                                 complete_async_request_(
-                                    build_disconnected_response_("transport_retry"));
+                                    build_disconnected_response_(transport_error_message(
+                                        "transport_retry",
+                                        "handshake",
+                                        handshake_ec)));
                                 return;
                             }
                             beast::get_lowest_layer(*connection_->stream).expires_never();
@@ -457,7 +487,9 @@ void PersistentHttpSession::begin_async_write_() {
         [this](const beast::error_code& write_ec, std::size_t) {
             if (write_ec) {
                 close_connection_();
-                complete_async_request_(build_transport_error_response_("transport_retry", 0));
+                complete_async_request_(build_transport_error_response_(
+                    transport_error_message("transport_retry", "write", write_ec),
+                    0));
                 return;
             }
 
@@ -484,7 +516,7 @@ void PersistentHttpSession::begin_async_write_() {
                                 : 0;
                         close_connection_();
                         complete_async_request_(build_transport_error_response_(
-                            "transport_retry",
+                            transport_error_message("transport_retry", "read", read_ec),
                             request_sent_ts_ns));
                         return;
                     }

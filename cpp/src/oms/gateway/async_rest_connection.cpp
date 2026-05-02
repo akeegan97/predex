@@ -142,23 +142,46 @@ ConnectionPollResult AsyncRestConnection::poll() noexcept {
                                      "transport_disconnected");
     } else if (poll_result.status == transport::AsyncHttpRequestStatus::kCompleted &&
                poll_result.response.has_value()) {
-        const auto& item = inflight_request_->items[inflight_item_index_];
-        auto command_result = complete_item_(item, *poll_result.response);
+        auto command_result =
+            inflight_request_->batch_kind == DispatchBatchKind::kGroupedSubmit
+                ? complete_batched_submit_request_(*poll_result.response)
+                : complete_item_(inflight_request_->items[inflight_item_index_],
+                                 *poll_result.response);
         if (command_result.trace.request_sent_ts_ns != 0 ||
             command_result.trace.response_recv_ts_ns != 0 ||
             !command_result.trace.request_target.empty() ||
             !command_result.trace.error_message.empty()) {
             last_trace_ = command_result.trace;
         }
-        if (command_result.event.has_value()) {
+        if (!command_result.events.empty()) {
+            for (auto& event : command_result.events) {
+                emitted_events_.push_back(std::move(event));
+            }
+        } else if (command_result.event.has_value()) {
             emitted_events_.push_back(std::move(*command_result.event));
         }
 
-        if (!command_result.ok) {
+        if (inflight_request_->batch_kind == DispatchBatchKind::kGroupedSubmit) {
             finalize_pending_completion_(
-                command_result.event.has_value() ? DispatchRequestState::kCompleted
-                                                 : DispatchRequestState::kPostWriteUnknown,
+                command_result.ok || !command_result.events.empty()
+                    ? DispatchRequestState::kCompleted
+                    : DispatchRequestState::kPostWriteUnknown,
                 command_result.error_message);
+        } else if (!command_result.ok) {
+            if (command_result.event.has_value()) {
+                ++inflight_item_index_;
+                inflight_prepared_request_.reset();
+                if (inflight_item_index_ >= inflight_request_->items.size()) {
+                    finalize_pending_completion_(DispatchRequestState::kCompleted,
+                                                 command_result.error_message);
+                } else if (!start_current_item_() && !pending_completion_.has_value()) {
+                    finalize_pending_completion_(DispatchRequestState::kPostWriteUnknown,
+                                                 "transport_unavailable");
+                }
+            } else {
+                finalize_pending_completion_(DispatchRequestState::kPostWriteUnknown,
+                                             command_result.error_message);
+            }
         } else {
             ++inflight_item_index_;
             inflight_prepared_request_.reset();
@@ -247,12 +270,14 @@ void AsyncRestConnection::finalize_pending_completion_(DispatchRequestState term
 }
 
 bool AsyncRestConnection::start_current_item_() noexcept {
-    if (!inflight_request_.has_value() || inflight_item_index_ >= inflight_request_->items.size()) {
+    if (!inflight_request_.has_value()) {
         return false;
     }
 
-    const auto& item = inflight_request_->items[inflight_item_index_];
-    auto prepared = prepare_item_(item);
+    transport::PreparedCommandRequest prepared =
+        inflight_request_->batch_kind == DispatchBatchKind::kGroupedSubmit
+            ? prepare_batched_submit_request_()
+            : prepare_item_(inflight_request_->items[inflight_item_index_]);
     if (!prepared.ok) {
         last_trace_ = prepared.trace;
         finalize_pending_completion_(DispatchRequestState::kCompleted, prepared.error_message);
@@ -287,6 +312,22 @@ transport::PreparedCommandRequest AsyncRestConnection::prepare_item_(
         item.command);
 }
 
+transport::PreparedCommandRequest AsyncRestConnection::prepare_batched_submit_request_() const noexcept {
+    if (!inflight_request_.has_value()) {
+        return {.ok = false, .error_message = "missing inflight request"};
+    }
+    std::vector<SubmitOrderCmd> commands;
+    commands.reserve(inflight_request_->items.size());
+    for (const auto& item : inflight_request_->items) {
+        const auto* submit = std::get_if<SubmitOrderCmd>(&item.command);
+        if (submit == nullptr) {
+            return {.ok = false, .error_message = "grouped submit contained non-submit item"};
+        }
+        commands.push_back(*submit);
+    }
+    return adapter_.prepare_batched_submit_orders(commands);
+}
+
 transport::CommandResult AsyncRestConnection::complete_item_(
     const DispatchItem& item,
     const transport::HttpResponse& response) noexcept {
@@ -312,6 +353,33 @@ transport::CommandResult AsyncRestConnection::complete_item_(
             }
         },
         item.command);
+}
+
+transport::CommandResult AsyncRestConnection::complete_batched_submit_request_(
+    const transport::HttpResponse& response) noexcept {
+    std::vector<SubmitOrderCmd> commands;
+    if (!inflight_request_.has_value()) {
+        return {.ok = false, .error_message = "missing inflight request"};
+    }
+    commands.reserve(inflight_request_->items.size());
+    for (const auto& item : inflight_request_->items) {
+        const auto* submit = std::get_if<SubmitOrderCmd>(&item.command);
+        if (submit == nullptr) {
+            return {.ok = false, .error_message = "grouped submit contained non-submit item"};
+        }
+        commands.push_back(*submit);
+    }
+
+    transport::RestTraceInfo trace =
+        inflight_prepared_request_.has_value() ? inflight_prepared_request_->trace
+                                               : transport::RestTraceInfo{};
+    trace.http_status_code = response.status_code;
+    trace.retry_count = response.retry_count;
+    trace.request_sent_ts_ns = response.request_sent_ts_ns;
+    trace.response_recv_ts_ns = response.response_recv_ts_ns;
+    trace.response_body = response.body;
+    trace.error_message = response.error_message;
+    return adapter_.complete_batched_submit_orders(commands, response, std::move(trace));
 }
 
 void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion) noexcept {

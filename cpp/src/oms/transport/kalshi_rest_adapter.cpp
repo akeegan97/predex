@@ -146,6 +146,35 @@ void build_submit_body(const SubmitOrderCmd& command,
     body.push_back('}');
 }
 
+[[nodiscard]] bool append_submit_order_json_object(const SubmitOrderCmd& command,
+                                                   std::string& out_body,
+                                                   std::string& error_message) {
+    if (command.market_ticker.empty()) {
+        error_message = "market_ticker is required for submit";
+        return false;
+    }
+    const auto action = action_from_side(command.intent.side);
+    if (action.empty()) {
+        error_message = "submit_order: order side must be Buy or Sell";
+        return false;
+    }
+    const auto outcome_side = outcome_to_string(command.intent.outcome);
+    if (outcome_side.empty()) {
+        error_message = "submit_order: outcome must be Yes or No";
+        return false;
+    }
+    const auto tif = tif_to_string(command.intent.time_in_force);
+    if (tif.empty()) {
+        error_message = "submit_order: unsupported time_in_force";
+        return false;
+    }
+
+    const std::string_view price_field =
+        command.intent.outcome == Outcome::kYes ? "yes_price" : "no_price";
+    build_submit_body(command, action, outcome_side, tif, price_field, out_body);
+    return true;
+}
+
 void build_modify_body(const ModifyOrderCmd& command,
     //NOLINTNEXTLINE
                        std::string_view action,
@@ -307,29 +336,51 @@ OpenOrdersPage KalshiRestAdapter::fetch_open_orders(std::size_t limit,
 }
 
 PreparedCommandRequest KalshiRestAdapter::prepare_submit_order(const SubmitOrderCmd& command) const {
-    if (command.market_ticker.empty()) {
-        return {.ok = false, .error_message = "market_ticker is required for submit"};
-    }
-
-    const auto action = action_from_side(command.intent.side);
-    if (action.empty()) {
-        return {.ok = false, .error_message = "submit_order: order side must be Buy or Sell"};
-    }
-    const auto outcome_side = outcome_to_string(command.intent.outcome);
-    if (outcome_side.empty()) {
-        return {.ok = false, .error_message = "submit_order: outcome must be Yes or No"};
-    }
-    const auto tif = tif_to_string(command.intent.time_in_force);
-    if (tif.empty()) {
-        return {.ok = false, .error_message = "submit_order: unsupported time_in_force"};
-    }
-
-    const std::string_view price_field =
-        command.intent.outcome == Outcome::kYes ? "yes_price" : "no_price";
     thread_local std::string body_scratch;
-    build_submit_body(command, action, outcome_side, tif, price_field, body_scratch);
+    std::string error_message;
+    if (!append_submit_order_json_object(command, body_scratch, error_message)) {
+        return {.ok = false, .error_message = std::move(error_message)};
+    }
 
     const auto target = build_submit_target_();
+    return PreparedCommandRequest{
+        .ok = true,
+        .request = HttpRequest{
+            .method = HttpMethod::kPost,
+            .target = target,
+            .body = body_scratch,
+        },
+        .trace = RestTraceInfo{
+            .request_target = target,
+            .request_body = body_scratch,
+        },
+    };
+}
+
+PreparedCommandRequest KalshiRestAdapter::prepare_batched_submit_orders(
+    const std::vector<SubmitOrderCmd>& commands) const {
+    if (commands.empty()) {
+        return {.ok = false, .error_message = "batched submit requires at least one command"};
+    }
+
+    thread_local std::string body_scratch;
+    thread_local std::string order_scratch;
+    body_scratch.clear();
+    body_scratch.reserve(512 * commands.size());
+    body_scratch.append("{\"orders\":[");
+    for (std::size_t index = 0; index < commands.size(); ++index) {
+        std::string error_message;
+        if (!append_submit_order_json_object(commands[index], order_scratch, error_message)) {
+            return {.ok = false, .error_message = std::move(error_message)};
+        }
+        if (index > 0) {
+            body_scratch.push_back(',');
+        }
+        body_scratch.append(order_scratch);
+    }
+    body_scratch.append("]}");
+
+    const auto target = build_batched_submit_target_();
     return PreparedCommandRequest{
         .ok = true,
         .request = HttpRequest{
@@ -408,6 +459,13 @@ CommandResult KalshiRestAdapter::complete_submit_order(const SubmitOrderCmd& com
     return parse_submit_response_(response, command, std::move(trace));
 }
 
+CommandResult KalshiRestAdapter::complete_batched_submit_orders(
+    const std::vector<SubmitOrderCmd>& commands,
+    const HttpResponse& response,
+    RestTraceInfo trace) const {
+    return parse_batched_submit_response_(response, commands, std::move(trace));
+}
+
 CommandResult KalshiRestAdapter::complete_cancel_order(const CancelOrderCmd& command,
                                                        const HttpResponse& response,
                                                        RestTraceInfo trace) const {
@@ -441,6 +499,10 @@ void KalshiRestAdapter::close() noexcept {
 
 std::string KalshiRestAdapter::build_submit_target_() {
     return "/trade-api/v2/portfolio/orders";
+}
+
+std::string KalshiRestAdapter::build_batched_submit_target_() {
+    return "/trade-api/v2/portfolio/orders/batched";
 }
 
 std::string KalshiRestAdapter::build_cancel_target_(const ExchangeOrderId& exchange_order_id) {
@@ -482,6 +544,7 @@ CommandResult KalshiRestAdapter::parse_submit_response_(const HttpResponse& resp
                 .raw_reason_code = std::to_string(response.status_code),
                 .raw_reason_message = response.body,
             };
+            result.events.push_back(*result.event);
         }
         return result;
     }
@@ -512,11 +575,136 @@ CommandResult KalshiRestAdapter::parse_submit_response_(const HttpResponse& resp
                 .retry_count = static_cast<std::uint16_t>(trace.retry_count),
                 .accepted_qty_lots = command.intent.qty_lots,
             },
+            .events = {VenueOrderAck{
+                .order = std::move(order),
+                .transport_submit_ts_ns = trace.request_sent_ts_ns,
+                .recv_ts_ns = trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+                .retry_count = static_cast<std::uint16_t>(trace.retry_count),
+                .accepted_qty_lots = command.intent.qty_lots,
+            }},
             .trace = std::move(trace),
         };
     } catch (const std::exception& exception) {
         trace.error_message = exception.what();
         return {.ok = false, .error_message = trace.error_message, .trace = std::move(trace)};
+    }
+}
+
+CommandResult KalshiRestAdapter::parse_batched_submit_response_(
+    const HttpResponse& response,
+    const std::vector<SubmitOrderCmd>& commands,
+    RestTraceInfo trace) {
+    CommandResult result{
+        .ok = false,
+        .trace = trace,
+    };
+
+    if (!response.ok && response.status_code == 0) {
+        result.error_message = response.error_message;
+        return result;
+    }
+
+    auto make_reject_event = [&](const SubmitOrderCmd& command,
+                                 VenueRejectReason reason,
+                                 std::string raw_reason_code,
+                                 std::string raw_reason_message) {
+        return KalshiToOmsEvent{VenueOrderReject{
+            .order = command.order,
+            .transport_submit_ts_ns = trace.request_sent_ts_ns,
+            .recv_ts_ns = trace.response_recv_ts_ns,
+            .http_status_code = static_cast<std::uint16_t>(response.status_code),
+            .retry_count = static_cast<std::uint16_t>(response.retry_count),
+            .reason = reason,
+            .raw_reason_code = std::move(raw_reason_code),
+            .raw_reason_message = std::move(raw_reason_message),
+        }};
+    };
+
+    try {
+        const auto parsed = nlohmann::json::parse(response.body);
+        if (!parsed.contains("orders") || !parsed["orders"].is_array()) {
+            if (response.status_code != 0) {
+                for (const auto& command : commands) {
+                    result.events.push_back(make_reject_event(
+                        command,
+                        venue_reject_reason_for_response(response),
+                        std::to_string(response.status_code),
+                        response.body));
+                }
+                result.ok = true;
+                return result;
+            }
+            result.error_message = response.error_message.empty()
+                ? "batched submit response missing orders array"
+                : response.error_message;
+            return result;
+        }
+
+        const auto& orders = parsed["orders"];
+        if (orders.size() != commands.size()) {
+            result.error_message = "batched submit response size mismatch";
+            return result;
+        }
+
+        result.ok = true;
+        result.events.reserve(commands.size());
+        for (std::size_t index = 0; index < commands.size(); ++index) {
+            const auto& entry = orders[index];
+            const auto& command = commands[index];
+
+            if (entry.contains("order") && entry["order"].is_object()) {
+                OmsOrderRef order = command.order;
+                const auto& order_json = entry["order"];
+                if (order_json.contains("order_id") && order_json["order_id"].is_string()) {
+                    order.exchange_order_id = ExchangeOrderId{
+                        .value = order_json["order_id"].get<std::string>()};
+                }
+                result.events.push_back(KalshiToOmsEvent{VenueOrderAck{
+                    .order = std::move(order),
+                    .transport_submit_ts_ns = trace.request_sent_ts_ns,
+                    .recv_ts_ns = trace.response_recv_ts_ns,
+                    .http_status_code = static_cast<std::uint16_t>(response.status_code),
+                    .retry_count = static_cast<std::uint16_t>(response.retry_count),
+                    .accepted_qty_lots = command.intent.qty_lots,
+                }});
+                continue;
+            }
+
+            if (entry.contains("error") && entry["error"].is_object()) {
+                const auto& error_json = entry["error"];
+                const auto raw_code = error_json.value("code", std::to_string(response.status_code));
+                const auto raw_message = error_json.value("message", response.body);
+                result.events.push_back(make_reject_event(
+                    command,
+                    response.status_code != 0 ? venue_reject_reason_for_response(response)
+                                              : VenueRejectReason::kUnknown,
+                    raw_code,
+                    raw_message));
+                continue;
+            }
+
+            result.ok = false;
+            result.events.clear();
+            result.error_message = "batched submit entry missing order/error";
+            return result;
+        }
+
+        return result;
+    } catch (const std::exception& exception) {
+        if (response.status_code != 0) {
+            result.ok = true;
+            for (const auto& command : commands) {
+                result.events.push_back(make_reject_event(
+                    command,
+                    venue_reject_reason_for_response(response),
+                    std::to_string(response.status_code),
+                    response.body));
+            }
+            return result;
+        }
+        result.error_message = exception.what();
+        return result;
     }
 }
 

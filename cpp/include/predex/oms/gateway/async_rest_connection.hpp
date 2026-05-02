@@ -89,8 +89,11 @@ class AsyncRestConnection {
     [[nodiscard]] bool start_current_item_() noexcept;
     [[nodiscard]] transport::PreparedCommandRequest prepare_item_(
         const DispatchItem& item) const noexcept;
+    [[nodiscard]] transport::PreparedCommandRequest prepare_batched_submit_request_() const noexcept;
     [[nodiscard]] transport::CommandResult complete_item_(
         const DispatchItem& item,
+        const transport::HttpResponse& response) noexcept;
+    [[nodiscard]] transport::CommandResult complete_batched_submit_request_(
         const transport::HttpResponse& response) noexcept;
     void append_trace_row_(const DispatchCompletion& completion) noexcept;
 };

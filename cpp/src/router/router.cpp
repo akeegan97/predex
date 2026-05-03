@@ -70,15 +70,17 @@ namespace predex::core::routing::kalshi{
         const predex::core::routing::kalshi::MarketRegistry &market_registry,
         predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
         predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
-                predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
+        predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
+        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue,
+        bool enforce_sequence) noexcept
         : ingress_queue_(ingress_queue),
           frame_pool_(frame_pool),
           market_registry_(market_registry),
           shard_dispatch_(shard_dispatch),
           logger_queue_(logger_queue),
-                    audit_queue_(audit_queue),
-          recycle_queue_(recycle_queue) {}
+          audit_queue_(audit_queue),
+          recycle_queue_(recycle_queue),
+          enforce_sequence_(enforce_sequence) {}
     RouteDecision Router::classify(predex::core::ingest::kalshi::FrameHandle& handle, const predex::core::ingest::kalshi::KalshiFrame& frame) noexcept{
         //Framehandle at this point is only stamped with iowriter timestamp,
         //need to extract market ticker, sid, seq, lookup/attach affinity key before we can make routing decision
@@ -143,7 +145,8 @@ namespace predex::core::routing::kalshi{
             }
             return RouteDecision::kToLogger;
         }
-        if(handle.event_type_ != predex::core::ingest::kalshi::KalshiEventType::kLifecycle){
+        if(enforce_sequence_ &&
+           handle.event_type_ != predex::core::ingest::kalshi::KalshiEventType::kLifecycle){
             if(!check_sequence(handle, market_ticker)){
                 return RouteDecision::kToLogger;
             }

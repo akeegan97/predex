@@ -41,7 +41,8 @@ namespace predex::core::routing::kalshi{
                 predex::core::routing::kalshi::ShardDispatch &shard_dispatch,
                 predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
                 predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
-                predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept;
+                predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue,
+                bool enforce_sequence = true) noexcept;
 
             [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
 
@@ -57,6 +58,7 @@ namespace predex::core::routing::kalshi{
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue_; // Router producer, logger consumer
             predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue_{nullptr};
             predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue_; // Router producer on drop paths
+            bool enforce_sequence_{true};
 
             std::unordered_map<std::uint32_t, std::uint64_t> last_seq_by_sid_; //global checker for messages
 

@@ -10,6 +10,7 @@
 #include <utility>
 #include <variant>
 #include <limits>
+#include <type_traits>
 
 #include "predex/audit/audit_types.hpp"
 #include "predex/shards/applied_event_update.hpp"
@@ -130,16 +131,26 @@ class DefaultShardPipeline {
             if (!group_ok) {
                 continue;
             }
+            if (has_duplicate_group_opportunity(group, group_signal.edge_ticks)) {
+                emit_duplicate_group_rejection(
+                    update, group, RiskRejectReason::kDuplicateSignal);
+                continue;
+            }
             if (!try_push_submission(OmsSubmission{group})) {
                 return error_result();
             }
+            buffered_group_edge_ticks_[group.context.group_intent_id] = group_signal.edge_ticks;
         }
 
         for (std::size_t submission_index = 0; submission_index < submission_count_;
              ++submission_index) {
             OmsSubmission& submission = submissions_buffer_[submission_index];
             stamp_submission_enqueued_ts(submission, monotonic_now_ns());
+            const bool reserved_group_submission = reserve_group_submission(submission);
             if (intent_queue_ == nullptr || !intent_queue_->try_push(submission)) {
+                if (reserved_group_submission) {
+                    release_group_submission_reservation(submission);
+                }
                 return {
                     .code = PipelineDecisionCode::kBackpressure,
                     .signal_count = static_cast<std::uint32_t>(signal_count_ + group_signal_count_),
@@ -217,6 +228,46 @@ class DefaultShardPipeline {
         internal::TimestampNs first_lifecycle_ts_ns{0};
     };
 
+    struct PendingOpportunityKey {
+        internal::EventId event_id{0};
+        std::uint16_t leg_count{0};
+        std::int64_t edge_ticks{0};
+        std::array<internal::MarketId, oms::kMaxGroupOrderLegs> market_ids{};
+        std::array<internal::Side, oms::kMaxGroupOrderLegs> sides{};
+        std::array<internal::PriceTicks, oms::kMaxGroupOrderLegs> price_ticks{};
+
+        [[nodiscard]] bool operator==(const PendingOpportunityKey& other) const noexcept {
+            return event_id == other.event_id && leg_count == other.leg_count &&
+                   edge_ticks == other.edge_ticks && market_ids == other.market_ids &&
+                   sides == other.sides && price_ticks == other.price_ticks;
+        }
+    };
+
+    struct PendingOpportunityKeyHash {
+        [[nodiscard]] std::size_t operator()(const PendingOpportunityKey& key) const noexcept {
+            std::size_t seed = 0;
+            auto combine = [&seed](const auto& value) {
+                seed ^= std::hash<std::decay_t<decltype(value)>>{}(value) + 0x9e3779b9U +
+                        (seed << 6U) + (seed >> 2U);
+            };
+            combine(key.event_id);
+            combine(key.leg_count);
+            combine(key.edge_ticks);
+            for (std::size_t index = 0; index < key.market_ids.size(); ++index) {
+                combine(key.market_ids[index]);
+                combine(static_cast<std::underlying_type_t<internal::Side>>(key.sides[index]));
+                combine(key.price_ticks[index]);
+            }
+            return seed;
+        }
+    };
+
+    struct PendingOpportunityState {
+        oms::GroupIntentId group_intent_id{0};
+        std::uint16_t leg_count{0};
+        std::array<oms::LocalIntentId, oms::kMaxGroupOrderLegs> local_intent_ids{};
+    };
+
     struct StrategySignalSink {
         explicit StrategySignalSink(DefaultShardPipeline& pipeline) : pipeline_(pipeline) {}
 
@@ -255,6 +306,12 @@ class DefaultShardPipeline {
         tracked_intents_;
     std::unordered_map<oms::OmsRequestId, oms::LocalIntentId>
         local_intent_id_by_request_id_;
+    std::unordered_map<PendingOpportunityKey, PendingOpportunityState, PendingOpportunityKeyHash>
+        pending_group_opportunities_;
+    std::unordered_map<oms::LocalIntentId, PendingOpportunityKey>
+        pending_group_opportunity_by_local_intent_id_;
+    std::unordered_map<oms::GroupIntentId, std::int64_t>
+        buffered_group_edge_ticks_;
     internal::TimestampNs current_tick_recv_ns_{0};
     std::uint64_t event_counter_{0};
 
@@ -270,6 +327,7 @@ class DefaultShardPipeline {
         signal_count_ = 0;
         group_signal_count_ = 0;
         submission_count_ = 0;
+        buffered_group_edge_ticks_.clear();
     }
 
     [[nodiscard]] bool should_emit_pipeline_probe() noexcept {
@@ -460,6 +518,63 @@ class DefaultShardPipeline {
         return group_intent;
     }
 
+    [[nodiscard]] static PendingOpportunityKey build_pending_opportunity_key(
+        const oms::GroupOrderIntent& group,
+        std::int64_t edge_ticks) noexcept {
+        PendingOpportunityKey key{};
+        key.event_id = group.context.event_id;
+        key.leg_count = static_cast<std::uint16_t>(group.leg_count);
+        key.edge_ticks = edge_ticks;
+        for (std::size_t leg_index = 0; leg_index < group.leg_count; ++leg_index) {
+            const auto& leg = group.legs[leg_index];
+            key.market_ids[leg_index] = leg.context.market_id;
+            key.sides[leg_index] = leg.side;
+            key.price_ticks[leg_index] = leg.limit_price_ticks.value_or(0);
+        }
+        return key;
+    }
+
+    [[nodiscard]] bool has_duplicate_group_opportunity(
+        const oms::GroupOrderIntent& group,
+        std::int64_t edge_ticks) const noexcept {
+        const PendingOpportunityKey key = build_pending_opportunity_key(group, edge_ticks);
+        if (pending_group_opportunities_.contains(key)) {
+            return true;
+        }
+
+        for (std::size_t submission_index = 0; submission_index < submission_count_;
+             ++submission_index) {
+            const auto* buffered_group =
+                std::get_if<oms::GroupOrderIntent>(&submissions_buffer_[submission_index]);
+            if (buffered_group == nullptr) {
+                continue;
+            }
+            const auto edge_it =
+                buffered_group_edge_ticks_.find(buffered_group->context.group_intent_id);
+            if (edge_it == buffered_group_edge_ticks_.end()) {
+                continue;
+            }
+            if (build_pending_opportunity_key(*buffered_group, edge_it->second) == key) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void emit_duplicate_group_rejection(
+        const AppliedEventUpdate& update,
+        const oms::GroupOrderIntent& group,
+        RiskRejectReason reason) noexcept {
+        const RiskDecision rejection{
+            .code = RiskDecisionCode::kRejected,
+            .reason = reason,
+            .accepted_intent = std::nullopt,
+        };
+        for (std::size_t leg_index = 0; leg_index < group.leg_count; ++leg_index) {
+            emit_local_risk_audit(update, group.legs[leg_index], rejection);
+        }
+    }
+
     void on_submission_enqueued(const OmsSubmission& submission) noexcept {
         if (const auto* intent = std::get_if<OmsOrderIntent>(&submission)) {
             on_intent_enqueued(*intent);
@@ -467,11 +582,51 @@ class DefaultShardPipeline {
             return;
         }
         if (const auto* group = std::get_if<oms::GroupOrderIntent>(&submission)) {
+            buffered_group_edge_ticks_.erase(group->context.group_intent_id);
             for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
                 on_intent_enqueued(group->legs[leg_index]);
                 emit_submission_audit(group->legs[leg_index]);
             }
         }
+    }
+
+    [[nodiscard]] bool reserve_group_submission(const OmsSubmission& submission) noexcept {
+        const auto* group = std::get_if<oms::GroupOrderIntent>(&submission);
+        if (group == nullptr || group->leg_count == 0) {
+            return false;
+        }
+
+        const auto edge_it = buffered_group_edge_ticks_.find(group->context.group_intent_id);
+        if (edge_it == buffered_group_edge_ticks_.end()) {
+            return false;
+        }
+
+        PendingOpportunityState state{};
+        state.group_intent_id = group->context.group_intent_id;
+        state.leg_count = static_cast<std::uint16_t>(group->leg_count);
+        for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
+            state.local_intent_ids[leg_index] = group->legs[leg_index].context.local_intent_id;
+        }
+
+        const PendingOpportunityKey key =
+            build_pending_opportunity_key(*group, edge_it->second);
+        auto inserted = pending_group_opportunities_.emplace(key, state);
+        if (!inserted.second) {
+            return false;
+        }
+        for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
+            pending_group_opportunity_by_local_intent_id_[state.local_intent_ids[leg_index]] = key;
+        }
+        return true;
+    }
+
+    void release_group_submission_reservation(const OmsSubmission& submission) noexcept {
+        const auto* group = std::get_if<oms::GroupOrderIntent>(&submission);
+        if (group == nullptr || group->leg_count == 0) {
+            return;
+        }
+        release_pending_group_opportunity(group->legs[0].context.local_intent_id);
+        buffered_group_edge_ticks_.erase(group->context.group_intent_id);
     }
 
     void on_intent_enqueued(const OmsOrderIntent& intent) noexcept {
@@ -780,6 +935,7 @@ class DefaultShardPipeline {
         oms::LocalIntentId local_intent_id) noexcept {
         auto tracked = tracked_intents_.find(local_intent_id);
         if (tracked == tracked_intents_.end()) {
+            release_pending_group_opportunity(local_intent_id);
             return;
         }
 
@@ -797,6 +953,47 @@ class DefaultShardPipeline {
         }
 
         tracked_intents_.erase(tracked);
+        release_pending_group_opportunity(local_intent_id);
+    }
+
+    void release_pending_group_opportunity(oms::LocalIntentId local_intent_id) noexcept {
+        auto local_to_key = pending_group_opportunity_by_local_intent_id_.find(local_intent_id);
+        if (local_to_key == pending_group_opportunity_by_local_intent_id_.end()) {
+            return;
+        }
+
+        const PendingOpportunityKey key = local_to_key->second;
+        auto pending = pending_group_opportunities_.find(key);
+        if (pending == pending_group_opportunities_.end()) {
+            pending_group_opportunity_by_local_intent_id_.erase(local_to_key);
+            return;
+        }
+
+        bool entry_still_live = false;
+        for (std::size_t leg_index = 0; leg_index < pending->second.leg_count; ++leg_index) {
+            const oms::LocalIntentId pending_local_id = pending->second.local_intent_ids[leg_index];
+            if (pending_local_id == 0) {
+                continue;
+            }
+            if (pending_local_id == local_intent_id) {
+                pending->second.local_intent_ids[leg_index] = 0;
+                pending_group_opportunity_by_local_intent_id_.erase(pending_local_id);
+                continue;
+            }
+            if (tracked_intents_.contains(pending_local_id)) {
+                entry_still_live = true;
+            }
+        }
+
+        if (!entry_still_live) {
+            for (std::size_t leg_index = 0; leg_index < pending->second.leg_count; ++leg_index) {
+                const oms::LocalIntentId pending_local_id = pending->second.local_intent_ids[leg_index];
+                if (pending_local_id != 0) {
+                    pending_group_opportunity_by_local_intent_id_.erase(pending_local_id);
+                }
+            }
+            pending_group_opportunities_.erase(pending);
+        }
     }
 
     void decrement_exposure(internal::QtyLots delta_qty) noexcept {

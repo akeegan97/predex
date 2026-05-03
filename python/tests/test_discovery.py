@@ -411,6 +411,8 @@ class ConfigTests(unittest.TestCase):
                 "rest_endpoint": "https://api.elections.kalshi.com",
                 "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
                 "private_ws_channels": ["user_orders"],
+                "max_session_loss_ticks": 0,
+                "available_capital_ticks": 0,
             },
         )
         self.assertEqual(len(config["market_routes"]), 4)

@@ -84,6 +84,7 @@ enum class RiskRejectReason : std::uint8_t {
     kMarketClosed = 9,
     kEventDesynced = 10,
     kMarketDesynced = 11,
+    kDuplicateSignal = 12,
 };
 
 struct RiskDecision {

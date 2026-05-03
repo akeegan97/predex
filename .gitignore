@@ -28,3 +28,6 @@ docs/private_ws_schemas/*
 predex_rest_trace*.jsonl
 docs/async_gateway_plan.md
 docs/replay/soak_analysis.json
+docs/replay/soak_analysis_2026-05-03.json
+docs/replay/soak_analysis_overnight_2026-05-03.json
+predex_tape_overnight_5_2_2026.bin

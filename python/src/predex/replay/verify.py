@@ -24,6 +24,7 @@ _RISK_REJECT_REASONS = {
     9: "market_closed",
     10: "event_desynced",
     11: "market_desynced",
+    12: "duplicate_signal",
 }
 _RISK_DECISION_CODES = {
     1: "accepted",

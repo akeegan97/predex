@@ -82,12 +82,25 @@ target_link_libraries(
 
 add_executable(
   trader_app
+  apps/common/config.cpp
   apps/trader/main.cpp
 )
 
 target_link_libraries(
   trader_app
   PRIVATE predex::app
+          nlohmann_json::nlohmann_json
+)
+
+add_executable(
+  replay_app
+  apps/common/config.cpp
+  apps/replay/main.cpp
+)
+
+target_link_libraries(
+  replay_app
+  PRIVATE predex::core_pipeline
           nlohmann_json::nlohmann_json
 )
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from .audit import build_signal_bundles, load_audit_events
 from .config import load_config_index
 from .latency import DEFAULT_KINDS, export_latency_histograms
+from .soak import analyze_soak
 from .timeline import (
     build_event_timeline,
     write_signal_hits_parquet,
@@ -183,6 +184,25 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=24,
         help="Max number of time-slice histogram panels per span. Default: 24",
+    )
+
+    soak = subparsers.add_parser(
+        "soak-analysis",
+        help="Summarize strategy verification, per-stage latency, and edge survival for a soak run.",
+    )
+    soak.add_argument("--config", required=True, help="Generated Predex config JSON.")
+    soak.add_argument("--audit", required=True, help="Audit JSONL emitted by trader_app.")
+    soak.add_argument("--tape", required=True, help="Binary tape emitted by trader_app.")
+    soak.add_argument(
+        "--output-json",
+        default="docs/replay/soak_analysis.json",
+        help="Optional JSON summary output path. Default: docs/replay/soak_analysis.json",
+    )
+    soak.add_argument(
+        "--mismatch-limit",
+        type=int,
+        default=10,
+        help="Max number of signal verification mismatches to include. Default: 10.",
     )
     return parser
 
@@ -399,6 +419,14 @@ def main(argv: list[str] | None = None) -> int:
             args.market_ticker,
             args.output_dir,
             args.prefix,
+        )
+    elif args.command == "soak-analysis":
+        payload = analyze_soak(
+            config_path=args.config,
+            audit_path=args.audit,
+            tape_path=args.tape,
+            output_json=args.output_json,
+            mismatch_limit=args.mismatch_limit,
         )
     else:
         payload = _export_event_timeline(

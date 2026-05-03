@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <chrono>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,9 @@ class ExecutionTransport {
             return false;
         }
 
+        OmsToKalshiCommand stamped_command = command;
+        stamp_transport_enqueue_ts(stamped_command);
+
         const std::size_t queue_count = queues_.command_queues.size();
         for (std::size_t offset = 0; offset < queue_count; ++offset) {
             const std::size_t index = (next_command_queue_index_ + offset) % queue_count;
@@ -40,7 +44,7 @@ class ExecutionTransport {
             if (queue == nullptr) {
                 continue;
             }
-            if (!queue->try_push(command)) {
+            if (!queue->try_push(stamped_command)) {
                 continue;
             }
             next_command_queue_index_ = (index + 1U) % queue_count;
@@ -87,6 +91,22 @@ class ExecutionTransport {
     ExecutionTransportQueues queues_{};
     std::size_t next_command_queue_index_{0};
     std::size_t next_event_queue_index_{0};
+
+    [[nodiscard]] static internal::TimestampNs now_ns() noexcept {
+        return static_cast<internal::TimestampNs>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+
+    static void stamp_transport_enqueue_ts(OmsToKalshiCommand& command) noexcept {
+        const auto enqueue_ts_ns = now_ns();
+        std::visit(
+            [&](auto& typed_command) noexcept {
+                typed_command.transport_enqueue_ts_ns = enqueue_ts_ns;
+            },
+            command);
+    }
 };
 
 } // namespace predex::core::oms::kalshi

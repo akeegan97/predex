@@ -78,6 +78,8 @@ class RateLimiter {
             return true;
         }
 
+        request.admitted_ts_ns = gateway_now_ns();
+        request.state = DispatchRequestState::kAdmitted;
         available_transaction_units_ -= required_units;
         return emit_admitted_request(std::move(request));
     }
@@ -132,6 +134,8 @@ class RateLimiter {
 
         DispatchRequest request = std::move(pending.front());
         pending.pop_front();
+        request.admitted_ts_ns = gateway_now_ns();
+        request.state = DispatchRequestState::kAdmitted;
         available_transaction_units_ -= required_units;
         return emit_admitted_request(std::move(request));
     }

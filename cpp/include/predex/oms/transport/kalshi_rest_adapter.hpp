@@ -39,6 +39,14 @@ struct RestTraceInfo {
     std::string request_body;
     int http_status_code{0};
     std::uint32_t retry_count{0};
+    bool reused_connection{false};
+    internal::TimestampNs resolve_start_ts_ns{0};
+    internal::TimestampNs resolve_end_ts_ns{0};
+    internal::TimestampNs connect_start_ts_ns{0};
+    internal::TimestampNs connect_end_ts_ns{0};
+    internal::TimestampNs handshake_start_ts_ns{0};
+    internal::TimestampNs handshake_end_ts_ns{0};
+    internal::TimestampNs write_start_ts_ns{0};
     internal::TimestampNs request_sent_ts_ns{0};
     internal::TimestampNs response_recv_ts_ns{0};
     std::string response_body;
@@ -97,6 +105,7 @@ class KalshiRestAdapter {
     [[nodiscard]] bool start_prepared_request(const PreparedCommandRequest& request);
     [[nodiscard]] AsyncHttpPollResult poll_active_request();
 
+    [[nodiscard]] bool warm_up();
     void check_and_keep_warm(std::uint64_t threshold_seconds);
     void close() noexcept;
 

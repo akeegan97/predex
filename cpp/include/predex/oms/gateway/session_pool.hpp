@@ -64,6 +64,8 @@ class SessionPool {
             return SessionPoolSubmitResult::kInvalidRequest;
         }
 
+        request.session_submit_ts_ns = gateway_now_ns();
+
         auto* connection = find_idle_connection(request.dispatch_class);
         if (connection == nullptr) {
             ++telemetry_.rejected_no_idle_connection;
@@ -107,6 +109,11 @@ class SessionPool {
     }
 
     // Applies keepalive/warm-up work to currently idle owned connections.
+    [[nodiscard]] std::size_t warm_up() noexcept {
+        return warm_up_group(hot_connections_) + warm_up_group(recovery_connections_) +
+               warm_up_group(reconcile_connections_);
+    }
+
     void keep_warm() noexcept {
         keep_warm_group(hot_connections_);
         keep_warm_group(recovery_connections_);
@@ -198,6 +205,17 @@ class SessionPool {
                 made_progress = true;
             }
         }
+    }
+
+    [[nodiscard]] static std::size_t warm_up_group(
+        std::vector<AsyncRestConnection>& connections) noexcept {
+        std::size_t warmed_count = 0;
+        for (auto& connection : connections) {
+            if (connection.warm_up()) {
+                ++warmed_count;
+            }
+        }
+        return warmed_count;
     }
     
     void keep_warm_group(std::vector<AsyncRestConnection>& connections) noexcept {

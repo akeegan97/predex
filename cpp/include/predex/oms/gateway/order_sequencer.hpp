@@ -52,6 +52,7 @@ class OrderSequencer {
             .dispatch_class = envelope.dispatch_class,
             .state = DispatchItemState::kPending,
             .ingress_ts_ns = envelope.ingress_ts_ns,
+            .sequenced_ts_ns = 0,
             .command = std::move(envelope.command),
         };
 
@@ -147,6 +148,7 @@ class OrderSequencer {
         if (queue == nullptr) {
             return false;
         }
+        item.sequenced_ts_ns = gateway_now_ns();
         return queue->try_push(std::move(item));
     }
 

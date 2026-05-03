@@ -225,11 +225,13 @@ struct SubmitOrderCmd {
     NewOrderIntent intent{};
     std::string market_ticker;
     std::optional<GroupExecutionPolicy> group_execution_policy;
+    internal::TimestampNs transport_enqueue_ts_ns{0};
 };
 
 struct CancelOrderCmd {
     ShardOrderCorrelation corr{};
     internal::TimestampNs cmd_ts_ns{0};
+    internal::TimestampNs transport_enqueue_ts_ns{0};
 };
 
 struct ModifyOrderCmd {
@@ -237,6 +239,7 @@ struct ModifyOrderCmd {
     ClientOrderId updated_client_order_id{};
     NewOrderIntent replacement{};
     internal::TimestampNs cmd_ts_ns{0};
+    internal::TimestampNs transport_enqueue_ts_ns{0};
 };
 
 using OmsToKalshiCommand =

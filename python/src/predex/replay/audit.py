@@ -15,6 +15,8 @@ class AuditEvent:
     group_id: int
     local_intent_id: int
     oms_request_id: int
+    transport_http_status: int
+    transport_retry_count: int
     tick_recv_ns: int
     signal_ts_ns: int
     submission_enqueued_ns: int
@@ -62,6 +64,8 @@ class AuditEvent:
             group_id=int(payload.get("group_id", 0)),
             local_intent_id=int(payload.get("local_intent_id", 0)),
             oms_request_id=int(payload.get("oms_request_id", 0)),
+            transport_http_status=int(payload.get("transport_http_status", 0)),
+            transport_retry_count=int(payload.get("transport_retry_count", 0)),
             tick_recv_ns=int(payload.get("tick_recv_ns", 0)),
             signal_ts_ns=int(payload.get("signal_ts_ns", 0)),
             submission_enqueued_ns=int(payload.get("submission_enqueued_ns", 0)),

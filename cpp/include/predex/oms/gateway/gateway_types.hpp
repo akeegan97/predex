@@ -8,12 +8,20 @@
 #include <type_traits>
 #include <variant>
 #include <vector>
+#include <chrono>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/oms/oms_types.hpp"
 #include "predex/oms/transport/kalshi_rest_adapter.hpp"
 
 namespace predex::core::oms::kalshi::gateway {
+
+[[nodiscard]] inline internal::TimestampNs gateway_now_ns() noexcept {
+    return static_cast<internal::TimestampNs>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 
 using LineageId = std::uint64_t;
 using DispatchItemId = std::uint64_t;
@@ -142,6 +150,7 @@ struct DispatchItem {
     DispatchClass dispatch_class{DispatchClass::kHot};
     DispatchItemState state{DispatchItemState::kPending};
     internal::TimestampNs ingress_ts_ns{0};
+    internal::TimestampNs sequenced_ts_ns{0};
     OmsToKalshiCommand command;
 };
 
@@ -152,6 +161,10 @@ struct DispatchRequest {
     DispatchRequestState state{DispatchRequestState::kQueued};
     DispatchBudgetCost budget_cost{};
     internal::TimestampNs queued_ts_ns{0};
+    internal::TimestampNs planned_ts_ns{0};
+    internal::TimestampNs admitted_ts_ns{0};
+    internal::TimestampNs session_submit_ts_ns{0};
+    internal::TimestampNs connection_start_ts_ns{0};
     std::optional<GroupKey> group_key;
     std::optional<BatchGroupRequestMetadata> batch_group;
     std::vector<DispatchItem> items;

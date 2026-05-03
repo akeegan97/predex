@@ -86,11 +86,16 @@ class CommandIngress {
         return std::visit(
             [](const auto& typed_command) noexcept -> internal::TimestampNs {
                 using T = std::decay_t<decltype(typed_command)>;
-                if constexpr (std::is_same_v<T, SubmitOrderCmd>) {
-                    return typed_command.intent.intent_ts_ns;
-                } else {
-                    return typed_command.cmd_ts_ns;
-                }
+                return typed_command.transport_enqueue_ts_ns != 0
+                    ? typed_command.transport_enqueue_ts_ns
+                    : ([](const auto& fallback_command) noexcept -> internal::TimestampNs {
+                          using U = std::decay_t<decltype(fallback_command)>;
+                          if constexpr (std::is_same_v<U, SubmitOrderCmd>) {
+                              return fallback_command.intent.intent_ts_ns;
+                          } else {
+                              return fallback_command.cmd_ts_ns;
+                          }
+                      })(typed_command);
             },
             command);
     }

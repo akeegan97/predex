@@ -287,6 +287,14 @@ CommandResult KalshiRestAdapter::submit_order(const SubmitOrderCmd& command) {
     RestTraceInfo trace = prepared.trace;
     trace.http_status_code = response.status_code;
     trace.retry_count = response.retry_count;
+    trace.reused_connection = response.reused_connection;
+    trace.resolve_start_ts_ns = response.resolve_start_ts_ns;
+    trace.resolve_end_ts_ns = response.resolve_end_ts_ns;
+    trace.connect_start_ts_ns = response.connect_start_ts_ns;
+    trace.connect_end_ts_ns = response.connect_end_ts_ns;
+    trace.handshake_start_ts_ns = response.handshake_start_ts_ns;
+    trace.handshake_end_ts_ns = response.handshake_end_ts_ns;
+    trace.write_start_ts_ns = response.write_start_ts_ns;
     trace.request_sent_ts_ns = response.request_sent_ts_ns;
     trace.response_recv_ts_ns = response.response_recv_ts_ns;
     trace.response_body = response.body;
@@ -303,6 +311,14 @@ CommandResult KalshiRestAdapter::cancel_order(const CancelOrderCmd& command) {
     RestTraceInfo trace = prepared.trace;
     trace.http_status_code = response.status_code;
     trace.retry_count = response.retry_count;
+    trace.reused_connection = response.reused_connection;
+    trace.resolve_start_ts_ns = response.resolve_start_ts_ns;
+    trace.resolve_end_ts_ns = response.resolve_end_ts_ns;
+    trace.connect_start_ts_ns = response.connect_start_ts_ns;
+    trace.connect_end_ts_ns = response.connect_end_ts_ns;
+    trace.handshake_start_ts_ns = response.handshake_start_ts_ns;
+    trace.handshake_end_ts_ns = response.handshake_end_ts_ns;
+    trace.write_start_ts_ns = response.write_start_ts_ns;
     trace.request_sent_ts_ns = response.request_sent_ts_ns;
     trace.response_recv_ts_ns = response.response_recv_ts_ns;
     trace.response_body = response.body;
@@ -319,6 +335,14 @@ CommandResult KalshiRestAdapter::modify_order(const ModifyOrderCmd& command) {
     RestTraceInfo trace = prepared.trace;
     trace.http_status_code = response.status_code;
     trace.retry_count = response.retry_count;
+    trace.reused_connection = response.reused_connection;
+    trace.resolve_start_ts_ns = response.resolve_start_ts_ns;
+    trace.resolve_end_ts_ns = response.resolve_end_ts_ns;
+    trace.connect_start_ts_ns = response.connect_start_ts_ns;
+    trace.connect_end_ts_ns = response.connect_end_ts_ns;
+    trace.handshake_start_ts_ns = response.handshake_start_ts_ns;
+    trace.handshake_end_ts_ns = response.handshake_end_ts_ns;
+    trace.write_start_ts_ns = response.write_start_ts_ns;
     trace.request_sent_ts_ns = response.request_sent_ts_ns;
     trace.response_recv_ts_ns = response.response_recv_ts_ns;
     trace.response_body = response.body;
@@ -487,6 +511,10 @@ bool KalshiRestAdapter::start_prepared_request(const PreparedCommandRequest& req
 
 AsyncHttpPollResult KalshiRestAdapter::poll_active_request() {
     return session_.poll_json_request();
+}
+
+bool KalshiRestAdapter::warm_up() {
+    return session_.warm_up();
 }
 
 void KalshiRestAdapter::check_and_keep_warm(std::uint64_t threshold_seconds) {

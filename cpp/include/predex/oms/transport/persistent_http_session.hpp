@@ -29,6 +29,14 @@ struct HttpResponse {
     bool ok{false};
     int status_code{0};
     std::uint32_t retry_count{0};
+    bool reused_connection{false};
+    internal::TimestampNs resolve_start_ts_ns{0};
+    internal::TimestampNs resolve_end_ts_ns{0};
+    internal::TimestampNs connect_start_ts_ns{0};
+    internal::TimestampNs connect_end_ts_ns{0};
+    internal::TimestampNs handshake_start_ts_ns{0};
+    internal::TimestampNs handshake_end_ts_ns{0};
+    internal::TimestampNs write_start_ts_ns{0};
     internal::TimestampNs request_sent_ts_ns{0};
     internal::TimestampNs response_recv_ts_ns{0};
     std::string body;
@@ -66,6 +74,7 @@ class PersistentHttpSession {
     [[nodiscard]] bool start_json_request(HttpRequest request);
     [[nodiscard]] AsyncHttpPollResult poll_json_request();
     [[nodiscard]] bool has_inflight_request() const noexcept;
+    [[nodiscard]] bool warm_up();
 
     // Refreshes the TLS session opportunistically if the connection has been
     // idle for longer than threshold_seconds.

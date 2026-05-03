@@ -196,6 +196,10 @@ class BatchPlanner {
             .budget_cost =
                 DispatchBudgetCost{.transaction_units = static_cast<std::uint32_t>(pending.legs.size())},
             .queued_ts_ns = pending.earliest_ingress_ts_ns,
+            .planned_ts_ns = gateway_now_ns(),
+            .admitted_ts_ns = 0,
+            .session_submit_ts_ns = 0,
+            .connection_start_ts_ns = 0,
             .group_key = pending.group_key,
             .batch_group = BatchGroupRequestMetadata{
                 .group_key = pending.group_key,
@@ -224,6 +228,10 @@ class BatchPlanner {
             .state = DispatchRequestState::kQueued,
             .budget_cost = DispatchBudgetCost{.transaction_units = 1},
             .queued_ts_ns = item.ingress_ts_ns,
+            .planned_ts_ns = gateway_now_ns(),
+            .admitted_ts_ns = 0,
+            .session_submit_ts_ns = 0,
+            .connection_start_ts_ns = 0,
             .group_key = item.group_key,
             .batch_group =
                 item.batch_group.has_value()

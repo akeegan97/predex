@@ -105,6 +105,8 @@ ConnectionStartResult AsyncRestConnection::try_start(DispatchRequest request) no
     }
 
     inflight_request_ = std::move(request);
+    inflight_request_->connection_start_ts_ns = gateway_now_ns();
+    inflight_request_->state = DispatchRequestState::kDispatchedPreWrite;
     inflight_item_index_ = 0;
     emitted_events_.clear();
     last_trace_.reset();
@@ -204,6 +206,13 @@ ConnectionPollResult AsyncRestConnection::poll() noexcept {
     }
 
     return {.status = ConnectionPollStatus::kInFlight};
+}
+
+bool AsyncRestConnection::warm_up() noexcept {
+    if (!idle()) {
+        return false;
+    }
+    return adapter_.warm_up();
 }
 
 void AsyncRestConnection::keep_warm() noexcept {
@@ -339,6 +348,14 @@ transport::CommandResult AsyncRestConnection::complete_item_(
                                                        : transport::RestTraceInfo{};
             trace.http_status_code = response.status_code;
             trace.retry_count = response.retry_count;
+            trace.reused_connection = response.reused_connection;
+            trace.resolve_start_ts_ns = response.resolve_start_ts_ns;
+            trace.resolve_end_ts_ns = response.resolve_end_ts_ns;
+            trace.connect_start_ts_ns = response.connect_start_ts_ns;
+            trace.connect_end_ts_ns = response.connect_end_ts_ns;
+            trace.handshake_start_ts_ns = response.handshake_start_ts_ns;
+            trace.handshake_end_ts_ns = response.handshake_end_ts_ns;
+            trace.write_start_ts_ns = response.write_start_ts_ns;
             trace.request_sent_ts_ns = response.request_sent_ts_ns;
             trace.response_recv_ts_ns = response.response_recv_ts_ns;
             trace.response_body = response.body;
@@ -375,6 +392,14 @@ transport::CommandResult AsyncRestConnection::complete_batched_submit_request_(
                                                : transport::RestTraceInfo{};
     trace.http_status_code = response.status_code;
     trace.retry_count = response.retry_count;
+    trace.reused_connection = response.reused_connection;
+    trace.resolve_start_ts_ns = response.resolve_start_ts_ns;
+    trace.resolve_end_ts_ns = response.resolve_end_ts_ns;
+    trace.connect_start_ts_ns = response.connect_start_ts_ns;
+    trace.connect_end_ts_ns = response.connect_end_ts_ns;
+    trace.handshake_start_ts_ns = response.handshake_start_ts_ns;
+    trace.handshake_end_ts_ns = response.handshake_end_ts_ns;
+    trace.write_start_ts_ns = response.write_start_ts_ns;
     trace.request_sent_ts_ns = response.request_sent_ts_ns;
     trace.response_recv_ts_ns = response.response_recv_ts_ns;
     trace.response_body = response.body;
@@ -404,18 +429,103 @@ void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion
                 ? completion.request.group_key->expected_leg_count
                 : static_cast<std::uint16_t>(0))
         << ",\"queued_ts_ns\":" << completion.request.queued_ts_ns
+        << ",\"first_item_sequenced_ts_ns\":"
+        << (!completion.request.items.empty() ? completion.request.items.front().sequenced_ts_ns : 0)
+        << ",\"planned_ts_ns\":" << completion.request.planned_ts_ns
+        << ",\"admitted_ts_ns\":" << completion.request.admitted_ts_ns
+        << ",\"session_submit_ts_ns\":" << completion.request.session_submit_ts_ns
+        << ",\"connection_start_ts_ns\":" << completion.request.connection_start_ts_ns
         << ",\"completed_ts_ns\":" << completion.completed_ts_ns
         << ",\"latency_ns\":"
         << (completion.completed_ts_ns >= completion.request.queued_ts_ns
                 ? completion.completed_ts_ns - completion.request.queued_ts_ns
+                : 0)
+        << ",\"queued_to_planned_ns\":"
+        << (completion.request.planned_ts_ns >= completion.request.queued_ts_ns
+                ? completion.request.planned_ts_ns - completion.request.queued_ts_ns
+                : 0)
+        << ",\"ingress_to_sequence_ns\":"
+        << ((!completion.request.items.empty() &&
+             completion.request.items.front().sequenced_ts_ns >= completion.request.queued_ts_ns)
+                ? completion.request.items.front().sequenced_ts_ns -
+                      completion.request.queued_ts_ns
+                : 0)
+        << ",\"sequence_to_plan_ns\":"
+        << ((!completion.request.items.empty() &&
+             completion.request.planned_ts_ns >= completion.request.items.front().sequenced_ts_ns)
+                ? completion.request.planned_ts_ns -
+                      completion.request.items.front().sequenced_ts_ns
+                : 0)
+        << ",\"planned_to_admitted_ns\":"
+        << (completion.request.admitted_ts_ns >= completion.request.planned_ts_ns
+                ? completion.request.admitted_ts_ns - completion.request.planned_ts_ns
+                : 0)
+        << ",\"admitted_to_session_submit_ns\":"
+        << (completion.request.session_submit_ts_ns >= completion.request.admitted_ts_ns
+                ? completion.request.session_submit_ts_ns - completion.request.admitted_ts_ns
+                : 0)
+        << ",\"session_submit_to_connection_start_ns\":"
+        << (completion.request.connection_start_ts_ns >= completion.request.session_submit_ts_ns
+                ? completion.request.connection_start_ts_ns -
+                      completion.request.session_submit_ts_ns
                 : 0)
         << ",\"emitted_event_count\":" << completion.emitted_events.size()
         << ",\"http_status_code\":"
         << (completion.trace.has_value() ? completion.trace->http_status_code : 0)
         << ",\"retry_count\":"
         << (completion.trace.has_value() ? completion.trace->retry_count : 0)
+        << ",\"reused_connection\":"
+        << ((completion.trace.has_value() && completion.trace->reused_connection) ? "true" : "false")
+        << ",\"resolve_start_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->resolve_start_ts_ns : 0)
+        << ",\"resolve_end_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->resolve_end_ts_ns : 0)
+        << ",\"connect_start_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->connect_start_ts_ns : 0)
+        << ",\"connect_end_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->connect_end_ts_ns : 0)
+        << ",\"handshake_start_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->handshake_start_ts_ns : 0)
+        << ",\"handshake_end_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->handshake_end_ts_ns : 0)
+        << ",\"write_start_ts_ns\":"
+        << (completion.trace.has_value() ? completion.trace->write_start_ts_ns : 0)
         << ",\"request_sent_ts_ns\":"
         << (completion.trace.has_value() ? completion.trace->request_sent_ts_ns : 0)
+        << ",\"resolve_ns\":"
+        << ((completion.trace.has_value() &&
+             completion.trace->resolve_end_ts_ns >= completion.trace->resolve_start_ts_ns)
+                ? completion.trace->resolve_end_ts_ns - completion.trace->resolve_start_ts_ns
+                : 0)
+        << ",\"connect_ns\":"
+        << ((completion.trace.has_value() &&
+             completion.trace->connect_end_ts_ns >= completion.trace->connect_start_ts_ns)
+                ? completion.trace->connect_end_ts_ns - completion.trace->connect_start_ts_ns
+                : 0)
+        << ",\"handshake_ns\":"
+        << ((completion.trace.has_value() &&
+             completion.trace->handshake_end_ts_ns >= completion.trace->handshake_start_ts_ns)
+                ? completion.trace->handshake_end_ts_ns -
+                      completion.trace->handshake_start_ts_ns
+                : 0)
+        << ",\"write_queue_ns\":"
+        << ((completion.trace.has_value() &&
+             completion.trace->write_start_ts_ns >= completion.request.connection_start_ts_ns)
+                ? completion.trace->write_start_ts_ns -
+                      completion.request.connection_start_ts_ns
+                : 0)
+        << ",\"connection_start_to_request_sent_ns\":"
+        << ((completion.trace.has_value() &&
+             completion.trace->request_sent_ts_ns >= completion.request.connection_start_ts_ns)
+                ? completion.trace->request_sent_ts_ns -
+                      completion.request.connection_start_ts_ns
+                : 0)
+        << ",\"write_start_to_request_sent_ns\":"
+        << ((completion.trace.has_value() &&
+             completion.trace->request_sent_ts_ns >= completion.trace->write_start_ts_ns)
+                ? completion.trace->request_sent_ts_ns -
+                      completion.trace->write_start_ts_ns
+                : 0)
         << ",\"response_recv_ts_ns\":"
         << (completion.trace.has_value() ? completion.trace->response_recv_ts_ns : 0)
         << ",\"request_target\":";

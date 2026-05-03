@@ -169,6 +169,14 @@ HttpResponse PersistentHttpSession::send_json_request(const HttpRequest& request
         .ok = false,
         .status_code = 0,
         .retry_count = retry_response.retry_count,
+        .reused_connection = retry_response.reused_connection,
+        .resolve_start_ts_ns = retry_response.resolve_start_ts_ns,
+        .resolve_end_ts_ns = retry_response.resolve_end_ts_ns,
+        .connect_start_ts_ns = retry_response.connect_start_ts_ns,
+        .connect_end_ts_ns = retry_response.connect_end_ts_ns,
+        .handshake_start_ts_ns = retry_response.handshake_start_ts_ns,
+        .handshake_end_ts_ns = retry_response.handshake_end_ts_ns,
+        .write_start_ts_ns = retry_response.write_start_ts_ns,
         .request_sent_ts_ns = retry_response.request_sent_ts_ns,
         .response_recv_ts_ns = retry_response.response_recv_ts_ns,
         .body = {},
@@ -208,6 +216,17 @@ AsyncHttpPollResult PersistentHttpSession::poll_json_request() {
 
 bool PersistentHttpSession::has_inflight_request() const noexcept {
     return connection_ != nullptr && connection_->async_request != nullptr;
+}
+
+bool PersistentHttpSession::warm_up() {
+    if (!endpoint_valid_ || connection_ == nullptr || connection_->async_request != nullptr) {
+        return false;
+    }
+    const bool connected = ensure_connected_();
+    if (connected) {
+        last_call_ts_ = std::chrono::steady_clock::now();
+    }
+    return connected;
 }
 
 void PersistentHttpSession::check_and_keep_warm(std::uint64_t threshold_seconds) {
@@ -413,6 +432,7 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
     }
 
     if (connection_->connected && connection_->stream.has_value()) {
+        async.response.reused_connection = true;
         begin_async_write_();
         return;
     }
@@ -424,10 +444,15 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
         return;
     }
 
+    async.response.reused_connection = false;
+    async.response.resolve_start_ts_ns = monotonic_now_ns();
     connection_->resolver.async_resolve(
         endpoint_host_,
         endpoint_port_,
         [this](const beast::error_code& ec, tcp::resolver::results_type results) {
+            if (connection_ != nullptr && connection_->async_request != nullptr) {
+                connection_->async_request->response.resolve_end_ts_ns = monotonic_now_ns();
+            }
             if (ec) {
                 complete_async_request_(build_disconnected_response_(
                     transport_error_message("transport_retry", "resolve", ec)));
@@ -436,10 +461,16 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
 
             auto& lowest = beast::get_lowest_layer(*connection_->stream);
             lowest.expires_after(kConnectTimeout);
+            if (connection_ != nullptr && connection_->async_request != nullptr) {
+                connection_->async_request->response.connect_start_ts_ns = monotonic_now_ns();
+            }
             lowest.async_connect(
                 results,
                 [this](const beast::error_code& connect_ec,
                        const tcp::resolver::results_type::endpoint_type&) {
+                    if (connection_ != nullptr && connection_->async_request != nullptr) {
+                        connection_->async_request->response.connect_end_ts_ns = monotonic_now_ns();
+                    }
                     if (connect_ec) {
                         close_connection_();
                         complete_async_request_(build_disconnected_response_(
@@ -450,9 +481,17 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
                     auto& lowest_layer = beast::get_lowest_layer(*connection_->stream);
                     lowest_layer.socket().set_option(net::socket_base::keep_alive{true});
                     lowest_layer.expires_after(kConnectTimeout);
+                    if (connection_ != nullptr && connection_->async_request != nullptr) {
+                        connection_->async_request->response.handshake_start_ts_ns =
+                            monotonic_now_ns();
+                    }
                     connection_->stream->async_handshake(
                         ssl::stream_base::client,
                         [this](const beast::error_code& handshake_ec) {
+                            if (connection_ != nullptr && connection_->async_request != nullptr) {
+                                connection_->async_request->response.handshake_end_ts_ns =
+                                    monotonic_now_ns();
+                            }
                             if (handshake_ec) {
                                 close_connection_();
                                 complete_async_request_(
@@ -481,6 +520,7 @@ void PersistentHttpSession::begin_async_write_() {
     auto& stream = *connection_->stream;
     auto& lowest = beast::get_lowest_layer(stream);
     lowest.expires_after(kIoTimeout);
+    async.response.write_start_ts_ns = monotonic_now_ns();
     http::async_write(
         stream,
         async.raw_request,
@@ -540,6 +580,14 @@ void PersistentHttpSession::begin_async_write_() {
                         .ok = ok,
                         .status_code = status_code,
                         .retry_count = 0,
+                        .reused_connection = finished_async.response.reused_connection,
+                        .resolve_start_ts_ns = finished_async.response.resolve_start_ts_ns,
+                        .resolve_end_ts_ns = finished_async.response.resolve_end_ts_ns,
+                        .connect_start_ts_ns = finished_async.response.connect_start_ts_ns,
+                        .connect_end_ts_ns = finished_async.response.connect_end_ts_ns,
+                        .handshake_start_ts_ns = finished_async.response.handshake_start_ts_ns,
+                        .handshake_end_ts_ns = finished_async.response.handshake_end_ts_ns,
+                        .write_start_ts_ns = finished_async.response.write_start_ts_ns,
                         .request_sent_ts_ns = finished_async.response.request_sent_ts_ns,
                         .response_recv_ts_ns = response_recv_ts_ns,
                         .body = finished_async.raw_response.body(),
@@ -577,6 +625,14 @@ HttpResponse PersistentHttpSession::build_transport_error_response_(
         .ok = false,
         .status_code = 0,
         .retry_count = 0,
+        .reused_connection = false,
+        .resolve_start_ts_ns = 0,
+        .resolve_end_ts_ns = 0,
+        .connect_start_ts_ns = 0,
+        .connect_end_ts_ns = 0,
+        .handshake_start_ts_ns = 0,
+        .handshake_end_ts_ns = 0,
+        .write_start_ts_ns = 0,
         .request_sent_ts_ns = request_sent_ts_ns,
         .response_recv_ts_ns = 0,
         .body = {},

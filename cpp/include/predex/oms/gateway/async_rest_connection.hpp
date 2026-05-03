@@ -64,6 +64,7 @@ class AsyncRestConnection {
     [[nodiscard]] ConnectionPollResult poll() noexcept;
 
     // Performs connection warming/keepalive work while idle.
+    [[nodiscard]] bool warm_up() noexcept;
     void keep_warm() noexcept;
 
     // Closes the underlying session. Any unresolved in-flight request is left

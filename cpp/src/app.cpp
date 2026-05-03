@@ -599,6 +599,11 @@ namespace predex {
                     });
             }
 
+            auto recovery_rest_adapter = predex::core::oms::kalshi::transport::KalshiRestAdapter{
+                predex::core::oms::kalshi::transport::PersistentHttpSession{
+                    websocket::kalshi::AuthSigner{auth_signer},
+                    config.oms_transport.rest_endpoint}};
+
             oms_gateway = std::make_unique<OmsGateway>(
                 GatewayQueues{
                     .oms_command_queue = oms_command_queue.get(),
@@ -612,6 +617,7 @@ namespace predex {
                         .hot_connection_count = connection_count,
                     },
                 },
+                std::move(recovery_rest_adapter),
                 GatewayConfig{
                     .hot_queue_capacity = config.pipeline.shard_input_capacity,
                     .recovery_queue_capacity = config.pipeline.shard_input_capacity,
@@ -708,6 +714,7 @@ namespace predex {
         }
 
         if (config.oms_transport.enabled) {
+            (void)oms_gateway->warm_up_sessions();
             if (!reconcile_open_orders_from_rest(/*is_startup=*/true)) {
                 ws_session.close();
                 return false;
@@ -1086,6 +1093,36 @@ namespace predex {
                       static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
         const double gateway_last_latency_ms =
             static_cast<double>(gateway_telem.last_completion_latency_ns) / 1'000'000.0;
+        const double gateway_mean_queue_to_plan_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_queue_to_plan_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_ingress_to_sequence_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_ingress_to_sequence_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_sequence_to_plan_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_sequence_to_plan_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_plan_to_admit_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_plan_to_admit_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_admit_to_start_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_admit_to_start_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_start_to_wire_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_start_to_wire_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
 
         std::size_t desynced_events = 0;
         for (const auto& event_store : event_stores) {
@@ -1102,8 +1139,11 @@ namespace predex {
             " | oms_decisions=%llu | oms_transport=%llu"
             " | oms_lifecycle=%llu | oms_rejected=%llu"
             " | gw_submits=%llu | gw_completed=%llu | gw_uncertain=%llu"
+            " | gw_recovery_attempts=%llu | gw_recovered=%llu | gw_recovery_uncertain=%llu"
             " | gw_pool_bp=%llu | gw_hot_idle=%zu | gw_hot_inflight=%zu"
             " | gw_last_ms=%.3f | gw_mean_ms=%.3f"
+            " | gw_i2s_ms=%.3f | gw_s2p_ms=%.3f | gw_q2p_ms=%.3f"
+            " | gw_p2a_ms=%.3f | gw_a2s_ms=%.3f | gw_s2w_ms=%.3f"
             " | sp_accept=%llu | sp_complete=%llu"
             " | router_frames=%zu | router_drop_bp=%zu | router_shard_bp=%zu | router_drop_lifecycle=%zu"
             " | router_drop_invalid=%zu | router_seq_rejects=%zu | desynced_events=%zu\n",
@@ -1119,11 +1159,20 @@ namespace predex {
             static_cast<unsigned long long>(gateway_telem.submitted_to_session_pool),
             static_cast<unsigned long long>(gateway_telem.completed_requests),
             static_cast<unsigned long long>(gateway_telem.uncertain_requests),
+            static_cast<unsigned long long>(gateway_telem.recovery_attempts),
+            static_cast<unsigned long long>(gateway_telem.recovery_resolved_items),
+            static_cast<unsigned long long>(gateway_telem.recovery_uncertain_items),
             static_cast<unsigned long long>(gateway_telem.session_pool_backpressure),
             gateway_hot_idle,
             gateway_hot_inflight,
             gateway_last_latency_ms,
             gateway_mean_latency_ms,
+            gateway_mean_ingress_to_sequence_ms,
+            gateway_mean_sequence_to_plan_ms,
+            gateway_mean_queue_to_plan_ms,
+            gateway_mean_plan_to_admit_ms,
+            gateway_mean_admit_to_start_ms,
+            gateway_mean_start_to_wire_ms,
             static_cast<unsigned long long>(session_pool_telem.accepted_requests),
             static_cast<unsigned long long>(session_pool_telem.completed_requests),
             telem.processed_frames_,

@@ -100,6 +100,22 @@ void append_json_escaped(std::string& out, std::string_view value) {
     return std::isalnum(uch) != 0 || car == '-' || car == '_' || car == '.' || car == '~';
 }
 
+[[nodiscard]] std::optional<std::int64_t> internal_ticks_to_kalshi_price(
+    internal::PriceTicks price_ticks) noexcept {
+    if (price_ticks <= 0 || price_ticks >= internal::kMaxPriceTicks) {
+        return std::nullopt;
+    }
+    if (price_ticks % internal::kTicksPerCent != 0) {
+        return std::nullopt;
+    }
+
+    const auto cents = price_ticks / internal::kTicksPerCent;
+    if (cents < 1 || cents > 99) {
+        return std::nullopt;
+    }
+    return cents;
+}
+
 void append_url_encoded(std::string& out, std::string_view value) {
     //NOLINTNEXTLINE
     static constexpr char kHex[] = "0123456789ABCDEF";
@@ -121,6 +137,7 @@ void build_submit_body(const SubmitOrderCmd& command,
                        std::string_view outcome_side,
                        std::string_view time_in_force,
                        std::string_view price_field,
+                       std::optional<std::int64_t> price_cents,
                        std::string& body) {
     body.clear();
     body.reserve(256 + command.market_ticker.size() + command.order.client_order_id.value.size());
@@ -137,11 +154,11 @@ void build_submit_body(const SubmitOrderCmd& command,
     append_json_escaped(body, internal::format_quantity_fp(command.intent.qty_lots));
     body.append(",\"time_in_force\":");
     append_json_escaped(body, time_in_force);
-    if (command.intent.limit_price_ticks.has_value()) {
+    if (price_cents.has_value()) {
         body.push_back(',');
         append_json_escaped(body, price_field);
         body.push_back(':');
-        body.append(std::to_string(*command.intent.limit_price_ticks));
+        body.append(std::to_string(*price_cents));
     }
     body.push_back('}');
 }
@@ -171,7 +188,15 @@ void build_submit_body(const SubmitOrderCmd& command,
 
     const std::string_view price_field =
         command.intent.outcome == Outcome::kYes ? "yes_price" : "no_price";
-    build_submit_body(command, action, outcome_side, tif, price_field, out_body);
+    std::optional<std::int64_t> price_cents;
+    if (command.intent.limit_price_ticks.has_value()) {
+        price_cents = internal_ticks_to_kalshi_price(*command.intent.limit_price_ticks);
+        if (!price_cents.has_value()) {
+            error_message = "submit_order: limit_price_ticks must convert to Kalshi integer cents in [1,99]";
+            return false;
+        }
+    }
+    build_submit_body(command, action, outcome_side, tif, price_field, price_cents, out_body);
     return true;
 }
 
@@ -180,6 +205,7 @@ void build_modify_body(const ModifyOrderCmd& command,
                        std::string_view action,
                        std::string_view outcome_side,
                        std::string_view price_field,
+                       std::optional<std::int64_t> price_cents,
                        std::string& body) {
     body.clear();
     body.reserve(256 + command.corr.order.client_order_id.value.size() +
@@ -195,11 +221,11 @@ void build_modify_body(const ModifyOrderCmd& command,
     append_json_escaped(body, action);
     body.append(",\"count_fp\":");
     append_json_escaped(body, internal::format_quantity_fp(command.replacement.qty_lots));
-    if (command.replacement.limit_price_ticks.has_value()) {
+    if (price_cents.has_value()) {
         body.push_back(',');
         append_json_escaped(body, price_field);
         body.push_back(':');
-        body.append(std::to_string(*command.replacement.limit_price_ticks));
+        body.append(std::to_string(*price_cents));
     }
     body.push_back('}');
 }
@@ -460,7 +486,16 @@ PreparedCommandRequest KalshiRestAdapter::prepare_modify_order(const ModifyOrder
     const std::string_view price_field =
         command.replacement.outcome == Outcome::kYes ? "yes_price" : "no_price";
     thread_local std::string body_scratch;
-    build_modify_body(command, action, outcome_side, price_field, body_scratch);
+    std::optional<std::int64_t> price_cents;
+    if (command.replacement.limit_price_ticks.has_value()) {
+        price_cents = internal_ticks_to_kalshi_price(*command.replacement.limit_price_ticks);
+        if (!price_cents.has_value()) {
+            return {.ok = false,
+                    .error_message =
+                        "modify_order: limit_price_ticks must convert to Kalshi integer cents in [1,99]"};
+        }
+    }
+    build_modify_body(command, action, outcome_side, price_field, price_cents, body_scratch);
 
     const auto target = build_modify_target_(*command.corr.order.exchange_order_id);
     return PreparedCommandRequest{

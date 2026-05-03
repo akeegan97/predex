@@ -31,3 +31,7 @@ docs/replay/soak_analysis.json
 docs/replay/soak_analysis_2026-05-03.json
 docs/replay/soak_analysis_overnight_2026-05-03.json
 predex_tape_overnight_5_2_2026.bin
+predex_audit_live.jsonl
+predex_audit_live2.jsonl
+predex_tape_live.bin
+predex_tape_live2.bin

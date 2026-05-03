@@ -27,6 +27,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -39,6 +40,7 @@ constexpr int kExitArgsFailure = 2;
 constexpr int kExitConfigFailure = 3;
 constexpr int kExitRuntimeFailure = 5;
 constexpr std::size_t kPumpBatchSize = 1024;
+constexpr auto kStatusInterval = std::chrono::seconds(30);
 
 using FrameHandle = predex::core::ingest::kalshi::FrameHandle;
 using FramePool = predex::core::ingest::kalshi::FramePool;
@@ -249,6 +251,43 @@ class TapeReader {
         return true;
     }
 
+    [[nodiscard]] std::optional<std::uint64_t> count_records() const {
+        std::ifstream input(path_, std::ios::binary);
+        if (!input.is_open()) {
+            return std::nullopt;
+        }
+
+        std::array<char, 4> magic{};
+        std::uint16_t version = 0;
+        std::uint16_t flags = 0;
+        input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+        input.read(reinterpret_cast<char*>(&version), sizeof(version));
+        input.read(reinterpret_cast<char*>(&flags), sizeof(flags));
+        if (!input || magic != std::array<char, 4>{'P', 'D', 'T', '2'} || version != 2) {
+            return std::nullopt;
+        }
+
+        std::uint64_t count = 0;
+        while (true) {
+            std::uint64_t recv_ts_ns = 0;
+            std::uint32_t len = 0;
+            input.read(reinterpret_cast<char*>(&recv_ts_ns), sizeof(recv_ts_ns));
+            if (input.eof()) {
+                break;
+            }
+            input.read(reinterpret_cast<char*>(&len), sizeof(len));
+            if (!input || len > predex::core::ingest::kalshi::kMaxFrameBytes) {
+                return std::nullopt;
+            }
+            input.seekg(static_cast<std::streamoff>(len), std::ios::cur);
+            if (!input) {
+                return std::nullopt;
+            }
+            ++count;
+        }
+        return count;
+    }
+
     bool read_next(FramePool& frame_pool, FrameHandle& handle_out) {
         std::uint64_t recv_ts_ns = 0;
         std::uint32_t len = 0;
@@ -397,6 +436,15 @@ class ReplayRuntime {
             error_ = tape_reader_.error();
             return false;
         }
+        total_records_ = tape_reader_.count_records();
+        if (!total_records_.has_value()) {
+            error_ = "Failed to count replay tape records";
+            return false;
+        }
+
+        start_time_ = std::chrono::steady_clock::now();
+        next_status_time_ = *start_time_ + kStatusInterval;
+        print_status_line("start");
 
         FrameHandle handle{};
         while (tape_reader_.read_next(frame_pool_, handle)) {
@@ -407,6 +455,7 @@ class ReplayRuntime {
             if (!drain_to_quiescence()) {
                 return false;
             }
+            maybe_print_status_line();
         }
 
         if (!tape_reader_.error().empty()) {
@@ -417,9 +466,11 @@ class ReplayRuntime {
         if (!drain_to_quiescence()) {
             return false;
         }
+        print_status_line("finalizing");
         while (audit_logger_ != nullptr && audit_logger_->pump(kPumpBatchSize) > 0) {}
 
         std::cout << "Replay complete | frames=" << tape_reader_.records_read()
+                  << " | total_frames=" << total_records_.value_or(0)
                   << " | router_frames=" << router_->telemetry().processed_frames_
                   << " | router_seq_rejects=" << router_->telemetry().sequence_rejects_
                   << " | router_drop_bp=" << router_->telemetry().dropped_backpressure_
@@ -466,6 +517,9 @@ class ReplayRuntime {
 
     TapeReader tape_reader_;
     SyntheticRejectTransport synthetic_transport_;
+    std::optional<std::uint64_t> total_records_;
+    std::optional<std::chrono::steady_clock::time_point> start_time_;
+    std::optional<std::chrono::steady_clock::time_point> next_status_time_;
 
     void init() {
         for (const auto& entry : market_registry_entries_) {
@@ -674,6 +728,42 @@ class ReplayRuntime {
             ++recycled;
         }
         return recycled;
+    }
+
+    void maybe_print_status_line() {
+        if (!next_status_time_.has_value()) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now < *next_status_time_) {
+            return;
+        }
+        print_status_line("running");
+        next_status_time_ = now + kStatusInterval;
+    }
+
+    void print_status_line(std::string_view phase) const {
+        const std::uint64_t processed_frames = tape_reader_.records_read();
+        const std::uint64_t total_frames = total_records_.value_or(0);
+        const std::uint64_t remaining_frames =
+            total_frames >= processed_frames ? total_frames - processed_frames : 0;
+        const auto elapsed_seconds =
+            start_time_.has_value()
+                ? std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::steady_clock::now() - *start_time_)
+                      .count()
+                : 0;
+        std::cout << "Replay status"
+                  << " | phase=" << phase
+                  << " | elapsed_s=" << elapsed_seconds
+                  << " | frames_processed=" << processed_frames
+                  << " | frames_remaining=" << remaining_frames
+                  << " | total_frames=" << total_frames
+                  << " | router_frames=" << router_->telemetry().processed_frames_
+                  << " | oms_requests=" << oms_->processed_shard_request_count()
+                  << " | oms_events=" << oms_->processed_kalshi_event_count()
+                  << '\n';
+        std::cout.flush();
     }
 };
 

@@ -21,18 +21,6 @@ std::optional<std::string> get_env(const char* name) {
 }
 
 std::optional<std::string> resolve_credential_env(std::string_view env_name) {
-    if (env_name == "KALSHI_KEY_ID") {
-        if (auto read_only_value = get_env("READ_ONLY_KALSHI_KEY_ID");
-            read_only_value.has_value()) {
-            return read_only_value;
-        }
-    } else if (env_name == "KALSHI_PRIVATE_KEY_PEM") {
-        if (auto read_only_value = get_env("READ_ONLY_KALSHI_PRIVATE_KEY_PEM");
-            read_only_value.has_value()) {
-            return read_only_value;
-        }
-    }
-
     const std::string env_name_string{env_name};
     return get_env(env_name_string.c_str());
 }
@@ -200,14 +188,6 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
                 config.kalshi_ws.private_key_pem = resolve_credential_env(env_name).value_or("");
             }
         }
-    }
-
-    if (config.kalshi_ws.key_id.empty()) {
-        config.kalshi_ws.key_id = get_env("READ_ONLY_KALSHI_KEY_ID").value_or("");
-    }
-    if (config.kalshi_ws.private_key_pem.empty()) {
-        config.kalshi_ws.private_key_pem =
-            get_env("READ_ONLY_KALSHI_PRIVATE_KEY_PEM").value_or("");
     }
 
     const auto pipeline_it = root.find("pipeline");

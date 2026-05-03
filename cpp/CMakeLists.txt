@@ -119,4 +119,19 @@ if(BUILD_TESTING)
     NAME KalshiParserRegressionTest.ReciprocatesExplicitNoDeltaPrice
     COMMAND parser_regression_test
   )
+
+  add_executable(
+    kalshi_rest_adapter_boundary_test
+    tests/kalshi_rest_adapter_boundary.cpp
+  )
+
+  target_link_libraries(
+    kalshi_rest_adapter_boundary_test
+    PRIVATE predex::websocket
+  )
+
+  add_test(
+    NAME KalshiRestAdapterBoundaryTest.RejectsNonCentInternalTicks
+    COMMAND kalshi_rest_adapter_boundary_test
+  )
 endif()

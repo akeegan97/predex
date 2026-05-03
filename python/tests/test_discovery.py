@@ -102,6 +102,31 @@ class ClassifierTests(unittest.TestCase):
             ["MKT-LT-20", "MKT-LT-10"],
         )
 
+    def test_numeric_thresholds_with_distinct_close_times_stay_unordered(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-HORIZON-MISMATCH",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-2025",
+                    event_ticker="EV-NUMERIC-HORIZON-MISMATCH",
+                    strike_type="less",
+                    cap_strike=3317.5,
+                    close_time="2025-12-31T23:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-2030",
+                    event_ticker="EV-NUMERIC-HORIZON-MISMATCH",
+                    strike_type="less",
+                    cap_strike=4909.9,
+                    close_time="2030-12-31T23:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
+
     def test_before_close_time_ladder_reverses_into_easiest_to_hardest_order(self) -> None:
         event = EventRecord(
             event_ticker="EV-DATE",

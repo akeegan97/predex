@@ -6,6 +6,7 @@
 #include <chrono>
 #include <csignal>
 #include <iostream>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -18,6 +19,27 @@ constexpr int kExitConfigFailure = 3;
 constexpr int kExitStartupFailure = 4;
 constexpr int kExitRuntimeFailure = 5;
 constexpr std::int64_t kDefaultSleepMs = 100;
+
+std::string mask_secret(std::string_view value) {
+    if (value.empty()) {
+        return "<empty>";
+    }
+    if (value.size() <= 8) {
+        return std::string(value.size(), '*');
+    }
+    return std::string{value.substr(0, 4)} + "..." +
+        std::string{value.substr(value.size() - 4)};
+}
+
+std::string describe_pem_source(std::string_view value) {
+    if (value.empty()) {
+        return "empty";
+    }
+    if (value.find("-----BEGIN") != std::string_view::npos) {
+        return "inline_pem";
+    }
+    return "file_path";
+}
 
 void handle_shutdown_signal(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
@@ -41,6 +63,15 @@ int main(int argc, char** argv) {
         std::cerr << "Invalid trader config: " << config_error << '\n';
         return kExitConfigFailure;
     }
+
+    std::cout << "Trader credential diagnostic"
+              << " | ws_endpoint=" << app_config->kalshi_ws.endpoint
+              << " | key_id=" << mask_secret(app_config->kalshi_ws.key_id)
+              << " | private_key_source="
+              << describe_pem_source(app_config->kalshi_ws.private_key_pem)
+              << " | has_private_key="
+              << (!app_config->kalshi_ws.private_key_pem.empty() ? "true" : "false")
+              << '\n';
 
     std::signal(SIGINT, handle_shutdown_signal);
     std::signal(SIGTERM, handle_shutdown_signal);

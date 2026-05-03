@@ -159,9 +159,21 @@ def _numeric_entity_key(market: MarketRecord) -> str | None:
     return None
 
 
+def _markets_share_decision_horizon(markets: list[MarketRecord]) -> bool:
+    reference_times = [market.primary_time_reference() for market in markets]
+    populated_times = {reference_time for reference_time in reference_times if reference_time}
+    if not populated_times:
+        return True
+    if len(populated_times) != 1:
+        return False
+    return len(populated_times) == len(reference_times)
+
+
 def _classify_numeric_monotonic_chain(event: EventRecord) -> ClassifiedEvent | None:
     strike_types = {market.strike_type.strip().lower() for market in event.markets if market.strike_type}
     if not strike_types or not strike_types.issubset(_NUMERIC_CHAIN_TYPES):
+        return None
+    if not _markets_share_decision_horizon(event.markets):
         return None
 
     classified_markets: list[ClassifiedMarket] = []
@@ -247,6 +259,8 @@ def classify_config_events(event: EventRecord) -> tuple[ClassifiedEvent, ...]:
 
     classified_events: list[ClassifiedEvent] = []
     for entity_key, grouped in sorted(grouped_markets.items()):
+        if not _markets_share_decision_horizon([classified.market for classified in grouped]):
+            return (_classify_event_without_numeric_split(event),)
         ordered = _ordered_classification(
             event,
             grouped,

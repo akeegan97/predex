@@ -280,6 +280,7 @@ OrderStore::VenueApplyResult OrderStore::apply_venue_event(const SourcedKalshiEv
                 state->pending_replacement.reset();
                 state->last_venue_reject_reason = event.reason;
             } else if constexpr (std::is_same_v<T, VenueOrderCanceled>) {
+                state->working_qty_lots = 0;
                 state->status = OrderStatus::kCanceled;
                 state->terminal_ts_ns = event.recv_ts_ns;
                 result.remaining_open_qty_lots = state->working_qty_lots;

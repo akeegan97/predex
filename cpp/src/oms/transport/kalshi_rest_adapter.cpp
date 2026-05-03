@@ -239,6 +239,40 @@ void build_modify_body(const ModifyOrderCmd& command,
 }
 
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
+                                                       internal::PriceTicks& out_ticks);
+
+[[nodiscard]] std::optional<internal::PriceTicks> parse_snapshot_price_ticks(
+    const nlohmann::json& order_json,
+    Outcome outcome) {
+    internal::PriceTicks parsed_ticks = 0;
+    const auto* price_text = outcome == Outcome::kYes
+        ? order_json.contains("yes_price_dollars") && order_json["yes_price_dollars"].is_string()
+              ? &order_json["yes_price_dollars"]
+              : nullptr
+        : order_json.contains("no_price_dollars") && order_json["no_price_dollars"].is_string()
+              ? &order_json["no_price_dollars"]
+              : nullptr;
+    if (price_text == nullptr) {
+        return std::nullopt;
+    }
+    if (!parse_non_negative_dollars_to_ticks(price_text->get_ref<const std::string&>(), parsed_ticks)) {
+        return std::nullopt;
+    }
+    return parsed_ticks;
+}
+
+[[nodiscard]] std::string normalized_order_status(const nlohmann::json& order_json) {
+    if (!order_json.contains("status") || !order_json["status"].is_string()) {
+        return {};
+    }
+    std::string status = order_json["status"].get<std::string>();
+    std::transform(status.begin(), status.end(), status.begin(), [](unsigned char car) {
+        return static_cast<char>(std::tolower(car));
+    });
+    return status;
+}
+
+[[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                         internal::PriceTicks& out_ticks) {
     constexpr std::uint64_t kDollarToTicksScale =
         static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
@@ -723,14 +757,54 @@ CommandResult KalshiRestAdapter::parse_batched_submit_response_(
                     order.exchange_order_id = ExchangeOrderId{
                         .value = order_json["order_id"].get<std::string>()};
                 }
+                const internal::QtyLots accepted_qty_lots =
+                    std::max(parse_count_fp_to_lots(order_json.value("initial_count_fp", "")),
+                             command.intent.qty_lots);
+                const internal::QtyLots fill_qty_lots =
+                    parse_count_fp_to_lots(order_json.value("fill_count_fp", ""));
+                const internal::QtyLots remaining_qty_lots =
+                    parse_count_fp_to_lots(order_json.value("remaining_count_fp", ""));
+                const auto fill_price_ticks =
+                    parse_snapshot_price_ticks(order_json, command.intent.outcome);
+                const auto status = normalized_order_status(order_json);
+
                 result.events.push_back(KalshiToOmsEvent{VenueOrderAck{
                     .order = std::move(order),
                     .transport_submit_ts_ns = trace.request_sent_ts_ns,
                     .recv_ts_ns = trace.response_recv_ts_ns,
                     .http_status_code = static_cast<std::uint16_t>(response.status_code),
                     .retry_count = static_cast<std::uint16_t>(response.retry_count),
-                    .accepted_qty_lots = command.intent.qty_lots,
+                    .accepted_qty_lots = accepted_qty_lots,
                 }});
+
+                const OmsOrderRef& emitted_order =
+                    std::get<VenueOrderAck>(result.events.back()).order;
+                if (fill_qty_lots > 0) {
+                    const bool terminal_fill = remaining_qty_lots == 0 && status != "canceled";
+                    if (terminal_fill) {
+                        result.events.push_back(KalshiToOmsEvent{VenueOrderFill{
+                            .order = emitted_order,
+                            .recv_ts_ns = trace.response_recv_ts_ns,
+                            .fill_qty_lots = fill_qty_lots,
+                            .fill_price_ticks = fill_price_ticks.value_or(0),
+                            .side = command.intent.side,
+                        }});
+                    } else {
+                        result.events.push_back(KalshiToOmsEvent{VenueOrderPartialFill{
+                            .order = emitted_order,
+                            .recv_ts_ns = trace.response_recv_ts_ns,
+                            .fill_qty_lots = fill_qty_lots,
+                            .fill_price_ticks = fill_price_ticks.value_or(0),
+                            .side = command.intent.side,
+                        }});
+                    }
+                }
+                if (status == "canceled") {
+                    result.events.push_back(KalshiToOmsEvent{VenueOrderCanceled{
+                        .order = emitted_order,
+                        .recv_ts_ns = trace.response_recv_ts_ns,
+                    }});
+                }
                 continue;
             }
 

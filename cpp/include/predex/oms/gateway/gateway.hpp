@@ -74,6 +74,12 @@ struct GatewayTelemetry {
     std::uint64_t last_admit_to_start_ns{0};
     std::uint64_t total_start_to_wire_ns{0};
     std::uint64_t last_start_to_wire_ns{0};
+    std::uint64_t reused_connection_requests{0};
+    std::uint64_t cold_connection_requests{0};
+    std::uint64_t total_cold_setup_ns{0};
+    std::uint64_t last_cold_setup_ns{0};
+    std::uint64_t total_wire_to_response_ns{0};
+    std::uint64_t last_wire_to_response_ns{0};
     std::uint64_t recovery_attempts{0};
     std::uint64_t recovery_resolved_requests{0};
     std::uint64_t recovery_resolved_items{0};
@@ -162,6 +168,7 @@ class Gateway {
     [[nodiscard]] RateLimiter& rate_limiter() noexcept { return rate_limiter_; }
     [[nodiscard]] SessionPool& session_pool() noexcept { return session_pool_; }
     [[nodiscard]] std::size_t warm_up_sessions() noexcept { return session_pool_.warm_up(); }
+    void keep_warm_sessions() noexcept { session_pool_.keep_warm(); }
     [[nodiscard]] const GatewayTelemetry& telemetry() const noexcept { return telemetry_; }
 
   private:
@@ -281,6 +288,32 @@ class Gateway {
                     ? completion.completion.trace->request_sent_ts_ns -
                           completion.completion.request.connection_start_ts_ns
                     : 0;
+            const auto cold_setup_ns =
+                completion.completion.trace.has_value() &&
+                        !completion.completion.trace->reused_connection
+                    ? ((completion.completion.trace->resolve_end_ts_ns >=
+                                completion.completion.trace->resolve_start_ts_ns
+                            ? completion.completion.trace->resolve_end_ts_ns -
+                                  completion.completion.trace->resolve_start_ts_ns
+                            : 0) +
+                       (completion.completion.trace->connect_end_ts_ns >=
+                                completion.completion.trace->connect_start_ts_ns
+                            ? completion.completion.trace->connect_end_ts_ns -
+                                  completion.completion.trace->connect_start_ts_ns
+                            : 0) +
+                       (completion.completion.trace->handshake_end_ts_ns >=
+                                completion.completion.trace->handshake_start_ts_ns
+                            ? completion.completion.trace->handshake_end_ts_ns -
+                                  completion.completion.trace->handshake_start_ts_ns
+                            : 0))
+                    : 0;
+            const auto wire_to_response_ns =
+                completion.completion.trace.has_value() &&
+                        completion.completion.trace->response_recv_ts_ns >=
+                            completion.completion.trace->request_sent_ts_ns
+                    ? completion.completion.trace->response_recv_ts_ns -
+                          completion.completion.trace->request_sent_ts_ns
+                    : 0;
             telemetry_.last_completion_latency_ns = completion_latency_ns;
             telemetry_.total_completion_latency_ns += completion_latency_ns;
             telemetry_.last_ingress_to_sequence_ns = ingress_to_sequence_ns;
@@ -295,6 +328,17 @@ class Gateway {
             telemetry_.total_admit_to_start_ns += admit_to_start_ns;
             telemetry_.last_start_to_wire_ns = start_to_wire_ns;
             telemetry_.total_start_to_wire_ns += start_to_wire_ns;
+            telemetry_.last_wire_to_response_ns = wire_to_response_ns;
+            telemetry_.total_wire_to_response_ns += wire_to_response_ns;
+            if (completion.completion.trace.has_value()) {
+                if (completion.completion.trace->reused_connection) {
+                    ++telemetry_.reused_connection_requests;
+                } else {
+                    ++telemetry_.cold_connection_requests;
+                    telemetry_.last_cold_setup_ns = cold_setup_ns;
+                    telemetry_.total_cold_setup_ns += cold_setup_ns;
+                }
+            }
             pending_completions_.pop_front();
             made_progress = true;
         }

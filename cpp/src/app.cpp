@@ -857,6 +857,7 @@ namespace predex {
         std::uint32_t idle_iters = 0;
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             const bool made_progress = oms_gateway->pump_once();
+            oms_gateway->keep_warm_sessions();
             if (made_progress) {
                 idle_iters = 0;
                 continue;
@@ -1123,6 +1124,16 @@ namespace predex {
                 ? 0.0
                 : static_cast<double>(gateway_telem.total_start_to_wire_ns) /
                       static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_wire_to_response_ms =
+            gateway_telem.completed_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_wire_to_response_ns) /
+                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        const double gateway_mean_cold_setup_ms =
+            gateway_telem.cold_connection_requests == 0
+                ? 0.0
+                : static_cast<double>(gateway_telem.total_cold_setup_ns) /
+                      static_cast<double>(gateway_telem.cold_connection_requests) / 1'000'000.0;
 
         std::size_t desynced_events = 0;
         for (const auto& event_store : event_stores) {
@@ -1144,6 +1155,7 @@ namespace predex {
             " | gw_last_ms=%.3f | gw_mean_ms=%.3f"
             " | gw_i2s_ms=%.3f | gw_s2p_ms=%.3f | gw_q2p_ms=%.3f"
             " | gw_p2a_ms=%.3f | gw_a2s_ms=%.3f | gw_s2w_ms=%.3f"
+            " | gw_wire_ms=%.3f | gw_cold_ms=%.3f | gw_reused=%llu | gw_cold=%llu"
             " | sp_accept=%llu | sp_complete=%llu"
             " | router_frames=%zu | router_drop_bp=%zu | router_shard_bp=%zu | router_drop_lifecycle=%zu"
             " | router_drop_invalid=%zu | router_seq_rejects=%zu | desynced_events=%zu\n",
@@ -1173,6 +1185,10 @@ namespace predex {
             gateway_mean_plan_to_admit_ms,
             gateway_mean_admit_to_start_ms,
             gateway_mean_start_to_wire_ms,
+            gateway_mean_wire_to_response_ms,
+            gateway_mean_cold_setup_ms,
+            static_cast<unsigned long long>(gateway_telem.reused_connection_requests),
+            static_cast<unsigned long long>(gateway_telem.cold_connection_requests),
             static_cast<unsigned long long>(session_pool_telem.accepted_requests),
             static_cast<unsigned long long>(session_pool_telem.completed_requests),
             telem.processed_frames_,

@@ -127,6 +127,35 @@ class ClassifierTests(unittest.TestCase):
 
         self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
 
+    def test_numeric_thresholds_with_same_close_time_form_monotonic_chain(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-SAME-HORIZON",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-5",
+                    event_ticker="EV-NUMERIC-SAME-HORIZON",
+                    strike_type="greater",
+                    floor_strike=5,
+                    close_time="2030-01-01T00:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-6",
+                    event_ticker="EV-NUMERIC-SAME-HORIZON",
+                    strike_type="greater",
+                    floor_strike=6,
+                    close_time="2030-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.MONOTONIC_CHAIN)
+        self.assertEqual(
+            [market.market.ticker for market in classified.markets],
+            ["MKT-5", "MKT-6"],
+        )
+
     def test_before_close_time_ladder_reverses_into_easiest_to_hardest_order(self) -> None:
         event = EventRecord(
             event_ticker="EV-DATE",
@@ -226,6 +255,66 @@ class ClassifierTests(unittest.TestCase):
             [market.market.ticker for market in classified.markets],
             ["MKT-Q3", "MKT-Q2"],
         )
+
+    def test_close_time_ladder_with_same_numeric_threshold_forms_monotonic_chain(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-DATE",
+            title="When will this hit 100?",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-2027",
+                    event_ticker="EV-NUMERIC-DATE",
+                    strike_type="greater_or_equal",
+                    floor_strike=100,
+                    yes_sub_title="Before 2027",
+                    close_time="2027-01-01T00:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-2028",
+                    event_ticker="EV-NUMERIC-DATE",
+                    strike_type="greater_or_equal",
+                    floor_strike=100,
+                    yes_sub_title="Before 2028",
+                    close_time="2028-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.MONOTONIC_CHAIN)
+        self.assertEqual(
+            [market.market.ticker for market in classified.markets],
+            ["MKT-2028", "MKT-2027"],
+        )
+
+    def test_close_time_ladder_with_different_numeric_thresholds_stays_unordered(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-DATE-MIXED",
+            title="When will this hit these levels?",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-100-2027",
+                    event_ticker="EV-NUMERIC-DATE-MIXED",
+                    strike_type="greater_or_equal",
+                    floor_strike=100,
+                    yes_sub_title="Before 2027",
+                    close_time="2027-01-01T00:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-200-2028",
+                    event_ticker="EV-NUMERIC-DATE-MIXED",
+                    strike_type="greater_or_equal",
+                    floor_strike=200,
+                    yes_sub_title="Before 2028",
+                    close_time="2028-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
 
     def test_close_time_ladder_without_direction_hint_stays_unordered(self) -> None:
         event = EventRecord(

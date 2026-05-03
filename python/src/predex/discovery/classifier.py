@@ -164,9 +164,42 @@ def _markets_share_decision_horizon(markets: list[MarketRecord]) -> bool:
     populated_times = {reference_time for reference_time in reference_times if reference_time}
     if not populated_times:
         return True
+    if len(populated_times) == 1:
+        return len(populated_times) < len(reference_times) + 1 and all(reference_times)
     if len(populated_times) != 1:
         return False
     return len(populated_times) == len(reference_times)
+
+
+def _numeric_time_ladder_threshold(markets: list[MarketRecord]) -> Decimal | None:
+    strike_types = {market.strike_type.strip().lower() for market in markets if market.strike_type}
+    if not strike_types:
+        return None
+    if not (strike_types.issubset(_GREATER_TYPES) or strike_types.issubset(_LESS_TYPES)):
+        return None
+
+    threshold_values: set[Decimal] = set()
+    for market in markets:
+        strike_key = _numeric_monotonic_key(market)
+        if strike_key is None:
+            return None
+
+        strike_type = market.strike_type.strip().lower()
+        if strike_type in _GREATER_TYPES:
+            threshold = _decimal_strike(
+                market.floor_strike if market.floor_strike is not None else market.cap_strike
+            )
+        else:
+            threshold = _decimal_strike(
+                market.cap_strike if market.cap_strike is not None else market.floor_strike
+            )
+        if threshold is None:
+            return None
+        threshold_values.add(threshold)
+
+    if len(threshold_values) != 1:
+        return None
+    return next(iter(threshold_values))
 
 
 def _classify_numeric_monotonic_chain(event: EventRecord) -> ClassifiedEvent | None:
@@ -321,6 +354,15 @@ def _classify_close_time_monotonic_chain(event: EventRecord) -> ClassifiedEvent 
             event,
             parsed_keys,
             reason=f"markets share one custom entity and form a unique {time_direction}-style close-time ladder",
+        )
+    if _numeric_time_ladder_threshold(event.markets) is not None:
+        return _ordered_classification(
+            event,
+            parsed_keys,
+            reason=(
+                f"markets share one numeric threshold and form a unique {time_direction}-style "
+                "close-time ladder"
+            ),
         )
     return None
 

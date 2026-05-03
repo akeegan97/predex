@@ -525,8 +525,28 @@ class ConfigTests(unittest.TestCase):
                 "rest_endpoint": "https://api.elections.kalshi.com",
                 "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
                 "private_ws_channels": ["user_orders"],
-                "max_session_loss_ticks": 0,
-                "available_capital_ticks": 0,
+                "max_session_loss_ticks": 5000,
+                "available_capital_ticks": 10000,
+                "rest_worker_count": 8,
+            },
+        )
+        self.assertEqual(
+            config["pipeline"],
+            {
+                "frame_pool_capacity": 8192,
+                "shard_count": 4,
+                "io_to_router_capacity": 8192,
+                "router_to_logger_capacity": 8192,
+                "shard_input_capacity": 8192,
+                "shard_to_logger_capacity": 8192,
+            },
+        )
+        self.assertEqual(
+            config["local_risk"],
+            {
+                "max_net_position_lots_per_market": 200,
+                "min_seconds_to_close": 300,
+                "trading_enabled": False,
             },
         )
         self.assertEqual(len(config["market_routes"]), 4)

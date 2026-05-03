@@ -21,6 +21,13 @@ inline constexpr std::int64_t kMinEdgeTicks = 20;
 struct MonotonicArbConfig {
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
+    // Phase-2 bounded aggression scaffold. Disabled by default until we are ready
+    // to convert the harder-leg limit from a pure top-of-book quote into an
+    // EV-constrained deeper-through-book IOC price.
+    bool bounded_harder_aggression_enabled{false};
+    internal::PriceTicks max_harder_aggression_ticks{0};
+    std::size_t max_harder_book_levels{1};
+    bool require_full_harder_depth_for_qty{true};
     bool enabled{true};
 };
 
@@ -74,6 +81,13 @@ class MonotonicArbStrategy {
     }
 
   private:
+    struct HarderLegSelection {
+        internal::PriceTicks observed_top_bid_ticks{0};
+        internal::PriceTicks chosen_limit_ticks{0};
+        std::uint16_t scanned_bid_levels{0};
+        bool bounded_aggression_applied{false};
+    };
+
     MonotonicArbConfig config_{};
     std::uint64_t next_signal_id_{1};
 
@@ -126,6 +140,84 @@ class MonotonicArbStrategy {
         return market.depth.asks[0].qty_lots;
     }
 
+    [[nodiscard]] internal::PriceTicks net_edge_ticks_for_pair_(
+        internal::PriceTicks easier_buy_ticks,
+        internal::PriceTicks harder_sell_ticks,
+        internal::QtyLots executable_qty) const noexcept {
+        if (easier_buy_ticks <= 0 || harder_sell_ticks <= easier_buy_ticks || executable_qty <= 0) {
+            return std::numeric_limits<internal::PriceTicks>::min();
+        }
+
+        const internal::PriceTicks gross_edge_per_contract = harder_sell_ticks - easier_buy_ticks;
+        const internal::PriceTicks gross_edge_ticks =
+            static_cast<internal::PriceTicks>(
+                internal::scale_ticks_by_qty_floor(gross_edge_per_contract, executable_qty));
+        const internal::PriceTicks total_fees_ticks =
+            taker_fee_ticks_(easier_buy_ticks, executable_qty) +
+            taker_fee_ticks_(harder_sell_ticks, executable_qty);
+        return gross_edge_ticks - total_fees_ticks;
+    }
+
+    [[nodiscard]] HarderLegSelection select_harder_sell_limit_(
+        internal::PriceTicks easier_ask_ticks,
+        const EventMarketView& harder_market,
+        internal::PriceTicks top_bid_ticks,
+        internal::QtyLots executable_qty) const noexcept {
+        HarderLegSelection selection{
+            .observed_top_bid_ticks = top_bid_ticks,
+            .chosen_limit_ticks = top_bid_ticks,
+            .scanned_bid_levels = 1,
+            .bounded_aggression_applied = false,
+        };
+
+        if (!config_.bounded_harder_aggression_enabled || config_.max_harder_book_levels <= 1 ||
+            config_.max_harder_aggression_ticks <= 0) {
+            return selection;
+        }
+
+        internal::QtyLots cumulative_qty = 0;
+        const std::size_t max_levels = std::min<std::size_t>(
+            config_.max_harder_book_levels,
+            harder_market.depth.bids.size());
+        for (std::size_t level_index = 0; level_index < max_levels; ++level_index) {
+            const auto& level = harder_market.depth.bids[level_index];
+            if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
+                *level.qty_lots <= 0) {
+                break;
+            }
+
+            selection.scanned_bid_levels =
+                static_cast<std::uint16_t>(level_index + 1);
+            cumulative_qty += *level.qty_lots;
+
+            const internal::PriceTicks candidate_ticks = *level.price_ticks;
+            const internal::PriceTicks aggression_ticks = top_bid_ticks - candidate_ticks;
+            if (aggression_ticks < 0 ||
+                aggression_ticks > config_.max_harder_aggression_ticks) {
+                break;
+            }
+
+            if (config_.require_full_harder_depth_for_qty &&
+                cumulative_qty < executable_qty) {
+                continue;
+            }
+
+            const internal::PriceTicks candidate_net_edge_ticks = net_edge_ticks_for_pair_(
+                easier_ask_ticks,
+                candidate_ticks,
+                executable_qty);
+            if (candidate_net_edge_ticks < config_.min_net_edge_ticks) {
+                continue;
+            }
+
+            selection.chosen_limit_ticks = candidate_ticks;
+            selection.bounded_aggression_applied =
+                selection.chosen_limit_ticks != selection.observed_top_bid_ticks;
+        }
+
+        return selection;
+    }
+
     [[nodiscard]] std::optional<GroupSignal> evaluate_pair(
         const ChainEntry& easier,
         const ChainEntry& harder,
@@ -153,19 +245,12 @@ class MonotonicArbStrategy {
             return std::nullopt;
         }
 
-        const internal::PriceTicks gross_edge_per_contract = *harder_bid - *easier_ask;
-        if (gross_edge_per_contract <= 0) {
-            return std::nullopt;
-        }
-
-        const internal::PriceTicks gross_edge_ticks =
-            static_cast<internal::PriceTicks>(
-                internal::scale_ticks_by_qty_floor(gross_edge_per_contract, executable_qty));
-        const internal::PriceTicks total_fees_ticks =
-            taker_fee_ticks_(*easier_ask, executable_qty) +
-            taker_fee_ticks_(*harder_bid, executable_qty);
-        const internal::PriceTicks net_edge_ticks =
-            gross_edge_ticks - total_fees_ticks;
+        const auto harder_selection =
+            select_harder_sell_limit_(*easier_ask, harder.market, *harder_bid, executable_qty);
+        const internal::PriceTicks net_edge_ticks = net_edge_ticks_for_pair_(
+            *easier_ask,
+            harder_selection.chosen_limit_ticks,
+            executable_qty);
         if (net_edge_ticks < config_.min_net_edge_ticks) {
             return std::nullopt;
         }
@@ -178,6 +263,10 @@ class MonotonicArbStrategy {
         signal.execution_policy =
             predex::core::oms::kalshi::GroupExecutionPolicy::kAbortRemainingOnReject;
         signal.leg_count = 2;
+        signal.reference_price_ticks = easier_ask;
+        signal.aux_reference_price_ticks = harder_bid;
+        signal.reference_depth_levels = 1;
+        signal.aux_reference_depth_levels = harder_selection.scanned_bid_levels;
         signal.signal_ts_ns = update.update.meta.recv_ns;
         signal.edge_ticks = net_edge_ticks;
         signal.score = net_edge_ticks;
@@ -200,7 +289,7 @@ class MonotonicArbStrategy {
             .side = internal::Side::kSell,
             .outcome = predex::core::oms::kalshi::Outcome::kYes,
             .qty_lots = executable_qty,
-            .limit_price_ticks = harder_bid,
+            .limit_price_ticks = harder_selection.chosen_limit_ticks,
             .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kIoc,
         };
         return signal;

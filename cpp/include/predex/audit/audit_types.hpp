@@ -70,6 +70,8 @@ struct AuditEvent {
 
     internal::QtyLots qty_lots{0};
     internal::QtyLots aux_qty_lots{0};
+    internal::PriceTicks reference_price_ticks{0};
+    internal::PriceTicks aux_reference_price_ticks{0};
     internal::PriceTicks price_ticks{0};
     internal::PriceTicks aux_price_ticks{0};
 

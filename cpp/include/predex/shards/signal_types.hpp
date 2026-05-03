@@ -58,6 +58,12 @@ struct GroupSignal {
         predex::core::oms::kalshi::GroupExecutionPolicy::kAbortRemainingOnReject};
     std::array<SubmissionLeg, predex::core::oms::kalshi::kMaxGroupOrderLegs> legs{};
     std::size_t leg_count{0};
+    // Reference quotes seen by the strategy before any execution-side adjustments.
+    // For phase-2 bounded aggression, the leg limit prices may diverge from these.
+    std::optional<internal::PriceTicks> reference_price_ticks;
+    std::optional<internal::PriceTicks> aux_reference_price_ticks;
+    std::uint16_t reference_depth_levels{0};
+    std::uint16_t aux_reference_depth_levels{0};
     internal::TimestampNs signal_ts_ns{0};
     std::int64_t edge_ticks{0};
     std::int64_t score{0};

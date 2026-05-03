@@ -9,6 +9,7 @@ from predex.env import load_repo_dotenv
 from .config import (
     CredentialSettings,
     DiscoverySettings,
+    LocalRiskSettings,
     OmsTransportSettings,
     PipelineSettings,
     build_trader_config_result,
@@ -106,26 +107,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--io-to-router-capacity",
         type=int,
-        default=4096,
-        help="IO-to-router queue capacity written into the generated config. Default: 4096.",
+        default=8192,
+        help="IO-to-router queue capacity written into the generated config. Default: 8192.",
     )
     parser.add_argument(
         "--router-to-logger-capacity",
         type=int,
-        default=4096,
-        help="Router-to-logger queue capacity written into the generated config. Default: 4096.",
+        default=8192,
+        help="Router-to-logger queue capacity written into the generated config. Default: 8192.",
     )
     parser.add_argument(
         "--shard-input-capacity",
         type=int,
-        default=1024,
-        help="Per-shard input queue capacity written into the generated config. Default: 1024.",
+        default=8192,
+        help="Per-shard input queue capacity written into the generated config. Default: 8192.",
     )
     parser.add_argument(
         "--shard-to-logger-capacity",
         type=int,
-        default=1024,
-        help="Per-shard logger queue capacity written into the generated config. Default: 1024.",
+        default=8192,
+        help="Per-shard logger queue capacity written into the generated config. Default: 8192.",
     )
     parser.add_argument(
         "--include-topology",
@@ -203,8 +204,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--oms-available-capital-ticks",
         type=int,
-        default=0,
-        help="Portfolio capital budget in ticks for OMS pre-trade gating. 0 disables the cap.",
+        default=10000,
+        help="Portfolio capital budget in ticks for OMS pre-trade gating. Default: 10000.",
+    )
+    parser.add_argument(
+        "--oms-max-session-loss-ticks",
+        type=int,
+        default=5000,
+        help="Maximum tolerated session loss in ticks before halting. Default: 5000.",
+    )
+    parser.add_argument(
+        "--oms-rest-worker-count",
+        type=int,
+        default=8,
+        help="Number of hot REST worker sessions in the generated config. Default: 8.",
+    )
+    parser.add_argument(
+        "--local-risk-max-net-position-lots-per-market",
+        type=int,
+        default=200,
+        help="Maximum absolute net filled position per market. Default: 200.",
+    )
+    parser.add_argument(
+        "--local-risk-min-seconds-to-close",
+        type=int,
+        default=300,
+        help="Reject intents for markets closing within this many seconds. Default: 300.",
+    )
+    parser.add_argument(
+        "--local-risk-trading-enabled",
+        action="store_true",
+        help="Enable local risk trading in the generated config (default: disabled).",
     )
     return parser
 
@@ -240,7 +270,14 @@ def main(argv: list[str] | None = None) -> int:
         private_ws_channels=tuple(args.oms_private_ws_channel)
         if args.oms_private_ws_channel
         else ("user_orders",),
+        max_session_loss_ticks=args.oms_max_session_loss_ticks,
         available_capital_ticks=args.oms_available_capital_ticks,
+        rest_worker_count=args.oms_rest_worker_count,
+    )
+    local_risk = LocalRiskSettings(
+        max_net_position_lots_per_market=args.local_risk_max_net_position_lots_per_market,
+        min_seconds_to_close=args.local_risk_min_seconds_to_close,
+        trading_enabled=args.local_risk_trading_enabled,
     )
 
     event_limit = None if args.all_events else args.event_limit
@@ -260,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         discovery=discovery,
         pipeline=pipeline,
         oms_transport=oms_transport,
+        local_risk=local_risk,
         tape_output_path=args.tape_output,
         audit_output_path=args.audit_output,
         include_topologies=args.include_topology or None,

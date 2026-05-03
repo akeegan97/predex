@@ -14,10 +14,10 @@ from .models import ClassifiedEvent, EventRecord, TopologyKind
 class PipelineSettings:
     shard_count: int = 4
     frame_pool_capacity: int = 8192
-    io_to_router_capacity: int = 4096
-    router_to_logger_capacity: int = 4096
-    shard_input_capacity: int = 1024
-    shard_to_logger_capacity: int = 1024
+    io_to_router_capacity: int = 8192
+    router_to_logger_capacity: int = 8192
+    shard_input_capacity: int = 8192
+    shard_to_logger_capacity: int = 8192
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -65,8 +65,9 @@ class OmsTransportSettings:
     rest_endpoint: str = "https://api.elections.kalshi.com"
     private_ws_endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     private_ws_channels: tuple[str, ...] = ("user_orders",)
-    max_session_loss_ticks: int = 0
-    available_capital_ticks: int = 0
+    max_session_loss_ticks: int = 5000
+    available_capital_ticks: int = 10000
+    rest_worker_count: int = 8
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,16 +77,17 @@ class OmsTransportSettings:
             "private_ws_channels": list(self.private_ws_channels),
             "max_session_loss_ticks": self.max_session_loss_ticks,
             "available_capital_ticks": self.available_capital_ticks,
+            "rest_worker_count": self.rest_worker_count,
         }
 
 
 @dataclass(slots=True)
 class LocalRiskSettings:
     # Maximum absolute net filled position (long or short) per market. 0 = disabled.
-    max_net_position_lots_per_market: int = 0
+    max_net_position_lots_per_market: int = 200
     # Reject intents for markets closing within this many seconds. 0 = disabled.
-    min_seconds_to_close: int = 0
-    trading_enabled: bool = True
+    min_seconds_to_close: int = 300
+    trading_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {

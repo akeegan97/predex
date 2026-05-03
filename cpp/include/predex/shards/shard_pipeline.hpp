@@ -382,6 +382,8 @@ class DefaultShardPipeline {
             .leg_count = static_cast<std::uint16_t>(group_signal.leg_count),
             .qty_lots = leg1 != nullptr ? leg1->qty_lots : 0,
             .aux_qty_lots = leg2 != nullptr ? leg2->qty_lots : 0,
+            .reference_price_ticks = group_signal.reference_price_ticks.value_or(0),
+            .aux_reference_price_ticks = group_signal.aux_reference_price_ticks.value_or(0),
             .price_ticks = leg1 != nullptr ? leg1->limit_price_ticks.value_or(0) : 0,
             .aux_price_ticks = leg2 != nullptr ? leg2->limit_price_ticks.value_or(0) : 0,
             .edge_ticks = group_signal.edge_ticks,

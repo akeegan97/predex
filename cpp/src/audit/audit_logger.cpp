@@ -73,6 +73,8 @@ void write_event_json(std::ofstream& output, const AuditEvent& event) {
             << "\"leg_count\":" << event.leg_count << ','
             << "\"qty_lots\":" << event.qty_lots << ','
             << "\"aux_qty_lots\":" << event.aux_qty_lots << ','
+            << "\"reference_price_ticks\":" << event.reference_price_ticks << ','
+            << "\"aux_reference_price_ticks\":" << event.aux_reference_price_ticks << ','
             << "\"price_ticks\":" << event.price_ticks << ','
             << "\"aux_price_ticks\":" << event.aux_price_ticks << ','
             << "\"edge_ticks\":" << event.edge_ticks << ','

@@ -24,9 +24,9 @@ struct MonotonicArbConfig {
     // Phase-2 bounded aggression scaffold. Disabled by default until we are ready
     // to convert the harder-leg limit from a pure top-of-book quote into an
     // EV-constrained deeper-through-book IOC price.
-    bool bounded_harder_aggression_enabled{false};
-    internal::PriceTicks max_harder_aggression_ticks{0};
-    std::size_t max_harder_book_levels{1};
+    bool bounded_harder_aggression_enabled{true};
+    internal::PriceTicks max_harder_aggression_ticks{20};
+    std::size_t max_harder_book_levels{3};
     bool require_full_harder_depth_for_qty{true};
     bool enabled{true};
 };

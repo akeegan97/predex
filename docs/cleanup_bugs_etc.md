@@ -94,7 +94,7 @@ Graduate measurement from "Python consumer of audit jsonl" (retrospective, I/O- 
 ### Measurement hygiene
 
 - Lock baseline runs to a quiet machine config (no background builds, browser closed, etc.) before attributing results.
-- Capture the same tape of WS frames once and replay through the in-process pipeline repeatedly for stable numbers — the deterministic replay harness (`docs/replay/`) is the right driver.
+- Capture the same tape of WS frames once and replay through the in-process pipeline repeatedly for stable numbers — the deterministic replay harness under `logs/replay/` is the right driver.
 - Record not just percentiles but full histograms; the *shape* of the tail (long-smooth vs bimodal) tells you which category of cause is responsible.
 - Before/after numbers on every optimization. One-line changelog entries per tuning pass build the interview story as a side effect.
 

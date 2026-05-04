@@ -35,3 +35,19 @@ predex_audit_live.jsonl
 predex_audit_live2.jsonl
 predex_tape_live.bin
 predex_tape_live2.bin
+docs/replay/soak_live_2026-05-04.json
+
+# Logs-first replay artifacts and ingested run datasets
+logs/*
+!logs/README.md
+!logs/runs/
+!logs/runs/.gitkeep
+logs/replay/*.csv
+logs/replay/*.html
+logs/replay/*.parquet
+logs/replay/*.summary.json
+logs/replay/*.png
+logs/replay/*.xlsx
+logs/replay/*.jsonl
+logs/replay/*.json
+logs/runs/*

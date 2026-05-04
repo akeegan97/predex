@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .audit import build_signal_bundles, load_audit_events
 from .config import load_config_index
+from .ingest import ingest_run
 from .latency import DEFAULT_KINDS, export_latency_histograms
 from .soak import analyze_soak
 from .timeline import (
@@ -54,6 +55,36 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_signal.add_argument("--signal-id", required=True, type=int, help="Signal id to inspect.")
     inspect_signal.add_argument("--shard-id", required=True, type=int, help="Shard id for the signal.")
 
+    ingest = subparsers.add_parser(
+        "ingest-run",
+        help="Normalize tape, audit, and REST traces into CSV tables for offline analysis.",
+    )
+    ingest.add_argument("--config", required=True, help="Generated Predex config JSON.")
+    ingest.add_argument("--audit", required=True, help="Audit JSONL emitted by trader_app.")
+    ingest.add_argument("--tape", required=True, help="Binary tape emitted by trader_app.")
+    ingest.add_argument(
+        "--trace",
+        action="append",
+        default=None,
+        help="Optional REST trace JSONL path. Repeat to include multiple files. Defaults to predex_rest_trace*.jsonl beside the audit file.",
+    )
+    ingest.add_argument(
+        "--output-root",
+        default="logs/runs",
+        help="Root directory for ingested runs. Default: logs/runs.",
+    )
+    ingest.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional run id. Defaults to a UTC timestamp plus the tape stem.",
+    )
+    ingest.add_argument(
+        "--format",
+        choices=("parquet", "both"),
+        default="parquet",
+        help="Storage format for ingested tables. Default: parquet.",
+    )
+
     export_timeline = subparsers.add_parser(
         "export-event-timeline",
         help="Replay one event (or a single market) into timeline CSV/HTML artifacts.",
@@ -74,8 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_timeline.add_argument(
         "--output-dir",
-        default="docs/replay",
-        help="Directory for generated files. Default: docs/replay.",
+        default="logs/replay",
+        help="Directory for generated files. Default: logs/replay.",
     )
     export_timeline.add_argument(
         "--prefix",
@@ -108,8 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_windows.add_argument(
         "--output-dir",
-        default="docs/replay",
-        help="Directory for generated files. Default: docs/replay.",
+        default="logs/replay",
+        help="Directory for generated files. Default: logs/replay.",
     )
     export_windows.add_argument(
         "--prefix",
@@ -130,18 +161,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     latency_hist.add_argument(
         "--output-html",
-        default="docs/replay/latency_histograms.html",
-        help="Output HTML plot path. Default: docs/replay/latency_histograms.html",
+        default="logs/replay/latency_histograms.html",
+        help="Output HTML plot path. Default: logs/replay/latency_histograms.html",
     )
     latency_hist.add_argument(
         "--output-png-prefix",
-        default="docs/replay/latency_histograms",
+        default="logs/replay/latency_histograms",
         help="PNG output prefix for matplotlib mode. Writes <prefix>.hist.png and <prefix>.trend.png",
     )
     latency_hist.add_argument(
         "--output-csv",
-        default="docs/replay/latency_histograms.csv",
-        help="Output CSV path for per-sample latency rows. Default: docs/replay/latency_histograms.csv",
+        default="logs/replay/latency_histograms.csv",
+        help="Output CSV path for per-sample latency rows. Default: logs/replay/latency_histograms.csv",
     )
     latency_hist.add_argument(
         "--output-json",
@@ -195,8 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     soak.add_argument("--tape", required=True, help="Binary tape emitted by trader_app.")
     soak.add_argument(
         "--output-json",
-        default="docs/replay/soak_analysis.json",
-        help="Optional JSON summary output path. Default: docs/replay/soak_analysis.json",
+        default="logs/replay/soak_analysis.json",
+        help="Optional JSON summary output path. Default: logs/replay/soak_analysis.json",
     )
     soak.add_argument(
         "--mismatch-limit",
@@ -390,6 +421,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "audit-summary":
         payload = _audit_summary(args.config, args.audit, args.limit)
+    elif args.command == "ingest-run":
+        payload = ingest_run(
+            config_path=args.config,
+            audit_path=args.audit,
+            tape_path=args.tape,
+            output_root=args.output_root,
+            run_id=args.run_id,
+            trace_paths=args.trace,
+            fmt=args.format,
+        )
     elif args.command == "inspect-signal":
         payload = _inspect_signal(args.config, args.audit, args.tape, args.shard_id, args.signal_id)
     elif args.command == "latency-histograms":

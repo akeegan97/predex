@@ -255,8 +255,8 @@ def export_latency_histograms(
     output_html: str | Path,
     *,
     backend: str = "plotly",
-    output_png_prefix: str | Path = "docs/replay/latency_histograms",
-    output_csv: str | Path = "docs/replay/latency_histograms.csv",
+    output_png_prefix: str | Path = "logs/replay/latency_histograms",
+    output_csv: str | Path = "logs/replay/latency_histograms.csv",
     output_json: str | Path | None = None,
     event_id: int | None = None,
     market_id: int | None = None,
@@ -515,18 +515,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-html",
-        default="docs/replay/latency_histograms.html",
-        help="Output HTML plot path. Default: docs/replay/latency_histograms.html",
+        default="logs/replay/latency_histograms.html",
+        help="Output HTML plot path. Default: logs/replay/latency_histograms.html",
     )
     parser.add_argument(
         "--output-png-prefix",
-        default="docs/replay/latency_histograms",
+        default="logs/replay/latency_histograms",
         help="PNG output prefix for matplotlib mode. Writes <prefix>.hist.png and <prefix>.trend.png",
     )
     parser.add_argument(
         "--output-csv",
-        default="docs/replay/latency_histograms.csv",
-        help="Output CSV path for per-sample latency rows. Default: docs/replay/latency_histograms.csv",
+        default="logs/replay/latency_histograms.csv",
+        help="Output CSV path for per-sample latency rows. Default: logs/replay/latency_histograms.csv",
     )
     parser.add_argument(
         "--output-json",

@@ -214,7 +214,7 @@ Replay the order book for a full event and export a time-series of top-of-book p
   --audit predex_audit.jsonl \
   --tape predex_tape.bin \
   --event-id 88422102 \
-  --output-dir docs/replay \
+  --output-dir logs/replay \
   --prefix pgatour_event
 ```
 
@@ -225,7 +225,7 @@ With a single-market focus:
   --audit predex_audit.jsonl \
   --tape predex_tape.bin \
   --market-ticker KXPGATOUR-VATO26-JSPA \
-  --output-dir docs/replay \
+  --output-dir logs/replay \
   --prefix jspa_market \
   --parquet
 ```
@@ -237,7 +237,7 @@ With a single-market focus:
 | `--tape PATH` | required | Binary tape. |
 | `--event-id ID` | — | Event ID to export. |
 | `--market-ticker TICKER` | — | Restrict to a single market within the event. |
-| `--output-dir DIR` | `docs/replay` | Output directory. |
+| `--output-dir DIR` | `logs/replay` | Output directory. |
 | `--prefix NAME` | `event_timeline` | Filename prefix for all outputs. |
 | `--parquet` | off | Also write `.parquet` files (requires `pyarrow`). |
 
@@ -261,17 +261,17 @@ Analyse latency span distributions from the audit log.
 ./scripts/predex-replay latency-histograms \
   --audit predex_audit.jsonl \
   --backend plotly \
-  --output-html docs/replay/latency.html \
-  --output-csv docs/replay/latency.csv
+  --output-html logs/replay/latency.html \
+  --output-csv logs/replay/latency.csv
 ```
 
 | Argument | Default | Description |
 |---|---|---|
 | `--audit PATH` | required | Audit JSONL. |
 | `--backend` | `plotly` | Plot backend: `plotly`, `matplotlib`, or `both`. |
-| `--output-html PATH` | `docs/replay/latency_histograms.html` | HTML output path. |
+| `--output-html PATH` | `logs/replay/latency_histograms.html` | HTML output path. |
 | `--output-png-prefix PATH` | — | PNG prefix; writes `<prefix>.hist.png` and `<prefix>.trend.png`. |
-| `--output-csv PATH` | `docs/replay/latency_histograms.csv` | CSV of raw latency rows. |
+| `--output-csv PATH` | `logs/replay/latency_histograms.csv` | CSV of raw latency rows. |
 | `--output-json PATH` | — | Optional JSON summary. |
 | `--event-id ID` | — | Filter to a single event. |
 | `--market-id ID` | — | Filter to a single market. |
@@ -297,6 +297,47 @@ Default latency span fields analysed:
 
 ---
 
+#### `ingest-run`
+
+Normalize one runtime artifact set into reusable parquet tables.
+
+```bash
+./scripts/predex-replay ingest-run \
+  --config docs/generated_config.json \
+  --audit predex_audit.jsonl \
+  --tape predex_tape.bin \
+  --run-id live_2026_05_04
+```
+
+If `--trace` is omitted, the command auto-detects `predex_rest_trace*.jsonl` beside the audit log.
+
+| Argument | Default | Description |
+|---|---|---|
+| `--config PATH` | required | Trader config JSON. |
+| `--audit PATH` | required | Audit JSONL. |
+| `--tape PATH` | required | Binary tape. |
+| `--trace PATH` | auto-detect | Optional REST trace JSONL path. Repeat for multiple workers. |
+| `--output-root DIR` | `logs/runs` | Root directory for normalized run datasets. |
+| `--run-id NAME` | UTC timestamp + tape stem | Optional directory name under `output-root`. |
+| `--format {parquet,both}` | `parquet` | Write parquet only, or parquet plus CSV sidecars. |
+
+Outputs written to `logs/runs/<run_id>/`:
+
+| File | Contents |
+|---|---|
+| `market_routes.parquet` | Config-derived market routing table |
+| `frames.parquet` | One row per raw tape frame |
+| `market_events.parquet` | Normalized snapshots, deltas, and trades |
+| `audit_events.parquet` | Flattened audit JSONL rows |
+| `signals.parquet` | One row per grouped signal bundle |
+| `legs.parquet` | One row per signal leg with OMS state summary |
+| `latencies.parquet` | Slim latency table for stage and E2E analysis |
+| `trace_requests.parquet` | Per-request REST transport timings |
+| `trace_orders.parquet` | Per-order REST outcomes from batched responses |
+| `manifest.json` | Source metadata and table row counts |
+
+Use `--format both` to also emit CSV sidecars next to each parquet table.
+
 ### Replay Dashboard (Streamlit)
 
 ```bash
@@ -304,7 +345,7 @@ Default latency span fields analysed:
 ./scripts/predex-replay-dashboard
 ```
 
-Shows a run-wide view from config + audit (all events, sub-markets, signals) and lets you drill into per-market timeline charts when `export-event-timeline` summary files are present in `docs/replay/`.
+Shows a run-wide view from config + audit (all events, sub-markets, signals) and lets you drill into per-market timeline charts when `export-event-timeline` summary files are present in `logs/replay/`.
 
 ---
 

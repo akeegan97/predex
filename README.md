@@ -38,7 +38,7 @@ Working today:
 Intentionally incomplete:
 
 - `CdfViolationStrategy`, `MarketMakingStrategy`, `MeanReversionStrategy` — stubs
-- Python tape decoder and replay driver
+- Strategy backtesting and normalized run-ingest workflow
 - REST rate limiting on OMS transport
 
 ## Architecture
@@ -239,7 +239,7 @@ Export a timeline for one event (or pass `--market-ticker` for a single-market f
   --audit predex_audit.jsonl \
   --tape predex_tape.bin \
   --event-id 1344469444 \
-  --output-dir docs/replay \
+  --output-dir logs/replay \
   --prefix eggs_event
 ```
 
@@ -255,6 +255,32 @@ Add `--parquet` to also emit parquet files (`*.parquet`, `*.signals.parquet`). T
 .venv/bin/pip install pyarrow
 ```
 
+Normalize a live run into reusable parquet tables for offline analysis:
+
+```bash
+./scripts/predex-replay ingest-run \
+  --config docs/generated_config.json \
+  --audit predex_audit.jsonl \
+  --tape predex_tape.bin \
+  --run-id live_2026_05_04
+```
+
+This writes a run dataset under `logs/runs/<run_id>/`, including:
+- `market_routes.parquet`
+- `frames.parquet`
+- `market_events.parquet`
+- `audit_events.parquet`
+- `signals.parquet`
+- `legs.parquet`
+- `latencies.parquet`
+- `trace_requests.parquet`
+- `trace_orders.parquet`
+- `manifest.json`
+
+If no `--trace` arguments are provided, `ingest-run` auto-detects `predex_rest_trace*.jsonl` files beside the audit log.
+
+Use `--format both` if you also want CSV sidecars for inspection/debugging.
+
 ### Replay Dashboard (Streamlit)
 
 Install viz dependencies in your venv:
@@ -269,7 +295,7 @@ Launch:
 ./scripts/predex-replay-dashboard
 ```
 
-The dashboard shows a run-wide view from config+audit (all events, submarkets, and signals), then lets you drill into per-market timeline charts from `docs/replay/*.summary.json` datasets when available.
+The dashboard shows a run-wide view from config+audit (all events, submarkets, and signals), then lets you drill into per-market timeline charts from `logs/replay/*.summary.json` datasets when available.
 
 ## Runtime Config
 

@@ -518,7 +518,7 @@ def main() -> None:
     st.caption("Run-wide event/submarket/signal explorer with timeline drill-down")
 
     root = Path(__file__).resolve().parents[4]
-    default_replay_dir = (root / "docs" / "replay").as_posix()
+    default_replay_dir = (root / "logs" / "replay").as_posix()
     default_config = (root / "docs" / "generated_config.json").as_posix()
     default_audit = (root / "predex_audit.jsonl").as_posix()
 

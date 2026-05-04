@@ -89,6 +89,7 @@ class Oms {
     std::size_t next_shard_index_{0};
     OmsRequestId next_oms_request_id_{1};
     std::uint64_t next_client_order_seq_{1};
+    internal::TimestampNs client_order_session_nonce_{0};
 
     std::uint64_t processed_shard_request_count_{0};
     std::uint64_t processed_kalshi_event_count_{0};

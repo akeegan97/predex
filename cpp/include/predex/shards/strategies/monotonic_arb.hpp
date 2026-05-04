@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
+#include <vector>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/shards/applied_event_update.hpp"
@@ -21,12 +23,15 @@ inline constexpr std::int64_t kMinEdgeTicks = 20;
 struct MonotonicArbConfig {
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
-    // Phase-2 bounded aggression scaffold. Disabled by default until we are ready
-    // to convert the harder-leg limit from a pure top-of-book quote into an
-    // EV-constrained deeper-through-book IOC price.
     bool bounded_harder_aggression_enabled{true};
-    internal::PriceTicks max_harder_aggression_ticks{20};
+    bool bounded_easier_aggression_enabled{true};
+    bool require_top_gap_continuity{true};
+    internal::PriceTicks max_top_gap_ticks{50};
+    internal::PriceTicks max_easier_aggression_ticks{30};
+    internal::PriceTicks max_harder_aggression_ticks{30};
+    std::size_t max_easier_book_levels{3};
     std::size_t max_harder_book_levels{3};
+    bool require_full_easier_depth_for_qty{true};
     bool require_full_harder_depth_for_qty{true};
     bool enabled{true};
 };
@@ -81,10 +86,11 @@ class MonotonicArbStrategy {
     }
 
   private:
-    struct HarderLegSelection {
-        internal::PriceTicks observed_top_bid_ticks{0};
+    struct LegSelection {
+        internal::PriceTicks observed_top_ticks{0};
         internal::PriceTicks chosen_limit_ticks{0};
-        std::uint16_t scanned_bid_levels{0};
+        std::uint16_t scanned_levels{0};
+        internal::QtyLots cumulative_qty_lots{0};
         bool bounded_aggression_applied{false};
     };
 
@@ -158,27 +164,126 @@ class MonotonicArbStrategy {
         return gross_edge_ticks - total_fees_ticks;
     }
 
-    [[nodiscard]] HarderLegSelection select_harder_sell_limit_(
-        internal::PriceTicks easier_ask_ticks,
-        const EventMarketView& harder_market,
-        internal::PriceTicks top_bid_ticks,
-        internal::QtyLots executable_qty) const noexcept {
-        HarderLegSelection selection{
-            .observed_top_bid_ticks = top_bid_ticks,
-            .chosen_limit_ticks = top_bid_ticks,
-            .scanned_bid_levels = 1,
+    template <std::size_t Depth>
+    [[nodiscard]] bool top_gap_within_limit_(
+        const std::array<SideDepthLevel, Depth>& levels,
+        bool descending_prices) const noexcept {
+        if (!config_.require_top_gap_continuity || config_.max_top_gap_ticks <= 0) {
+            return true;
+        }
+
+        std::optional<internal::PriceTicks> first_price;
+        std::optional<internal::PriceTicks> second_price;
+        for (std::size_t level_index = 0; level_index < levels.size(); ++level_index) {
+            const auto& level = levels[level_index];
+            if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
+                *level.qty_lots <= 0) {
+                continue;
+            }
+
+            if (!first_price.has_value()) {
+                first_price = *level.price_ticks;
+                continue;
+            }
+
+            second_price = *level.price_ticks;
+            break;
+        }
+
+        if (!first_price.has_value() || !second_price.has_value()) {
+            return false;
+        }
+
+        const internal::PriceTicks gap_ticks = descending_prices
+            ? (*first_price - *second_price)
+            : (*second_price - *first_price);
+        return gap_ticks >= 0 && gap_ticks <= config_.max_top_gap_ticks;
+    }
+
+    [[nodiscard]] std::vector<LegSelection> collect_easier_buy_candidates_(
+        const EventMarketView& easier_market,
+        internal::QtyLots executable_qty) const {
+        const auto easier_ask = best_ask_ticks_(easier_market);
+        if (!easier_ask.has_value()) {
+            return {};
+        }
+
+        std::vector<LegSelection> candidates;
+        candidates.reserve(config_.max_easier_book_levels);
+        LegSelection selection{
+            .observed_top_ticks = *easier_ask,
+            .chosen_limit_ticks = *easier_ask,
+            .scanned_levels = 0,
+            .cumulative_qty_lots = 0,
             .bounded_aggression_applied = false,
         };
 
-        if (!config_.bounded_harder_aggression_enabled || config_.max_harder_book_levels <= 1 ||
-            config_.max_harder_aggression_ticks <= 0) {
-            return selection;
+        const std::size_t max_levels = std::min<std::size_t>(
+            config_.max_easier_book_levels,
+            easier_market.depth.asks.size());
+        internal::PriceTicks previous_price_ticks = *easier_ask;
+        for (std::size_t level_index = 0; level_index < max_levels; ++level_index) {
+            const auto& level = easier_market.depth.asks[level_index];
+            if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
+                *level.qty_lots <= 0) {
+                break;
+            }
+
+            const internal::PriceTicks candidate_ticks = *level.price_ticks;
+            if (level_index > 0 && config_.require_top_gap_continuity) {
+                const internal::PriceTicks gap_ticks = candidate_ticks - previous_price_ticks;
+                if (gap_ticks < 0 || gap_ticks > config_.max_top_gap_ticks) {
+                    break;
+                }
+            }
+
+            selection.scanned_levels = static_cast<std::uint16_t>(level_index + 1);
+            selection.cumulative_qty_lots += *level.qty_lots;
+            previous_price_ticks = candidate_ticks;
+
+            const internal::PriceTicks aggression_ticks = candidate_ticks - *easier_ask;
+            if (aggression_ticks < 0 ||
+                (!config_.bounded_easier_aggression_enabled && aggression_ticks > 0) ||
+                aggression_ticks > config_.max_easier_aggression_ticks) {
+                break;
+            }
+
+            if (config_.require_full_easier_depth_for_qty &&
+                selection.cumulative_qty_lots < executable_qty) {
+                continue;
+            }
+
+            selection.chosen_limit_ticks = candidate_ticks;
+            selection.bounded_aggression_applied =
+                selection.chosen_limit_ticks != selection.observed_top_ticks;
+            candidates.push_back(selection);
         }
 
-        internal::QtyLots cumulative_qty = 0;
+        return candidates;
+    }
+
+    [[nodiscard]] std::vector<LegSelection> collect_harder_sell_candidates_(
+        const EventMarketView& harder_market,
+        internal::QtyLots executable_qty) const {
+        const auto harder_bid = best_bid_ticks_(harder_market);
+        if (!harder_bid.has_value()) {
+            return {};
+        }
+
+        std::vector<LegSelection> candidates;
+        candidates.reserve(config_.max_harder_book_levels);
+        LegSelection selection{
+            .observed_top_ticks = *harder_bid,
+            .chosen_limit_ticks = *harder_bid,
+            .scanned_levels = 0,
+            .cumulative_qty_lots = 0,
+            .bounded_aggression_applied = false,
+        };
+
         const std::size_t max_levels = std::min<std::size_t>(
             config_.max_harder_book_levels,
             harder_market.depth.bids.size());
+        internal::PriceTicks previous_price_ticks = *harder_bid;
         for (std::size_t level_index = 0; level_index < max_levels; ++level_index) {
             const auto& level = harder_market.depth.bids[level_index];
             if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
@@ -186,36 +291,88 @@ class MonotonicArbStrategy {
                 break;
             }
 
-            selection.scanned_bid_levels =
-                static_cast<std::uint16_t>(level_index + 1);
-            cumulative_qty += *level.qty_lots;
-
             const internal::PriceTicks candidate_ticks = *level.price_ticks;
-            const internal::PriceTicks aggression_ticks = top_bid_ticks - candidate_ticks;
+            if (level_index > 0 && config_.require_top_gap_continuity) {
+                const internal::PriceTicks gap_ticks = previous_price_ticks - candidate_ticks;
+                if (gap_ticks < 0 || gap_ticks > config_.max_top_gap_ticks) {
+                    break;
+                }
+            }
+
+            selection.scanned_levels = static_cast<std::uint16_t>(level_index + 1);
+            selection.cumulative_qty_lots += *level.qty_lots;
+            previous_price_ticks = candidate_ticks;
+
+            const internal::PriceTicks aggression_ticks = *harder_bid - candidate_ticks;
             if (aggression_ticks < 0 ||
+                (!config_.bounded_harder_aggression_enabled && aggression_ticks > 0) ||
                 aggression_ticks > config_.max_harder_aggression_ticks) {
                 break;
             }
 
             if (config_.require_full_harder_depth_for_qty &&
-                cumulative_qty < executable_qty) {
-                continue;
-            }
-
-            const internal::PriceTicks candidate_net_edge_ticks = net_edge_ticks_for_pair_(
-                easier_ask_ticks,
-                candidate_ticks,
-                executable_qty);
-            if (candidate_net_edge_ticks < config_.min_net_edge_ticks) {
+                selection.cumulative_qty_lots < executable_qty) {
                 continue;
             }
 
             selection.chosen_limit_ticks = candidate_ticks;
             selection.bounded_aggression_applied =
-                selection.chosen_limit_ticks != selection.observed_top_bid_ticks;
+                selection.chosen_limit_ticks != selection.observed_top_ticks;
+            candidates.push_back(selection);
         }
 
-        return selection;
+        return candidates;
+    }
+
+    [[nodiscard]] std::optional<std::pair<LegSelection, LegSelection>> select_paired_limits_(
+        const EventMarketView& easier_market,
+        const EventMarketView& harder_market,
+        internal::QtyLots executable_qty) const noexcept {
+        const auto easier_ask = best_ask_ticks_(easier_market);
+        const auto harder_bid = best_bid_ticks_(harder_market);
+        if (!easier_ask.has_value() || !harder_bid.has_value()) {
+            return std::nullopt;
+        }
+
+        if (!top_gap_within_limit_(easier_market.depth.asks, false) ||
+            !top_gap_within_limit_(harder_market.depth.bids, true)) {
+            return std::nullopt;
+        }
+
+        const auto easier_candidates = collect_easier_buy_candidates_(easier_market, executable_qty);
+        const auto harder_candidates = collect_harder_sell_candidates_(harder_market, executable_qty);
+        if (easier_candidates.empty() || harder_candidates.empty()) {
+            return std::nullopt;
+        }
+
+        std::optional<std::pair<LegSelection, LegSelection>> best_selection;
+        internal::PriceTicks best_net_edge_ticks = std::numeric_limits<internal::PriceTicks>::min();
+        std::uint32_t best_depth_score = 0;
+
+        for (const auto& easier_selection : easier_candidates) {
+            for (const auto& harder_selection : harder_candidates) {
+                const internal::PriceTicks candidate_net_edge_ticks = net_edge_ticks_for_pair_(
+                    easier_selection.chosen_limit_ticks,
+                    harder_selection.chosen_limit_ticks,
+                    executable_qty);
+                if (candidate_net_edge_ticks < config_.min_net_edge_ticks) {
+                    continue;
+                }
+
+                const std::uint32_t depth_score =
+                    static_cast<std::uint32_t>(easier_selection.scanned_levels) +
+                    static_cast<std::uint32_t>(harder_selection.scanned_levels);
+                if (!best_selection.has_value() || depth_score > best_depth_score ||
+                    (depth_score == best_depth_score &&
+                     candidate_net_edge_ticks > best_net_edge_ticks)) {
+                    best_selection = std::make_pair(easier_selection, harder_selection);
+                    best_depth_score = depth_score;
+                    best_net_edge_ticks = candidate_net_edge_ticks;
+                }
+            }
+        }
+
+        return best_selection;
     }
 
     [[nodiscard]] std::optional<GroupSignal> evaluate_pair(
@@ -239,16 +396,21 @@ class MonotonicArbStrategy {
             return std::nullopt;
         }
 
-        const internal::QtyLots executable_qty = std::min(
-            {config_.default_order_qty_lots, *easier_ask_qty, *harder_bid_qty});
+        const internal::QtyLots executable_qty = config_.default_order_qty_lots;
         if (executable_qty <= 0) {
             return std::nullopt;
         }
 
-        const auto harder_selection =
-            select_harder_sell_limit_(*easier_ask, harder.market, *harder_bid, executable_qty);
+        const auto paired_selection =
+            select_paired_limits_(easier.market, harder.market, executable_qty);
+        if (!paired_selection.has_value()) {
+            return std::nullopt;
+        }
+        const auto& easier_selection = paired_selection->first;
+        const auto& harder_selection = paired_selection->second;
+
         const internal::PriceTicks net_edge_ticks = net_edge_ticks_for_pair_(
-            *easier_ask,
+            easier_selection.chosen_limit_ticks,
             harder_selection.chosen_limit_ticks,
             executable_qty);
         if (net_edge_ticks < config_.min_net_edge_ticks) {
@@ -265,8 +427,8 @@ class MonotonicArbStrategy {
         signal.leg_count = 2;
         signal.reference_price_ticks = easier_ask;
         signal.aux_reference_price_ticks = harder_bid;
-        signal.reference_depth_levels = 1;
-        signal.aux_reference_depth_levels = harder_selection.scanned_bid_levels;
+        signal.reference_depth_levels = easier_selection.scanned_levels;
+        signal.aux_reference_depth_levels = harder_selection.scanned_levels;
         signal.signal_ts_ns = update.update.meta.recv_ns;
         signal.edge_ticks = net_edge_ticks;
         signal.score = net_edge_ticks;
@@ -281,7 +443,7 @@ class MonotonicArbStrategy {
             .side = internal::Side::kBuy,
             .outcome = predex::core::oms::kalshi::Outcome::kYes,
             .qty_lots = executable_qty,
-            .limit_price_ticks = easier_ask,
+            .limit_price_ticks = easier_selection.chosen_limit_ticks,
             .time_in_force = predex::core::oms::kalshi::OmsTimeInForce::kIoc,
         };
         signal.legs[1] = SubmissionLeg{

@@ -144,7 +144,8 @@ Oms::Oms(std::vector<ShardRequestQueue*> shard_request_queues,
       market_ticker_resolver_(std::move(market_ticker_resolver)),
       shard_request_queues_(std::move(shard_request_queues)),
       shard_decision_queues_(std::move(shard_decision_queues)),
-      shard_lifecycle_queues_(std::move(shard_lifecycle_queues)) {}
+      shard_lifecycle_queues_(std::move(shard_lifecycle_queues)),
+      client_order_session_nonce_(monotonic_now_ns()) {}
 
 OmsPumpResult Oms::pump(std::size_t max_kalshi_events,
                         std::size_t max_shard_requests) noexcept {
@@ -808,7 +809,8 @@ OmsOrderRef Oms::make_order_ref() {
 
 ClientOrderId Oms::make_client_order_id(OmsRequestId oms_request_id) {
     return ClientOrderId{
-        .value = "oms-" + std::to_string(oms_request_id) + "-" +
+        .value = "oms-" + std::to_string(client_order_session_nonce_) + "-" +
+            std::to_string(oms_request_id) + "-" +
             std::to_string(next_client_order_seq_++),
     };
 }

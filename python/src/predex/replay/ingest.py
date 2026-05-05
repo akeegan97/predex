@@ -4,8 +4,9 @@ import csv
 import json
 import re
 import shutil
+import subprocess
 from collections import Counter
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -16,6 +17,33 @@ from .tape import decode_market_event, iter_tape_payloads
 
 
 _ROW_GROUP_SIZE = 4096
+_EPOCH_NS_MIN = 946_684_800_000_000_000
+_EPOCH_NS_MAX = 4_102_444_800_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class IngestedRun:
+    run_id: str
+    root: Path
+    manifest_path: Path
+    metadata_path: Path | None
+    manifest: dict[str, Any]
+    metadata: dict[str, Any]
+
+    def table_file(self, table_name: str, *, fmt: str = "parquet") -> Path | None:
+        generated_tables = self.manifest.get("generated_tables")
+        if not isinstance(generated_tables, dict):
+            return None
+        table_payload = generated_tables.get(table_name)
+        if not isinstance(table_payload, dict):
+            return None
+        files_payload = table_payload.get("files")
+        if not isinstance(files_payload, dict):
+            return None
+        raw_path = files_payload.get(fmt)
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        return Path(raw_path)
 
 
 def _require_pyarrow() -> tuple[Any, Any]:
@@ -151,6 +179,108 @@ def _resolve_trace_paths(trace_paths: Sequence[str] | None, audit_path: Path) ->
     if trace_paths:
         return [Path(path).expanduser().resolve() for path in trace_paths]
     return sorted(audit_path.parent.glob("predex_rest_trace*.jsonl"))
+
+
+def _update_time_bounds(bounds: dict[str, int | None], value: int | None) -> None:
+    if value is None or value <= 0:
+        return
+    current_min = bounds.get("start_ts_ns")
+    current_max = bounds.get("end_ts_ns")
+    bounds["start_ts_ns"] = value if current_min is None or value < current_min else current_min
+    bounds["end_ts_ns"] = value if current_max is None or value > current_max else current_max
+
+
+def _time_bounds_payload(bounds: dict[str, int | None]) -> dict[str, object]:
+    start_ts_ns = bounds.get("start_ts_ns")
+    end_ts_ns = bounds.get("end_ts_ns")
+    clock_domain = _clock_domain(start_ts_ns, end_ts_ns)
+    payload: dict[str, object] = {
+        "clock_domain": clock_domain,
+        "start_ts_ns": start_ts_ns or 0,
+        "end_ts_ns": end_ts_ns or 0,
+        "start_utc": _ns_to_utc(start_ts_ns, clock_domain=clock_domain),
+        "end_utc": _ns_to_utc(end_ts_ns, clock_domain=clock_domain),
+    }
+    if start_ts_ns and end_ts_ns and end_ts_ns >= start_ts_ns:
+        payload["duration_s"] = (end_ts_ns - start_ts_ns) / 1_000_000_000.0
+    else:
+        payload["duration_s"] = 0.0
+    return payload
+
+
+def _merge_bounds(*bounds_list: dict[str, int | None]) -> dict[str, int | None]:
+    merged = {"start_ts_ns": None, "end_ts_ns": None}
+    for bounds in bounds_list:
+        _update_time_bounds(merged, bounds.get("start_ts_ns"))
+        _update_time_bounds(merged, bounds.get("end_ts_ns"))
+    return merged
+
+
+def _ns_to_utc(value_ns: int | None) -> str | None:
+    if value_ns is None or value_ns <= 0:
+        return None
+    return datetime.fromtimestamp(value_ns / 1_000_000_000.0, tz=timezone.utc).isoformat()
+
+
+def _clock_domain(*values_ns: int | None) -> str:
+    positive_values = [value for value in values_ns if value is not None and value > 0]
+    if positive_values and all(_EPOCH_NS_MIN <= value <= _EPOCH_NS_MAX for value in positive_values):
+        return "unix_epoch_ns"
+    return "monotonic_or_unknown_ns"
+
+
+def _ns_to_utc(value_ns: int | None, *, clock_domain: str) -> str | None:
+    if value_ns is None or value_ns <= 0 or clock_domain != "unix_epoch_ns":
+        return None
+    return datetime.fromtimestamp(value_ns / 1_000_000_000.0, tz=timezone.utc).isoformat()
+
+
+def _git_metadata(start_dir: Path) -> dict[str, object]:
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", str(start_dir), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        repo_root = Path(root_result.stdout.strip())
+        head_result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        branch_result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        status_result = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {"available": False}
+    return {
+        "available": True,
+        "repo_root": str(repo_root),
+        "head": head_result.stdout.strip(),
+        "branch": branch_result.stdout.strip(),
+        "is_dirty": bool(status_result.stdout.strip()),
+    }
+
+
+def _audit_time_bounds(audit_events: Sequence[AuditEvent]) -> dict[str, int | None]:
+    bounds = {"start_ts_ns": None, "end_ts_ns": None}
+    for event in audit_events:
+        _update_time_bounds(bounds, event.ts_ns)
+        _update_time_bounds(bounds, event.tick_recv_ns)
+        _update_time_bounds(bounds, event.terminal_recv_ns)
+        _update_time_bounds(bounds, event.transport_response_recv_ns)
+    return bounds
 
 
 def _market_route_rows(config_index: ConfigIndex) -> Iterable[dict[str, object]]:
@@ -343,7 +473,7 @@ def _latency_fields() -> list[tuple[str, str]]:
     ]
 
 
-def _write_tape_tables(output_dir: Path, config_index: ConfigIndex, tape_path: Path, fmt: str) -> tuple[int, int, dict[str, dict[str, str]]]:
+def _write_tape_tables(output_dir: Path, config_index: ConfigIndex, tape_path: Path, fmt: str) -> tuple[int, int, dict[str, dict[str, str]], dict[str, int | None]]:
     frame_fields = [
         ("record_index", "int64"),
         ("recv_ts_ns", "int64"),
@@ -380,12 +510,14 @@ def _write_tape_tables(output_dir: Path, config_index: ConfigIndex, tape_path: P
 
     frame_count = 0
     market_event_count = 0
+    tape_bounds = {"start_ts_ns": None, "end_ts_ns": None}
     try:
         for payload in iter_tape_payloads(tape_path):
             message = payload.message if isinstance(payload.message, dict) else {}
             msg = message.get("msg") if isinstance(message.get("msg"), dict) else {}
             market_ticker = str(msg.get("market_ticker", ""))
             sequence_id = message.get("seq")
+            _update_time_bounds(tape_bounds, payload.recv_ts_ns)
 
             frame_row = {
                 "record_index": payload.record_index,
@@ -433,7 +565,7 @@ def _write_tape_tables(output_dir: Path, config_index: ConfigIndex, tape_path: P
     return frame_count, market_event_count, {
         "frames": {"parquet": str(frame_path), **({"csv": str(frame_csv_path)} if frame_csv_path is not None else {})},
         "market_events": {"parquet": str(market_path), **({"csv": str(market_csv_path)} if market_csv_path is not None else {})},
-    }
+    }, tape_bounds
 
 
 def _trace_request_fields() -> list[tuple[str, str]]:
@@ -511,7 +643,7 @@ def _decimal_to_float(raw_value: object) -> float:
         return 0.0
 
 
-def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str) -> tuple[int, int, dict[str, dict[str, str]]]:
+def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str) -> tuple[int, int, dict[str, dict[str, str]], dict[str, object]]:
     request_path, request_csv_path = _table_paths(output_dir, "trace_requests", fmt)
     order_path, order_csv_path = _table_paths(output_dir, "trace_orders", fmt)
     request_writer = _ParquetRowWriter(request_path, _trace_request_fields())
@@ -521,6 +653,10 @@ def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str)
 
     request_count = 0
     order_count = 0
+    trace_bounds = {"start_ts_ns": None, "end_ts_ns": None}
+    user_ids: set[str] = set()
+    subaccount_numbers: set[int] = set()
+    request_targets: set[str] = set()
     try:
         for trace_path in trace_paths:
             with trace_path.open("r", encoding="utf-8") as handle:
@@ -533,6 +669,14 @@ def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str)
                     response_body = _parse_json_body(record.get("response_body")) or {}
                     request_orders = request_body.get("orders") if isinstance(request_body.get("orders"), list) else []
                     response_orders = response_body.get("orders") if isinstance(response_body.get("orders"), list) else []
+                    request_target = str(record.get("request_target", ""))
+                    if request_target:
+                        request_targets.add(request_target)
+                    _update_time_bounds(trace_bounds, int(record.get("queued_ts_ns", 0) or 0))
+                    _update_time_bounds(trace_bounds, int(record.get("session_submit_ts_ns", 0) or 0))
+                    _update_time_bounds(trace_bounds, int(record.get("request_sent_ts_ns", 0) or 0))
+                    _update_time_bounds(trace_bounds, int(record.get("response_recv_ts_ns", 0) or 0))
+                    _update_time_bounds(trace_bounds, int(record.get("completed_ts_ns", 0) or 0))
                     request_row = {
                         "source_file": trace_path.name,
                         "dispatch_request_id": int(record.get("dispatch_request_id", 0)),
@@ -568,6 +712,15 @@ def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str)
                     for index, response_item in enumerate(response_orders):
                         response_order = response_item.get("order") if isinstance(response_item, dict) else {}
                         request_order = request_orders[index] if index < len(request_orders) and isinstance(request_orders[index], dict) else {}
+                        user_id = str(response_order.get("user_id", ""))
+                        if user_id:
+                            user_ids.add(user_id)
+                        subaccount_number = response_order.get("subaccount_number")
+                        if subaccount_number not in (None, ""):
+                            try:
+                                subaccount_numbers.add(int(subaccount_number))
+                            except (TypeError, ValueError):
+                                pass
                         order_row = {
                             "source_file": trace_path.name,
                             "dispatch_request_id": int(record.get("dispatch_request_id", 0)),
@@ -602,7 +755,69 @@ def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str)
     return request_count, order_count, {
         "trace_requests": {"parquet": str(request_path), **({"csv": str(request_csv_path)} if request_csv_path is not None else {})},
         "trace_orders": {"parquet": str(order_path), **({"csv": str(order_csv_path)} if order_csv_path is not None else {})},
+    }, {
+        "time_bounds": trace_bounds,
+        "user_ids": sorted(user_ids),
+        "subaccount_numbers": sorted(subaccount_numbers),
+        "request_targets": sorted(request_targets),
     }
+
+
+def _run_metadata_payload(
+    *,
+    run_id: str,
+    created_utc: str,
+    config_file: Path,
+    audit_bounds: dict[str, int | None],
+    tape_bounds: dict[str, int | None],
+    trace_metadata: dict[str, object],
+) -> dict[str, object]:
+    trace_bounds = trace_metadata.get("time_bounds") if isinstance(trace_metadata.get("time_bounds"), dict) else {"start_ts_ns": None, "end_ts_ns": None}
+    session_bounds = _merge_bounds(audit_bounds, tape_bounds, trace_bounds)
+    return {
+        "run_id": run_id,
+        "created_utc": created_utc,
+        "venue": "kalshi",
+        "repository": _git_metadata(config_file.parent),
+        "session": _time_bounds_payload(session_bounds),
+        "sources": {
+            "tape": _time_bounds_payload(tape_bounds),
+            "audit": _time_bounds_payload(audit_bounds),
+            "rest_trace": _time_bounds_payload(trace_bounds),
+        },
+        "account": {
+            "user_ids": trace_metadata.get("user_ids", []),
+            "subaccount_numbers": trace_metadata.get("subaccount_numbers", []),
+        },
+        "transport": {
+            "request_targets": trace_metadata.get("request_targets", []),
+        },
+    }
+
+
+def load_ingested_run(path: str | Path) -> IngestedRun:
+    run_root = Path(path).expanduser().resolve()
+    if run_root.is_file():
+        if run_root.name != "manifest.json":
+            raise ValueError(f"expected run directory or manifest.json path, got: {run_root}")
+        manifest_path = run_root
+        run_root = run_root.parent
+    else:
+        manifest_path = run_root / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    metadata_path = run_root / "run_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+    run_id = str(manifest.get("run_id") or run_root.name)
+    return IngestedRun(
+        run_id=run_id,
+        root=run_root,
+        manifest_path=manifest_path,
+        metadata_path=metadata_path if metadata_path.exists() else None,
+        manifest=manifest,
+        metadata=metadata,
+    )
 
 
 def ingest_run(
@@ -631,6 +846,8 @@ def ingest_run(
     config_index = load_config_index(config_file)
     audit_events = load_audit_events(audit_file)
     bundles = build_signal_bundles(audit_events)
+    audit_bounds = _audit_time_bounds(audit_events)
+    created_utc = datetime.now(timezone.utc).isoformat()
 
     shutil.copyfile(config_file, output_dir / "config.snapshot.json")
 
@@ -646,7 +863,7 @@ def ingest_run(
     )
     table_counts["market_routes"] = market_route_count
     table_files["market_routes"] = market_route_files
-    frame_count, market_event_count, tape_files = _write_tape_tables(output_dir, config_index, tape_file, fmt)
+    frame_count, market_event_count, tape_files, tape_bounds = _write_tape_tables(output_dir, config_index, tape_file, fmt)
     table_counts["frames"] = frame_count
     table_counts["market_events"] = market_event_count
     table_files.update(tape_files)
@@ -689,26 +906,62 @@ def ingest_run(
     table_files["latencies"] = latency_files
 
     if resolved_trace_paths:
-        trace_requests_count, trace_orders_count, trace_files = _write_trace_tables(output_dir, resolved_trace_paths, fmt)
+        trace_requests_count, trace_orders_count, trace_files, trace_metadata = _write_trace_tables(output_dir, resolved_trace_paths, fmt)
     else:
         trace_requests_count = 0
         trace_orders_count = 0
         trace_files = {}
+        trace_metadata = {"time_bounds": {"start_ts_ns": None, "end_ts_ns": None}, "user_ids": [], "subaccount_numbers": [], "request_targets": []}
     table_counts["trace_requests"] = trace_requests_count
     table_counts["trace_orders"] = trace_orders_count
     table_files.update(trace_files)
 
     audit_kind_counts = Counter(event.kind for event in audit_events)
+    generated_tables = {
+        table_name: {
+            "row_count": table_counts[table_name],
+            "files": files,
+        }
+        for table_name, files in table_files.items()
+    }
+    run_metadata = _run_metadata_payload(
+        run_id=resolved_run_id,
+        created_utc=created_utc,
+        config_file=config_file,
+        audit_bounds=audit_bounds,
+        tape_bounds=tape_bounds,
+        trace_metadata=trace_metadata,
+    )
+    metadata_path = output_dir / "run_metadata.json"
+    metadata_path.write_text(json.dumps(run_metadata, indent=2, sort_keys=False), encoding="utf-8")
     manifest = {
         "run_id": resolved_run_id,
-        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created_utc": created_utc,
+        "storage_format": fmt,
+        "run_metadata": str(metadata_path),
+        "source_artifacts": {
+            "config": _source_metadata(config_file, "config"),
+            "audit": {**_source_metadata(audit_file, "audit"), "time_bounds": _time_bounds_payload(audit_bounds)},
+            "tape": {**_source_metadata(tape_file, "tape"), "time_bounds": _time_bounds_payload(tape_bounds)},
+            "rest_traces": [
+                {**_source_metadata(path, "rest_trace")}
+                for path in resolved_trace_paths
+            ],
+        },
+        "generated_tables": generated_tables,
+        "summary": {
+            "audit_kind_counts": dict(audit_kind_counts),
+            "event_count": len(config_index.events_by_id),
+            "market_count": len(config_index.routes),
+            "signal_count": len(bundles),
+            "trace_source_count": len(resolved_trace_paths),
+        },
         "sources": [
             _source_metadata(config_file, "config"),
             _source_metadata(audit_file, "audit"),
             _source_metadata(tape_file, "tape"),
             *[_source_metadata(path, "rest_trace") for path in resolved_trace_paths],
         ],
-        "storage_format": fmt,
         "table_counts": table_counts,
         "table_files": table_files,
         "audit_kind_counts": dict(audit_kind_counts),
@@ -723,6 +976,7 @@ def ingest_run(
         "run_id": resolved_run_id,
         "output_dir": str(output_dir),
         "manifest": str(manifest_path),
+        "run_metadata": str(metadata_path),
         "trace_source_count": len(resolved_trace_paths),
         "storage_format": fmt,
         "tables": table_counts,

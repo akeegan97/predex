@@ -1,6 +1,7 @@
 from .audit import AuditEvent, SignalBundle, build_signal_bundles, load_audit_events
 from .books import ReplayBookStore
 from .config import ConfigIndex, EventRoute, MarketRoute, load_config_index
+from .ingest import IngestedRun, load_ingested_run
 from .tape import MarketEvent, iter_market_events, iter_tape_payloads
 from .timeline import (
     EventTimeline,
@@ -27,6 +28,7 @@ __all__ = [
     "EventRoute",
     "MarketEvent",
     "MarketRoute",
+    "IngestedRun",
     "ReplayBookStore",
     "EventTimeline",
     "SignalHit",
@@ -46,6 +48,7 @@ __all__ = [
     "build_signal_bundles",
     "iter_market_events",
     "iter_tape_payloads",
+    "load_ingested_run",
     "load_audit_events",
     "load_config_index",
     "verify_signal_bundle",

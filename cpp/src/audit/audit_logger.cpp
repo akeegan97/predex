@@ -71,6 +71,8 @@ void write_event_json(std::ofstream& output, const AuditEvent& event) {
             << "\"aux_side\":" << static_cast<unsigned>(event.aux_side) << ','
             << "\"leg_index\":" << event.leg_index << ','
             << "\"leg_count\":" << event.leg_count << ','
+            << "\"reference_depth_levels\":" << event.reference_depth_levels << ','
+            << "\"aux_reference_depth_levels\":" << event.aux_reference_depth_levels << ','
             << "\"qty_lots\":" << event.qty_lots << ','
             << "\"aux_qty_lots\":" << event.aux_qty_lots << ','
             << "\"reference_depth_qty_lots\":" << event.reference_depth_qty_lots << ','

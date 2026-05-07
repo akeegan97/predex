@@ -380,6 +380,8 @@ class DefaultShardPipeline {
             .side = leg1 != nullptr ? leg1->side : internal::Side::kUnknown,
             .aux_side = leg2 != nullptr ? leg2->side : internal::Side::kUnknown,
             .leg_count = static_cast<std::uint16_t>(group_signal.leg_count),
+            .reference_depth_levels = group_signal.reference_depth_levels,
+            .aux_reference_depth_levels = group_signal.aux_reference_depth_levels,
             .qty_lots = leg1 != nullptr ? leg1->qty_lots : 0,
             .aux_qty_lots = leg2 != nullptr ? leg2->qty_lots : 0,
             .reference_depth_qty_lots = group_signal.reference_depth_qty_lots,

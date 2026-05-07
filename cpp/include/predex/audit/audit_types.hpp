@@ -67,6 +67,8 @@ struct AuditEvent {
 
     std::uint16_t leg_index{0};
     std::uint16_t leg_count{0};
+    std::uint16_t reference_depth_levels{0};
+    std::uint16_t aux_reference_depth_levels{0};
 
     internal::QtyLots qty_lots{0};
     internal::QtyLots aux_qty_lots{0};

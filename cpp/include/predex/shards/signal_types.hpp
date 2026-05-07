@@ -30,7 +30,8 @@ struct Signal {
     SignalKind kind{SignalKind::kUnknown};
     internal::Side side{internal::Side::kUnknown};
     predex::core::oms::kalshi::Outcome outcome{
-        predex::core::oms::kalshi::Outcome::kUnknown};
+        predex::core::oms::kalshi::Outcome::kUnknown
+    };
     internal::QtyLots target_qty_lots{0};
     std::optional<internal::PriceTicks> reference_price_ticks;
     internal::TimestampNs signal_ts_ns{0};
@@ -42,11 +43,13 @@ struct SubmissionLeg {
     internal::MarketId market_id{0};
     internal::Side side{internal::Side::kUnknown};
     predex::core::oms::kalshi::Outcome outcome{
-        predex::core::oms::kalshi::Outcome::kUnknown};
+        predex::core::oms::kalshi::Outcome::kUnknown
+    };
     internal::QtyLots qty_lots{0};
     std::optional<internal::PriceTicks> limit_price_ticks;
     predex::core::oms::kalshi::OmsTimeInForce time_in_force{
-        predex::core::oms::kalshi::OmsTimeInForce::kGtc};
+        predex::core::oms::kalshi::OmsTimeInForce::kGtc
+    };
 };
 
 struct GroupSignal {
@@ -55,11 +58,10 @@ struct GroupSignal {
     internal::EventId event_id{0};
     SignalKind kind{SignalKind::kUnknown};
     predex::core::oms::kalshi::GroupExecutionPolicy execution_policy{
-        predex::core::oms::kalshi::GroupExecutionPolicy::kAbortRemainingOnReject};
+        predex::core::oms::kalshi::GroupExecutionPolicy::kAbortRemainingOnReject
+    };
     std::array<SubmissionLeg, predex::core::oms::kalshi::kMaxGroupOrderLegs> legs{};
     std::size_t leg_count{0};
-    // Reference quotes seen by the strategy before any execution-side adjustments.
-    // For phase-2 bounded aggression, the leg limit prices may diverge from these.
     std::optional<internal::PriceTicks> reference_price_ticks;
     std::optional<internal::PriceTicks> aux_reference_price_ticks;
     std::uint16_t reference_depth_levels{0};

@@ -116,6 +116,139 @@ inline const char* desync_reason_name(ShardDesyncReason reason) noexcept {
     }
 }
 
+struct PreApplyBookSnapshot{
+    bool has_snapshot{false};
+    bool desynced{false};
+    std::optional<internal::SequenceId> last_seq_id{};
+    std::uint64_t corrected_negative_level_count{0};
+};
+
+[[gnu::always_inline]]
+inline PreApplyBookSnapshot capture_snapshot(const BookState* pre_book_state) noexcept {
+    if (pre_book_state == nullptr) {
+        return PreApplyBookSnapshot{};
+    }
+    return PreApplyBookSnapshot{
+        .has_snapshot = pre_book_state->has_snapshot,
+        .desynced = pre_book_state->desynced,
+        .last_seq_id = pre_book_state->last_seq_id,
+        .corrected_negative_level_count = pre_book_state->corrected_negative_level_count,
+    };
+}
+
+[[gnu::noinline, gnu::cold]]
+inline void log_correction(
+    const predex::core::ingest::kalshi::FrameHandle& handle,
+    const BookState& post_book,
+    const predex::internal::NormalizedEvent& event
+)noexcept{
+    char time_buf[32];
+    format_utc_timestamp(time_buf, sizeof(time_buf));
+    std::fprintf(stdout,
+        "[%s] SHARD | phase=correction | event_id=%u | market_id=%u"
+        " | sid=%u | seq=%llu | side=%s | price_ticks=%lld | qty_lots=%lld"
+        " | existing_qty_lots=%lld | updated_qty_lots=%lld"
+        " | correction_count=%llu\n",
+        time_buf,
+        event.meta.event_id,
+        event.meta.market_id,
+        handle.sid_,
+        static_cast<unsigned long long>(
+            event.effective_sequence_id().value_or(0)),
+        detail::side_name(post_book.last_failure.side),
+        static_cast<long long>(post_book.last_failure.price_ticks),
+        static_cast<long long>(post_book.last_failure.delta_qty_lots),
+        static_cast<long long>(post_book.last_failure.existing_qty_lots),
+        static_cast<long long>(post_book.last_failure.updated_qty_lots),
+        static_cast<unsigned long long>(
+        post_book.corrected_negative_level_count));
+    std::fflush(stdout);
+}
+
+[[gnu::noinline, gnu::cold]]
+inline void log_desync(
+    const predex::core::ingest::kalshi::FrameHandle& handle,
+    const PreApplyBookSnapshot& snapshot,
+    const BookState* post_book,
+    const predex::internal::NormalizedEvent& event,
+    std::unordered_set<std::uint64_t>& logged_keys,
+    ShardDesyncReason reason
+)noexcept{
+    //assumes EventId and MarketId are both at most 32 bits, catching any potential widening here
+    static_assert(sizeof(event.meta.event_id) <= 4U, "EventId must fit within 32 bits");
+    static_assert(sizeof(event.meta.market_id) <= 4U, "MarketId must fit within 32 bits");
+    const std::uint64_t desync_key = 
+        (static_cast<std::uint64_t>(event.meta.event_id) << 32U) | static_cast<std::uint64_t>(event.meta.market_id);
+    const bool first_instance = logged_keys.insert(desync_key).second;
+    if(!first_instance){
+        return;
+    }
+    internal::Side side = internal::Side::kUnknown;
+    internal::PriceTicks price_ticks = 0;
+    internal::QtyLots qty_lots = 0;
+    if(const auto *delta = std::get_if<internal::DeltaData>(&event.data)){
+        side = delta->side;
+        price_ticks = delta->price_ticks;
+        qty_lots = delta->delta_qty_lots;
+    } else if(const auto *trade = std::get_if<internal::TradeData>(&event.data)){
+        side = trade->book_side;
+        price_ticks = trade->price_ticks;
+        qty_lots = trade->qty_lots;
+    }
+    const auto existing_qty_lots = post_book != nullptr ? post_book->last_failure.existing_qty_lots : 0;
+    const auto updated_qty_lots = post_book != nullptr ? post_book->last_failure.updated_qty_lots : 0;
+    const auto pending_delta_count = post_book != nullptr ? post_book->last_failure.pending_delta_count : 0;
+    const auto recovery_snapshot_count = post_book != nullptr ? post_book->recovery_snapshot_count : 0;
+    
+    char time_buf[32];  
+    format_utc_timestamp(time_buf, sizeof(time_buf));
+
+    std::fprintf(stdout,
+        "[%s] SHARD | phase=first_desync | event_id=%u | market_id=%u"
+        " | sid=%u | seq=%llu | raw_type=%s | parsed_type=%s"
+        " | reason=%s | pre_has_snapshot=%s | pre_book_desynced=%s"
+        " | pre_last_seq=%llu | side=%s | price_ticks=%lld | qty_lots=%lld"
+        " | existing_qty_lots=%lld | updated_qty_lots=%lld"
+        " | pending_deltas=%zu | recovery_snapshots=%llu\n",
+        time_buf,
+        event.meta.event_id,
+        event.meta.market_id,
+        handle.sid_,
+        static_cast<unsigned long long>(event.effective_sequence_id().value_or(0)),
+        raw_event_type_name(handle.event_type_),
+        parsed_event_type_name(event.type),
+        desync_reason_name(reason),
+        snapshot.has_snapshot ? "true" : "false",
+        snapshot.desynced ? "true" : "false",
+        static_cast<unsigned long long>(snapshot.last_seq_id.value_or(0)),
+        side_name(side),
+        static_cast<long long>(price_ticks),
+        static_cast<long long>(qty_lots),
+        static_cast<long long>(existing_qty_lots),
+        static_cast<long long>(updated_qty_lots),
+        pending_delta_count,
+        static_cast<unsigned long long>(recovery_snapshot_count));
+    if(post_book != nullptr && !post_book->recent_updates.empty()){
+        std::fprintf(stdout,
+            "[%s] SHARD | phase=recent_updates | event_id=%u | market_id=%u",
+            time_buf,
+            event.meta.event_id,
+            event.meta.market_id);
+        for(const auto& update : post_book->recent_updates){
+            std::fprintf(stdout,
+                " | type=%s,seq=%llu,side=%s,price=%lld,qty=%lld",
+                parsed_event_type_name(update.type),
+                static_cast<unsigned long long>(update.seq_id.value_or(0)),
+                side_name(update.side),
+                static_cast<long long>(update.price_ticks),
+                static_cast<long long>(update.qty_lots));
+        }
+        std::fputc('\n', stdout);
+    }
+    std::fflush(stdout);
+}
+
+
 } // namespace detail
 
 enum class ProcessCode : std::uint8_t {
@@ -174,9 +307,6 @@ class Shard {
                 case ProcessCode::kPipelineError:
                     break;
                 case ProcessCode::kLoggerBackpressure:
-                    return processed;
-                default:
-                    ++failed_count_;
                     return processed;
             }
         }
@@ -278,111 +408,19 @@ class Shard {
         }
 
         const BookState* pre_book = stored_event->book_store.find(event.meta.market_id);
-        const bool pre_has_snapshot = pre_book != nullptr && pre_book->has_snapshot;
-        const bool pre_book_desynced = pre_book != nullptr && pre_book->desynced;
-        const auto pre_last_seq = pre_book != nullptr ? pre_book->last_seq_id : std::optional<internal::SequenceId>{};
-        const auto pre_correction_count =
-            pre_book != nullptr ? pre_book->corrected_negative_level_count : 0;
+        const auto pre_snap = detail::capture_snapshot(pre_book);
 
         const EventApplyResult apply_result = stored_event->apply_market_update(event);
         const BookState* post_book = stored_event->book_store.find(event.meta.market_id);
-        if (post_book != nullptr &&
-            post_book->corrected_negative_level_count > pre_correction_count) {
-            char time_buf[32];
-            detail::format_utc_timestamp(time_buf, sizeof(time_buf));
-            std::fprintf(stdout,
-                         "[%s] SHARD | phase=correction | event_id=%u | market_id=%u"
-                         " | sid=%u | seq=%llu | side=%s | price_ticks=%lld | qty_lots=%lld"
-                         " | existing_qty_lots=%lld | updated_qty_lots=%lld"
-                         " | correction_count=%llu\n",
-                         time_buf,
-                         event.meta.event_id,
-                         event.meta.market_id,
-                         handle.sid_,
-                         static_cast<unsigned long long>(
-                             event.effective_sequence_id().value_or(0)),
-                         detail::side_name(post_book->last_failure.side),
-                         static_cast<long long>(post_book->last_failure.price_ticks),
-                         static_cast<long long>(post_book->last_failure.delta_qty_lots),
-                         static_cast<long long>(post_book->last_failure.existing_qty_lots),
-                         static_cast<long long>(post_book->last_failure.updated_qty_lots),
-                         static_cast<unsigned long long>(
-                             post_book->corrected_negative_level_count));
-            std::fflush(stdout);
+
+        if(post_book != nullptr && post_book->corrected_negative_level_count > pre_snap.corrected_negative_level_count) [[unlikely]] {
+            detail::log_correction(handle, *post_book, event);
         }
-        if (apply_result.desync_reason != ShardDesyncReason::kNone) {
-            const std::uint64_t desync_key =
-                (static_cast<std::uint64_t>(event.meta.event_id) << 32U) |
-                static_cast<std::uint64_t>(event.meta.market_id);
-            if (logged_desync_keys_.insert(desync_key).second) {
-                internal::Side side = internal::Side::kUnknown;
-                internal::PriceTicks price_ticks = 0;
-                internal::QtyLots qty_lots = 0;
-                if (const auto* delta = std::get_if<internal::DeltaData>(&event.data)) {
-                    side = delta->side;
-                    price_ticks = delta->price_ticks;
-                    qty_lots = delta->delta_qty_lots;
-                } else if (const auto* trade = std::get_if<internal::TradeData>(&event.data)) {
-                    side = trade->book_side;
-                    price_ticks = trade->price_ticks;
-                    qty_lots = trade->qty_lots;
-                }
-                const auto existing_qty_lots =
-                    post_book != nullptr ? post_book->last_failure.existing_qty_lots : 0;
-                const auto updated_qty_lots =
-                    post_book != nullptr ? post_book->last_failure.updated_qty_lots : 0;
-                const auto pending_delta_count =
-                    post_book != nullptr ? post_book->last_failure.pending_delta_count : 0;
-                const auto recovery_snapshot_count =
-                    post_book != nullptr ? post_book->recovery_snapshot_count : 0;
-                char time_buf[32];
-                detail::format_utc_timestamp(time_buf, sizeof(time_buf));
-                std::fprintf(stdout,
-                             "[%s] SHARD | phase=first_desync | event_id=%u | market_id=%u"
-                             " | sid=%u | seq=%llu | raw_type=%s | parsed_type=%s"
-                             " | reason=%s | pre_has_snapshot=%s | pre_book_desynced=%s"
-                             " | pre_last_seq=%llu | side=%s | price_ticks=%lld | qty_lots=%lld"
-                             " | existing_qty_lots=%lld | updated_qty_lots=%lld"
-                             " | pending_deltas=%zu | recovery_snapshots=%llu\n",
-                             time_buf,
-                             event.meta.event_id,
-                             event.meta.market_id,
-                             handle.sid_,
-                             static_cast<unsigned long long>(
-                                 event.effective_sequence_id().value_or(0)),
-                             detail::raw_event_type_name(handle.event_type_),
-                             detail::parsed_event_type_name(event.type),
-                             detail::desync_reason_name(apply_result.desync_reason),
-                             pre_has_snapshot ? "true" : "false",
-                             pre_book_desynced ? "true" : "false",
-                             static_cast<unsigned long long>(pre_last_seq.value_or(0)),
-                             detail::side_name(side),
-                             static_cast<long long>(price_ticks),
-                             static_cast<long long>(qty_lots),
-                             static_cast<long long>(existing_qty_lots),
-                             static_cast<long long>(updated_qty_lots),
-                             pending_delta_count,
-                             static_cast<unsigned long long>(recovery_snapshot_count));
-                if (post_book != nullptr && !post_book->recent_updates.empty()) {
-                    std::fprintf(stdout,
-                                 "[%s] SHARD | phase=recent_updates | event_id=%u | market_id=%u",
-                                 time_buf,
-                                 event.meta.event_id,
-                                 event.meta.market_id);
-                    for (const auto& update : post_book->recent_updates) {
-                        std::fprintf(stdout,
-                                     " | type=%s,seq=%llu,side=%s,price=%lld,qty=%lld",
-                                     detail::parsed_event_type_name(update.type),
-                                     static_cast<unsigned long long>(update.seq_id.value_or(0)),
-                                     detail::side_name(update.side),
-                                     static_cast<long long>(update.price_ticks),
-                                     static_cast<long long>(update.qty_lots));
-                    }
-                    std::fputc('\n', stdout);
-                }
-                std::fflush(stdout);
-            }
+
+        if(apply_result.desync_reason != ShardDesyncReason::kNone) [[unlikely]] {
+            detail::log_desync(handle, pre_snap, post_book, event, logged_desync_keys_, apply_result.desync_reason);
         }
+        
         bundle_.on_event_apply_result(event, *stored_event, apply_result);
         if (apply_result.code != EventApplyCode::kApplied) {
             ++apply_fail_count_;
@@ -403,14 +441,14 @@ class Shard {
 
         const AppliedEventUpdate update{event, *stored_event};
         const PipelineResult pipeline_result = bundle_.on_event(update);
-        if (pipeline_result.code == PipelineDecisionCode::kError) {
+        if (pipeline_result.code == PipelineDecisionCode::kError) [[unlikely]] {
             ++failed_count_;
             return ProcessOneResult{
                 .code = ProcessCode::kPipelineError,
                 .apply_code = apply_result.code,
                 .pipeline_code = pipeline_result.code,
             };
-        }
+        }   
 
         return ProcessOneResult{
             .code = ProcessCode::kProcessed,
@@ -419,5 +457,7 @@ class Shard {
         };
     }
 };
-
 } // namespace predex::core::shards::kalshi
+
+
+

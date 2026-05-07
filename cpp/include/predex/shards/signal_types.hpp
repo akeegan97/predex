@@ -66,6 +66,9 @@ struct GroupSignal {
     std::optional<internal::PriceTicks> aux_reference_price_ticks;
     std::uint16_t reference_depth_levels{0};
     std::uint16_t aux_reference_depth_levels{0};
+    internal::QtyLots reference_depth_qty_lots{0};
+    internal::QtyLots aux_reference_depth_qty_lots{0};
+    internal::QtyLots paired_frontier_qty_lots{0};
     internal::TimestampNs signal_ts_ns{0};
     std::int64_t edge_ticks{0};
     std::int64_t score{0};

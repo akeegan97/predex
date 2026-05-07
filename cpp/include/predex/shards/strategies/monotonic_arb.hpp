@@ -27,7 +27,10 @@ struct MonotonicArbConfig {
     bool bounded_harder_aggression_enabled{true};
     bool bounded_easier_aggression_enabled{true};
     bool require_top_gap_continuity{true};
-    internal::PriceTicks max_top_gap_ticks{50};
+    internal::PriceTicks max_top_gap_ticks{20};
+    bool require_near_top_multilevel_support{true};
+    internal::PriceTicks near_top_depth_window_ticks{20};
+    std::uint16_t min_near_top_levels{2};
     internal::PriceTicks max_easier_aggression_ticks{30};
     internal::PriceTicks max_harder_aggression_ticks{30};
     std::size_t max_easier_book_levels{3};
@@ -199,6 +202,56 @@ class MonotonicArbStrategy {
     }
 
     template <std::size_t Depth>
+    [[nodiscard]] std::pair<std::uint16_t, internal::QtyLots> near_top_support_(
+        const std::array<SideDepthLevel, Depth>& levels,
+        bool descending_prices) const noexcept {
+        std::optional<internal::PriceTicks> top_price_ticks;
+        std::uint16_t level_count = 0;
+        internal::QtyLots cumulative_qty_lots = 0;
+
+        for (std::size_t level_index = 0; level_index < levels.size(); ++level_index) {
+            const auto& level = levels[level_index];
+            if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
+                *level.qty_lots <= 0) {
+                continue;
+            }
+
+            const internal::PriceTicks price_ticks = *level.price_ticks;
+            if (!top_price_ticks.has_value()) {
+                top_price_ticks = price_ticks;
+            } else {
+                const internal::PriceTicks distance_ticks = descending_prices
+                    ? (*top_price_ticks - price_ticks)
+                    : (price_ticks - *top_price_ticks);
+                if (distance_ticks < 0 ||
+                    distance_ticks > config_.near_top_depth_window_ticks) {
+                    break;
+                }
+            }
+
+            ++level_count;
+            cumulative_qty_lots += *level.qty_lots;
+        }
+
+        return {level_count, cumulative_qty_lots};
+    }
+
+    template <std::size_t Depth>
+    [[nodiscard]] bool has_near_top_support_(
+        const std::array<SideDepthLevel, Depth>& levels,
+        bool descending_prices,
+        internal::QtyLots executable_qty) const noexcept {
+        if (!config_.require_near_top_multilevel_support) {
+            return true;
+        }
+
+        const auto [level_count, cumulative_qty_lots] =
+            near_top_support_(levels, descending_prices);
+        return level_count >= config_.min_near_top_levels &&
+               cumulative_qty_lots >= executable_qty;
+    }
+
+    template <std::size_t Depth>
     [[nodiscard]] bool top_gap_within_limit_(
         const std::array<SideDepthLevel, Depth>& levels,
         bool descending_prices) const noexcept {
@@ -354,7 +407,9 @@ class MonotonicArbStrategy {
         }
 
         if (!top_gap_within_limit_(easier_market.depth.asks, false) ||
-            !top_gap_within_limit_(harder_market.depth.bids, true)) {
+            !top_gap_within_limit_(harder_market.depth.bids, true) ||
+            !has_near_top_support_(easier_market.depth.asks, false, executable_qty) ||
+            !has_near_top_support_(harder_market.depth.bids, true, executable_qty)) {
             return std::nullopt;
         }
 
@@ -427,6 +482,10 @@ class MonotonicArbStrategy {
         }
         const auto& easier_selection = paired_selection->first;
         const auto& harder_selection = paired_selection->second;
+        const auto [easier_near_top_levels, easier_near_top_qty_lots] =
+            near_top_support_(easier.market.depth.asks, false);
+        const auto [harder_near_top_levels, harder_near_top_qty_lots] =
+            near_top_support_(harder.market.depth.bids, true);
 
         const internal::PriceTicks net_edge_ticks = net_edge_ticks_for_pair_(
             easier_selection.chosen_limit_ticks,
@@ -446,8 +505,12 @@ class MonotonicArbStrategy {
         signal.leg_count = 2;
         signal.reference_price_ticks = easier_ask;
         signal.aux_reference_price_ticks = harder_bid;
-        signal.reference_depth_levels = easier_selection.scanned_levels;
-        signal.aux_reference_depth_levels = harder_selection.scanned_levels;
+        signal.reference_depth_levels = easier_near_top_levels;
+        signal.aux_reference_depth_levels = harder_near_top_levels;
+        signal.reference_depth_qty_lots = easier_near_top_qty_lots;
+        signal.aux_reference_depth_qty_lots = harder_near_top_qty_lots;
+        signal.paired_frontier_qty_lots =
+            std::min(easier_near_top_qty_lots, harder_near_top_qty_lots);
         signal.signal_ts_ns = update.update.meta.recv_ns;
         signal.edge_ticks = net_edge_ticks;
         signal.score = net_edge_ticks;

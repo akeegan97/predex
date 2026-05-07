@@ -475,6 +475,6 @@ class MonotonicArbStrategy {
         };
         return signal;
     }
-}
+};
 
 }  // namespace predex::core::shards::kalshi::strategies

@@ -51,3 +51,9 @@ logs/replay/*.xlsx
 logs/replay/*.jsonl
 logs/replay/*.json
 logs/runs/*
+predex_audit_5_5_26.jsonl
+predex_audit_5_6_2026.jsonl
+predex_audit_5_7_2026.jsonl
+predex_tape_5_5_26.bin
+predex_tape_5_6_2026.bin
+predex_tape_5_7_2026.bin

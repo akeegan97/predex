@@ -11,21 +11,20 @@
 namespace predex::core::parsers::kalshi {
 
 using predex::parsers::ParseError;
-template <typename T>
-using ParseResult = predex::parsers::ParseResult<T>;
+template <typename T> using ParseResult = predex::parsers::ParseResult<T>;
 
 namespace {
-std::int64_t reciprocal_price(std::int64_t price){
-    return internal::kMaxPriceTicks - price;
-}
+std::int64_t reciprocal_price(std::int64_t price) { return internal::kMaxPriceTicks - price; }
 // Kalshi on-demand message type strings.
 constexpr std::string_view kTypeOrderbook = "orderbook_snapshot";
 constexpr std::string_view kTypeOrderbookDelta = "orderbook_delta";
 constexpr std::string_view kTypeTrade = "trade";
 constexpr std::string_view kTypeLifecycle = "market_lifecycle";
-constexpr auto kInt64MaxAsU64 = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+constexpr auto kInt64MaxAsU64 =
+    static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
 constexpr auto kScale = static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
-bool get_string(simdjson::ondemand::object& obj, std::string_view key, std::string_view& out) noexcept {
+bool get_string(simdjson::ondemand::object& obj, std::string_view key,
+                std::string_view& out) noexcept {
     auto result = obj.find_field_unordered(key).get_string();
     if (result.error() != simdjson::SUCCESS) {
         return false;
@@ -43,8 +42,7 @@ bool get_int64(simdjson::ondemand::object& obj, std::string_view key, std::int64
     return true;
 }
 
-bool get_value(simdjson::ondemand::object& obj,
-               std::string_view key,
+bool get_value(simdjson::ondemand::object& obj, std::string_view key,
                simdjson::ondemand::value& out) noexcept {
     auto result = obj.find_field_unordered(key);
     if (result.error() != simdjson::SUCCESS) {
@@ -61,7 +59,8 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
     }
 
     const std::size_t dot = value.find('.');
-    const std::string_view int_part = (dot == std::string_view::npos) ? value : value.substr(0, dot);
+    const std::string_view int_part =
+        (dot == std::string_view::npos) ? value : value.substr(0, dot);
     const std::string_view frac_part =
         (dot == std::string_view::npos) ? std::string_view{} : value.substr(dot + 1);
     if (int_part.empty()) {
@@ -79,7 +78,8 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
     }
 
     std::uint64_t dollars = 0;
-    const auto [ptr, ec] = std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
+    const auto [ptr, ec] =
+        std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
     if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
         return false;
     }
@@ -89,14 +89,15 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
         const std::size_t digits_to_take =
             std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
         for (std::size_t index = 0; index < digits_to_take; ++index) {
-            //NOLINTNEXTLINE(readability-magic-numbers)
-            subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+            // NOLINTNEXTLINE(readability-magic-numbers)
+            subcent_units =
+                subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
         }
         for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
-            //NOLINTNEXTLINE(readability-magic-numbers)
+            // NOLINTNEXTLINE(readability-magic-numbers)
             subcent_units *= 10U;
         }
-        //NOLINTNEXTLINE(readability-magic-numbers)
+        // NOLINTNEXTLINE(readability-magic-numbers)
         if (frac_part.size() > internal::kPriceDecimalPlaces &&
             frac_part[internal::kPriceDecimalPlaces] >= '5') {
             ++subcent_units;
@@ -106,7 +107,6 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
             }
         }
     }
-
 
     if (dollars > (kInt64MaxAsU64 - subcent_units) / kScale) {
         return false;
@@ -184,7 +184,8 @@ bool parse_price_ticks_value(simdjson::ondemand::value& value, std::int64_t& out
     return true;
 }
 
-bool get_uint64(simdjson::ondemand::object& obj, std::string_view key, std::uint64_t& out) noexcept {
+bool get_uint64(simdjson::ondemand::object& obj, std::string_view key,
+                std::uint64_t& out) noexcept {
     auto result = obj.find_field_unordered(key).get_uint64();
     if (result.error() == simdjson::SUCCESS) {
         out = result.value_unsafe();
@@ -212,8 +213,7 @@ bool get_lot_count(simdjson::ondemand::object& msg, std::int64_t& out) noexcept 
 }
 
 bool parse_first_price_ticks(simdjson::ondemand::object& msg,
-                             std::initializer_list<std::string_view> keys,
-                             std::int64_t& out,
+                             std::initializer_list<std::string_view> keys, std::int64_t& out,
                              std::string_view* matched_key = nullptr) noexcept {
     for (const auto key : keys) {
         simdjson::ondemand::value value;
@@ -232,8 +232,7 @@ bool parse_first_price_ticks(simdjson::ondemand::object& msg,
 }
 
 bool parse_first_lot_count(simdjson::ondemand::object& msg,
-                           std::initializer_list<std::string_view> keys,
-                           std::int64_t& out,
+                           std::initializer_list<std::string_view> keys, std::int64_t& out,
                            std::string_view* matched_key = nullptr) noexcept {
     for (const auto key : keys) {
         simdjson::ondemand::value value;
@@ -251,8 +250,7 @@ bool parse_first_lot_count(simdjson::ondemand::object& msg,
     return false;
 }
 
-bool get_object(simdjson::ondemand::object& obj,
-                std::string_view key,
+bool get_object(simdjson::ondemand::object& obj, std::string_view key,
                 simdjson::ondemand::object& out) noexcept {
     auto result = obj.find_field_unordered(key).get_object();
     if (result.error() != simdjson::SUCCESS) {
@@ -262,8 +260,7 @@ bool get_object(simdjson::ondemand::object& obj,
     return true;
 }
 
-bool get_array(simdjson::ondemand::object& obj,
-               std::string_view key,
+bool get_array(simdjson::ondemand::object& obj, std::string_view key,
                simdjson::ondemand::array& out) noexcept {
     auto result = obj.find_field_unordered(key).get_array();
     if (result.error() != simdjson::SUCCESS) {
@@ -273,7 +270,8 @@ bool get_array(simdjson::ondemand::object& obj,
     return true;
 }
 
-bool get_uint64_field(simdjson::ondemand::object& obj, std::string_view key, std::uint64_t& out) noexcept {
+bool get_uint64_field(simdjson::ondemand::object& obj, std::string_view key,
+                      std::uint64_t& out) noexcept {
     auto result = obj.find_field_unordered(key).get_uint64();
     if (result.error() == simdjson::SUCCESS) {
         out = result.value_unsafe();
@@ -283,19 +281,27 @@ bool get_uint64_field(simdjson::ondemand::object& obj, std::string_view key, std
 }
 
 internal::MarketLifecycleStatus parse_lifecycle_status(std::string_view event_type) noexcept {
-    if (event_type == "activated") return internal::MarketLifecycleStatus::kActivated;
-    if (event_type == "deactivated") return internal::MarketLifecycleStatus::kDeactivated;
-    if (event_type == "close_date_updated") return internal::MarketLifecycleStatus::kCloseDateUpdated;
-    if (event_type == "determined") return internal::MarketLifecycleStatus::kDetermined;
-    if (event_type == "settled") return internal::MarketLifecycleStatus::kSettled;
-    if (event_type == "created") return internal::MarketLifecycleStatus::kCreated;
-    if (event_type == "fractional_trading_updated") return internal::MarketLifecycleStatus::kFractionalTradingUpdated;
-    if (event_type == "price_level_structure_updated") return internal::MarketLifecycleStatus::kPriceLevelStructureUpdated;
+    if (event_type == "activated")
+        return internal::MarketLifecycleStatus::kActivated;
+    if (event_type == "deactivated")
+        return internal::MarketLifecycleStatus::kDeactivated;
+    if (event_type == "close_date_updated")
+        return internal::MarketLifecycleStatus::kCloseDateUpdated;
+    if (event_type == "determined")
+        return internal::MarketLifecycleStatus::kDetermined;
+    if (event_type == "settled")
+        return internal::MarketLifecycleStatus::kSettled;
+    if (event_type == "created")
+        return internal::MarketLifecycleStatus::kCreated;
+    if (event_type == "fractional_trading_updated")
+        return internal::MarketLifecycleStatus::kFractionalTradingUpdated;
+    if (event_type == "price_level_structure_updated")
+        return internal::MarketLifecycleStatus::kPriceLevelStructureUpdated;
     return internal::MarketLifecycleStatus::kUnknown;
 }
 
-ParseResult<internal::NormalizedEvent>
-parse_lifecycle(simdjson::ondemand::object& msg, internal::NormalizedEvent event) {
+ParseResult<internal::NormalizedEvent> parse_lifecycle(simdjson::ondemand::object& msg,
+                                                       internal::NormalizedEvent event) {
     event.type = internal::EventType::kLifecycle;
 
     internal::MarketLifecycleData lifecycle{};
@@ -352,7 +358,8 @@ void set_sequence_from_msg(simdjson::ondemand::object& msg, internal::Normalized
     }
 }
 
-bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& out, bool kalshi_reciprocal_price) noexcept {
+bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& out,
+                  bool kalshi_reciprocal_price) noexcept {
     for (auto level_val : arr) {
         auto level_arr_result = level_val.get_array();
         if (level_arr_result.error() != simdjson::SUCCESS) {
@@ -383,7 +390,7 @@ bool parse_levels(simdjson::ondemand::array& arr, std::vector<internal::Level>& 
             level.price_ticks > internal::kMaxPriceTicks) {
             return false;
         }
-        if(kalshi_reciprocal_price){
+        if (kalshi_reciprocal_price) {
             level.price_ticks = internal::kMaxPriceTicks - level.price_ticks;
         }
         out.push_back(level);
@@ -399,7 +406,8 @@ enum class OptionalLevelsParse : unsigned char {
 
 OptionalLevelsParse parse_optional_levels(simdjson::ondemand::object& msg,
                                           std::initializer_list<std::string_view> keys,
-                                          std::vector<internal::Level>& out,bool kalshi_reciprocal_price ) noexcept {
+                                          std::vector<internal::Level>& out,
+                                          bool kalshi_reciprocal_price) noexcept {
     for (const auto key : keys) {
         simdjson::ondemand::value value;
         if (!get_value(msg, key, value)) {
@@ -412,7 +420,7 @@ OptionalLevelsParse parse_optional_levels(simdjson::ondemand::object& msg,
         }
 
         auto levels = array_result.value_unsafe();
-        if (!parse_levels(levels, out,kalshi_reciprocal_price)) {
+        if (!parse_levels(levels, out, kalshi_reciprocal_price)) {
             return OptionalLevelsParse::kInvalid;
         }
         return OptionalLevelsParse::kParsed;
@@ -421,19 +429,19 @@ OptionalLevelsParse parse_optional_levels(simdjson::ondemand::object& msg,
     return OptionalLevelsParse::kNone;
 }
 
-ParseResult<internal::NormalizedEvent>
-parse_snapshot(simdjson::ondemand::object& msg, internal::NormalizedEvent event) {
+ParseResult<internal::NormalizedEvent> parse_snapshot(simdjson::ondemand::object& msg,
+                                                      internal::NormalizedEvent event) {
     event.type = internal::EventType::kSnapshot;
 
     internal::SnapshotData snapshot{};
     const auto yes_levels_parse =
-        parse_optional_levels(msg, {"yes", "yes_dollars_fp"}, snapshot.bids,false);
+        parse_optional_levels(msg, {"yes", "yes_dollars_fp"}, snapshot.bids, false);
     if (yes_levels_parse == OptionalLevelsParse::kInvalid) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
 
     const auto no_levels_parse =
-        parse_optional_levels(msg, {"no", "no_dollars_fp"}, snapshot.asks,true);
+        parse_optional_levels(msg, {"no", "no_dollars_fp"}, snapshot.asks, true);
     if (no_levels_parse == OptionalLevelsParse::kInvalid) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidField);
     }
@@ -443,10 +451,9 @@ parse_snapshot(simdjson::ondemand::object& msg, internal::NormalizedEvent event)
     return ParseResult<internal::NormalizedEvent>::success(std::move(event));
 }
 
-ParseResult<internal::NormalizedEvent>
-parse_delta(simdjson::ondemand::object& msg,
-            internal::NormalizedEvent event,
-            bool strict_field_validation) {
+ParseResult<internal::NormalizedEvent> parse_delta(simdjson::ondemand::object& msg,
+                                                   internal::NormalizedEvent event,
+                                                   bool strict_field_validation) {
     event.type = internal::EventType::kDelta;
 
     std::int64_t price = 0;
@@ -487,10 +494,11 @@ parse_delta(simdjson::ondemand::object& msg,
             price = reciprocal_price(inferred_price);
             delta_qty = inferred_delta;
         } else {
-            has_price = parse_first_price_ticks(
-                msg, {"price", "price_dollars", "yes_price", "yes_price_dollars", "no_price",
-                      "no_price_dollars"},
-                price);
+            has_price =
+                parse_first_price_ticks(msg,
+                                        {"price", "price_dollars", "yes_price", "yes_price_dollars",
+                                         "no_price", "no_price_dollars"},
+                                        price);
             has_delta = parse_first_lot_count(
                 msg, {"delta", "delta_fp", "yes_delta", "yes_delta_fp", "no_delta", "no_delta_fp"},
                 delta_qty);
@@ -514,10 +522,9 @@ parse_delta(simdjson::ondemand::object& msg,
     return ParseResult<internal::NormalizedEvent>::success(std::move(event));
 }
 
-ParseResult<internal::NormalizedEvent>
-parse_trade(simdjson::ondemand::object& msg,
-            internal::NormalizedEvent event,
-            bool strict_field_validation) {
+ParseResult<internal::NormalizedEvent> parse_trade(simdjson::ondemand::object& msg,
+                                                   internal::NormalizedEvent event,
+                                                   bool strict_field_validation) {
     set_sequence_from_msg(msg, event);
     event.type = internal::EventType::kTrade;
 
@@ -562,8 +569,10 @@ parse_trade(simdjson::ondemand::object& msg,
 
 } // namespace
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::parsers::kalshi::Parser::parse(const predex::core::ingest::kalshi::FrameHandle& handle,
-    const predex::core::ingest::kalshi::KalshiFrame& frame){
+predex::parsers::ParseResult<predex::internal::NormalizedEvent>
+predex::core::parsers::kalshi::Parser::parse(
+    const predex::core::ingest::kalshi::FrameHandle& handle,
+    const predex::core::ingest::kalshi::KalshiFrame& frame) {
 
     predex::internal::NormalizedEvent event{};
     event.raw_sequence_id = handle.seq_;
@@ -574,25 +583,28 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     event.meta.affinity_key = handle.affinity_key_;
     event.meta.market_id = handle.market_id_;
     event.meta.recv_ns = frame.recv_ts_ns_;
-    event.meta.sequence_id = handle.seq_; // Default sequence ID to the frame handle's sequence. This may be overwritten by the message's own sequence if present.
+    event.meta.sequence_id =
+        handle.seq_; // Default sequence ID to the frame handle's sequence. This may be overwritten
+                     // by the message's own sequence if present.
     // Kalshi does not provide exchange timestamps, so we leave event.meta.exchange_ts_ns as 0.
-    //all other data needs to be parsed out of the payload, which is a JSON blob.
+    // all other data needs to be parsed out of the payload, which is a JSON blob.
 
     const auto* payload = frame.payload.data();
-    
 
     const char* buf = reinterpret_cast<const char*>(payload);
     const size_t len = frame.len_;
-    if(len == 0 || len > predex::core::ingest::kalshi::kMaxFrameBytes){
-        return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson); //invalid frame length, forward to logger for troubleshooting
+    if (len == 0 || len > predex::core::ingest::kalshi::kMaxFrameBytes) {
+        return ParseResult<internal::NormalizedEvent>::failure(
+            ParseError::kInvalidJson); // invalid frame length, forward to logger for
+                                       // troubleshooting
     }
 
-    auto doc = parser_.iterate(buf, len,frame.payload.size());
-    if(doc.error() != simdjson::SUCCESS) {
+    auto doc = parser_.iterate(buf, len, frame.payload.size());
+    if (doc.error() != simdjson::SUCCESS) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson);
     }
     auto root = doc.get_object();
-    if(root.error() != simdjson::SUCCESS) {
+    if (root.error() != simdjson::SUCCESS) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kInvalidJson);
     }
     auto obj = root.value_unsafe();
@@ -603,15 +615,13 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
     }
 
     simdjson::ondemand::object msg;
-    if ((type_sv == kTypeOrderbook ||
-        type_sv == kTypeOrderbookDelta ||
-        type_sv == kTypeTrade ||
-        type_sv == kTypeLifecycle) &&
+    if ((type_sv == kTypeOrderbook || type_sv == kTypeOrderbookDelta || type_sv == kTypeTrade ||
+         type_sv == kTypeLifecycle) &&
         !get_object(obj, "msg", msg)) {
         return ParseResult<internal::NormalizedEvent>::failure(ParseError::kMissingField);
     }
 
-    if(type_sv == kTypeOrderbook) {
+    if (type_sv == kTypeOrderbook) {
         return parse_snapshot(msg, std::move(event));
     }
     if (type_sv == kTypeOrderbookDelta) {
@@ -624,5 +634,5 @@ predex::parsers::ParseResult<predex::internal::NormalizedEvent> predex::core::pa
         return parse_lifecycle(msg, std::move(event));
     }
     return ParseResult<internal::NormalizedEvent>::failure(ParseError::kUnsupportedMessageType);
-    }
-}// namespace predex::core::parsers::kalshi
+}
+} // namespace predex::core::parsers::kalshi

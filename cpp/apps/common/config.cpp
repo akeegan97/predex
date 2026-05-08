@@ -41,9 +41,7 @@ std::vector<std::string> read_string_array(const nlohmann::json& parent, std::st
     return values;
 }
 
-std::size_t read_size(const nlohmann::json& parent,
-                      std::string_view key,
-                      std::size_t fallback) {
+std::size_t read_size(const nlohmann::json& parent, std::string_view key, std::size_t fallback) {
     const auto iterator = parent.find(std::string(key));
     if (iterator == parent.end() || !iterator->is_number_unsigned()) {
         return fallback;
@@ -51,9 +49,7 @@ std::size_t read_size(const nlohmann::json& parent,
     return iterator->get<std::size_t>();
 }
 
-std::int64_t read_int64(const nlohmann::json& parent,
-                        std::string_view key,
-                        std::int64_t fallback) {
+std::int64_t read_int64(const nlohmann::json& parent, std::string_view key, std::int64_t fallback) {
     const auto iterator = parent.find(std::string(key));
     if (iterator == parent.end() || !iterator->is_number_integer()) {
         return fallback;
@@ -69,8 +65,7 @@ bool read_bool(const nlohmann::json& parent, std::string_view key, bool fallback
     return iterator->get<bool>();
 }
 
-std::string read_string(const nlohmann::json& parent,
-                        std::string_view key,
+std::string read_string(const nlohmann::json& parent, std::string_view key,
                         std::string fallback = {}) {
     const auto iterator = parent.find(std::string(key));
     if (iterator == parent.end() || !iterator->is_string()) {
@@ -79,8 +74,7 @@ std::string read_string(const nlohmann::json& parent,
     return iterator->get<std::string>();
 }
 
-std::optional<predex::internal::EventTopologyKind> parse_topology_kind(
-    std::string_view value) {
+std::optional<predex::internal::EventTopologyKind> parse_topology_kind(std::string_view value) {
     if (value == "monotonic_chain" || value == "monotonic-chain") {
         return predex::internal::EventTopologyKind::kMonotonicChain;
     }
@@ -96,9 +90,8 @@ std::optional<predex::internal::EventTopologyKind> parse_topology_kind(
     return std::nullopt;
 }
 
-std::optional<std::vector<predex::MarketRouteConfig>> build_market_routes(
-    const nlohmann::json& root,
-    std::string& error_out) {
+std::optional<std::vector<predex::MarketRouteConfig>>
+build_market_routes(const nlohmann::json& root, std::string& error_out) {
     std::vector<predex::MarketRouteConfig> routes;
 
     const auto explicit_routes_it = root.find("market_routes");
@@ -134,8 +127,8 @@ std::optional<std::vector<predex::MarketRouteConfig>> build_market_routes(
 
         if (route.market_ticker.empty() || route.market_id == 0 || route.event_id == 0 ||
             route.topology_kind == predex::internal::EventTopologyKind::kUnknown) {
-            error_out =
-                "each market_routes entry must define market_ticker, market_id, event_id, and topology_kind";
+            error_out = "each market_routes entry must define market_ticker, market_id, event_id, "
+                        "and topology_kind";
             return std::nullopt;
         }
 
@@ -156,8 +149,8 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
     }
     const auto& kalshi = *kalshi_it;
 
-    config.kalshi_ws.endpoint = read_string(
-        kalshi, "endpoint", "wss://api.elections.kalshi.com/trade-api/ws/v2");
+    config.kalshi_ws.endpoint =
+        read_string(kalshi, "endpoint", "wss://api.elections.kalshi.com/trade-api/ws/v2");
     config.kalshi_ws.channels = read_string_array(kalshi, "channels");
     config.kalshi_ws.lifecycle_channels = read_string_array(kalshi, "lifecycle_channels");
 
@@ -228,8 +221,8 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         const auto& oms_transport = *oms_transport_it;
         config.oms_transport.enabled =
             read_bool(oms_transport, "enabled", config.oms_transport.enabled);
-        config.oms_transport.rest_endpoint = read_string(
-            oms_transport, "rest_endpoint", config.oms_transport.rest_endpoint);
+        config.oms_transport.rest_endpoint =
+            read_string(oms_transport, "rest_endpoint", config.oms_transport.rest_endpoint);
         config.oms_transport.private_ws_endpoint = read_string(
             oms_transport, "private_ws_endpoint", config.oms_transport.private_ws_endpoint);
         config.oms_transport.private_ws_channels =
@@ -239,22 +232,20 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         if (config.oms_transport.enabled && config.oms_transport.private_ws_channels.empty()) {
             config.oms_transport.private_ws_channels = {"user_orders"};
         }
-        config.oms_transport.max_session_loss_ticks =
-            read_int64(oms_transport, "max_session_loss_ticks",
-                       config.oms_transport.max_session_loss_ticks);
-        config.oms_transport.available_capital_ticks =
-            read_int64(oms_transport, "available_capital_ticks",
-                       config.oms_transport.available_capital_ticks);
+        config.oms_transport.max_session_loss_ticks = read_int64(
+            oms_transport, "max_session_loss_ticks", config.oms_transport.max_session_loss_ticks);
+        config.oms_transport.available_capital_ticks = read_int64(
+            oms_transport, "available_capital_ticks", config.oms_transport.available_capital_ticks);
     }
 
     const auto local_risk_it = root.find("local_risk");
     if (local_risk_it != root.end() && local_risk_it->is_object()) {
         const auto& local_risk = *local_risk_it;
-        config.local_risk.max_net_position_lots_per_market = read_int64(
-            local_risk, "max_net_position_lots_per_market",
-            config.local_risk.max_net_position_lots_per_market);
-        config.local_risk.min_seconds_to_close = read_size(
-            local_risk, "min_seconds_to_close", config.local_risk.min_seconds_to_close);
+        config.local_risk.max_net_position_lots_per_market =
+            read_int64(local_risk, "max_net_position_lots_per_market",
+                       config.local_risk.max_net_position_lots_per_market);
+        config.local_risk.min_seconds_to_close =
+            read_size(local_risk, "min_seconds_to_close", config.local_risk.min_seconds_to_close);
         config.local_risk.trading_enabled =
             read_bool(local_risk, "trading_enabled", config.local_risk.trading_enabled);
     }
@@ -286,8 +277,8 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         }
     }
     if (config.kalshi_ws.market_tickers.empty()) {
-        error_out =
-            "No market tickers configured under kalshi.market_tickers, market_universe.tickers, or market_routes";
+        error_out = "No market tickers configured under kalshi.market_tickers, "
+                    "market_universe.tickers, or market_routes";
         return std::nullopt;
     }
 
@@ -319,8 +310,7 @@ std::optional<std::string> resolve_config_path(int argc, char** argv) {
     return get_env("TRADING_CONFIG_PATH");
 }
 
-std::optional<AppConfig> load_app_config(const std::string& config_path,
-                                         std::string& error_out,
+std::optional<AppConfig> load_app_config(const std::string& config_path, std::string& error_out,
                                          AppConfigParseOptions options) {
     std::ifstream config_stream(config_path);
     if (!config_stream) {

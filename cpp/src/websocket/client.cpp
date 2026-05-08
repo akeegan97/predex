@@ -136,10 +136,9 @@ std::optional<EndpointParts> parse_ws_endpoint(std::string_view endpoint, std::s
 }
 
 [[nodiscard]] std::uint64_t steady_now_ns() noexcept {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
 }
 
 } // namespace
@@ -182,8 +181,7 @@ BoostBeastWsTransport::BoostBeastWsTransport() : impl_(std::make_unique<Impl>())
 
 BoostBeastWsTransport::~BoostBeastWsTransport() = default;
 BoostBeastWsTransport::BoostBeastWsTransport(BoostBeastWsTransport&&) noexcept = default;
-BoostBeastWsTransport& BoostBeastWsTransport::operator=(BoostBeastWsTransport&&) noexcept =
-    default;
+BoostBeastWsTransport& BoostBeastWsTransport::operator=(BoostBeastWsTransport&&) noexcept = default;
 
 bool BoostBeastWsTransport::connect(const TransportConfig& config) {
     close();
@@ -324,7 +322,7 @@ void BoostBeastWsTransport::close() {
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket cancel error: " + error_code.message();
     }
-    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     (void)cancelled_operations;
 
     error_code.clear();
@@ -332,16 +330,16 @@ void BoostBeastWsTransport::close() {
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket shutdown error: " + error_code.message();
     }
-    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     (void)shutdown_result;
     error_code.clear();
-    const auto close_result =   socket.close(error_code);
+    const auto close_result = socket.close(error_code);
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket close error: " + error_code.message();
     }
-    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     (void)close_result;
-     impl_->connected = false;
+    impl_->connected = false;
 }
 
 std::string_view BoostBeastWsTransport::last_error() const { return impl_->last_error; }

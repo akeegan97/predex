@@ -10,7 +10,7 @@
 
 namespace predex::core::oms::kalshi {
 
-struct PendingReplacement{
+struct PendingReplacement {
     internal::QtyLots requested_working_qty_lots{0};
     std::optional<internal::PriceTicks> requested_working_limit_price_ticks;
     internal::TimestampNs request_ts_ns{0};
@@ -109,24 +109,24 @@ class OrderStore {
     // snapshot, typically during startup or reconnect reconciliation.
     void adopt_reconciled_order(OrderState state);
 
-    [[nodiscard]] std::vector<CancelOrderCmd> build_cancel_all_cmds(
-        internal::TimestampNs ts_ns) const;
+    [[nodiscard]] std::vector<CancelOrderCmd>
+    build_cancel_all_cmds(internal::TimestampNs ts_ns) const;
 
     [[nodiscard]] std::size_t live_order_count() const noexcept;
 
   private:
     [[nodiscard]] OrderState* find_by_request_id(OmsRequestId oms_request_id) noexcept;
     [[nodiscard]] const OrderState* find_by_request_id(OmsRequestId oms_request_id) const noexcept;
-    [[nodiscard]] OrderState* find_by_client_order_id(const ClientOrderId& client_order_id) noexcept;
-    [[nodiscard]] const OrderState* find_by_client_order_id(
-        const ClientOrderId& client_order_id) const noexcept;
-    [[nodiscard]] OrderState* find_by_exchange_order_id(
-        const ExchangeOrderId& exchange_order_id) noexcept;
-    [[nodiscard]] const OrderState* find_by_exchange_order_id(
-        const ExchangeOrderId& exchange_order_id) const noexcept;
+    [[nodiscard]] OrderState*
+    find_by_client_order_id(const ClientOrderId& client_order_id) noexcept;
+    [[nodiscard]] const OrderState*
+    find_by_client_order_id(const ClientOrderId& client_order_id) const noexcept;
+    [[nodiscard]] OrderState*
+    find_by_exchange_order_id(const ExchangeOrderId& exchange_order_id) noexcept;
+    [[nodiscard]] const OrderState*
+    find_by_exchange_order_id(const ExchangeOrderId& exchange_order_id) const noexcept;
 
-    void bind_client_order_id(const ClientOrderId& client_order_id,
-                              OmsRequestId oms_request_id);
+    void bind_client_order_id(const ClientOrderId& client_order_id, OmsRequestId oms_request_id);
     void bind_exchange_order_id(const ExchangeOrderId& exchange_order_id,
                                 OmsRequestId oms_request_id);
     void erase_indices_for(const OrderState& state);

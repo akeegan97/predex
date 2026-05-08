@@ -13,8 +13,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <thread>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace predex::core::oms::kalshi::transport {
@@ -55,30 +55,29 @@ void join_path_into(std::string& out, std::string_view base, std::string_view ta
 
 [[nodiscard]] http::verb to_beast_verb(HttpMethod method) noexcept {
     switch (method) {
-        case HttpMethod::kGet:
-            return http::verb::get;
-        case HttpMethod::kPost:
-            return http::verb::post;
-        case HttpMethod::kDelete:
-            return http::verb::delete_;
+    case HttpMethod::kGet:
+        return http::verb::get;
+    case HttpMethod::kPost:
+        return http::verb::post;
+    case HttpMethod::kDelete:
+        return http::verb::delete_;
     }
     return http::verb::get;
 }
 
 [[nodiscard]] std::string_view to_auth_method(HttpMethod method) noexcept {
     switch (method) {
-        case HttpMethod::kGet:
-            return "GET";
-        case HttpMethod::kPost:
-            return "POST";
-        case HttpMethod::kDelete:
-            return "DELETE";
+    case HttpMethod::kGet:
+        return "GET";
+    case HttpMethod::kPost:
+        return "POST";
+    case HttpMethod::kDelete:
+        return "DELETE";
     }
     return "GET";
 }
 
-[[nodiscard]] std::string transport_error_message(std::string_view kind,
-                                                  std::string_view stage,
+[[nodiscard]] std::string transport_error_message(std::string_view kind, std::string_view stage,
                                                   const beast::error_code& ec) {
     std::string message{kind};
     if (!stage.empty()) {
@@ -126,8 +125,7 @@ struct PersistentHttpSession::ConnectionState {
 
 PersistentHttpSession::PersistentHttpSession(predex::websocket::kalshi::AuthSigner signer,
                                              std::string endpoint)
-    : signer_(std::move(signer)),
-      endpoint_(std::move(endpoint)),
+    : signer_(std::move(signer)), endpoint_(std::move(endpoint)),
       connection_(std::make_unique<ConnectionState>()),
       last_call_ts_(std::chrono::steady_clock::now()) {
     connection_->ssl_context.set_default_verify_paths();
@@ -141,14 +139,11 @@ PersistentHttpSession::PersistentHttpSession(predex::websocket::kalshi::AuthSign
     }
 }
 
-PersistentHttpSession::~PersistentHttpSession() {
-    close_connection_();
-}
+PersistentHttpSession::~PersistentHttpSession() { close_connection_(); }
 
 PersistentHttpSession::PersistentHttpSession(PersistentHttpSession&&) noexcept = default;
 
-PersistentHttpSession&
-PersistentHttpSession::operator=(PersistentHttpSession&&) noexcept = default;
+PersistentHttpSession& PersistentHttpSession::operator=(PersistentHttpSession&&) noexcept = default;
 
 HttpResponse PersistentHttpSession::send_json_request(const HttpRequest& request) {
     if (!endpoint_valid_) {
@@ -247,9 +242,7 @@ void PersistentHttpSession::check_and_keep_warm(std::uint64_t threshold_seconds)
     });
 }
 
-void PersistentHttpSession::close() noexcept {
-    close_connection_();
-}
+void PersistentHttpSession::close() noexcept { close_connection_(); }
 
 bool PersistentHttpSession::ensure_connected_() {
     if (!endpoint_valid_ || connection_ == nullptr) {
@@ -303,7 +296,7 @@ void PersistentHttpSession::close_connection_() noexcept {
 
     try {
         beast::error_code ignored;
-        //NOLINTNEXTLINE
+        // NOLINTNEXTLINE
         (void)connection_->stream->shutdown(ignored);
     } catch (...) {
     }
@@ -320,8 +313,7 @@ void PersistentHttpSession::reset_async_request_() noexcept {
     connection_->io_context.restart();
 }
 
-bool PersistentHttpSession::parse_endpoint(std::string_view endpoint,
-                                           EndpointParts& out,
+bool PersistentHttpSession::parse_endpoint(std::string_view endpoint, EndpointParts& out,
                                            std::string& error) {
     const auto scheme_pos = endpoint.find("://");
     if (scheme_pos == std::string_view::npos) {
@@ -330,9 +322,8 @@ bool PersistentHttpSession::parse_endpoint(std::string_view endpoint,
     }
 
     std::string scheme{endpoint.substr(0, scheme_pos)};
-    std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char car) {
-        return static_cast<char>(std::tolower(car));
-    });
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](unsigned char car) { return static_cast<char>(std::tolower(car)); });
     if (scheme != "https") {
         error = "Only https endpoints are supported";
         return false;
@@ -358,9 +349,8 @@ bool PersistentHttpSession::parse_endpoint(std::string_view endpoint,
         out.port = authority.substr(colon_pos + 1);
     }
 
-    out.base_path = path_start == std::string_view::npos
-        ? ""
-        : std::string(endpoint.substr(path_start));
+    out.base_path =
+        path_start == std::string_view::npos ? "" : std::string(endpoint.substr(path_start));
     if (!out.base_path.empty() && out.base_path.back() == '/') {
         out.base_path.pop_back();
     }
@@ -419,9 +409,8 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
         async.raw_request.set(http::field::content_type, async.request.content_type);
     }
     if (async.request.authenticate) {
-        const auto auth_headers =
-            signer_.make_auth_headers(std::string(to_auth_method(async.request.method)),
-                                      async.signing_target);
+        const auto auth_headers = signer_.make_auth_headers(
+            std::string(to_auth_method(async.request.method)), async.signing_target);
         async.raw_request.set("KALSHI-ACCESS-KEY", auth_headers.key_id);
         async.raw_request.set("KALSHI-ACCESS-TIMESTAMP", auth_headers.timestamp_ms);
         async.raw_request.set("KALSHI-ACCESS-SIGNATURE", auth_headers.signature_base64);
@@ -447,8 +436,7 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
     async.response.reused_connection = false;
     async.response.resolve_start_ts_ns = monotonic_now_ns();
     connection_->resolver.async_resolve(
-        endpoint_host_,
-        endpoint_port_,
+        endpoint_host_, endpoint_port_,
         [this](const beast::error_code& ec, tcp::resolver::results_type results) {
             if (connection_ != nullptr && connection_->async_request != nullptr) {
                 connection_->async_request->response.resolve_end_ts_ns = monotonic_now_ns();
@@ -464,48 +452,43 @@ void PersistentHttpSession::begin_async_request_(HttpRequest request) {
             if (connection_ != nullptr && connection_->async_request != nullptr) {
                 connection_->async_request->response.connect_start_ts_ns = monotonic_now_ns();
             }
-            lowest.async_connect(
-                results,
-                [this](const beast::error_code& connect_ec,
-                       const tcp::resolver::results_type::endpoint_type&) {
-                    if (connection_ != nullptr && connection_->async_request != nullptr) {
-                        connection_->async_request->response.connect_end_ts_ns = monotonic_now_ns();
-                    }
-                    if (connect_ec) {
-                        close_connection_();
-                        complete_async_request_(build_disconnected_response_(
-                            transport_error_message("transport_retry", "connect", connect_ec)));
-                        return;
-                    }
+            lowest.async_connect(results, [this](
+                                              const beast::error_code& connect_ec,
+                                              const tcp::resolver::results_type::endpoint_type&) {
+                if (connection_ != nullptr && connection_->async_request != nullptr) {
+                    connection_->async_request->response.connect_end_ts_ns = monotonic_now_ns();
+                }
+                if (connect_ec) {
+                    close_connection_();
+                    complete_async_request_(build_disconnected_response_(
+                        transport_error_message("transport_retry", "connect", connect_ec)));
+                    return;
+                }
 
-                    auto& lowest_layer = beast::get_lowest_layer(*connection_->stream);
-                    lowest_layer.socket().set_option(net::socket_base::keep_alive{true});
-                    lowest_layer.expires_after(kConnectTimeout);
-                    if (connection_ != nullptr && connection_->async_request != nullptr) {
-                        connection_->async_request->response.handshake_start_ts_ns =
-                            monotonic_now_ns();
-                    }
-                    connection_->stream->async_handshake(
-                        ssl::stream_base::client,
-                        [this](const beast::error_code& handshake_ec) {
-                            if (connection_ != nullptr && connection_->async_request != nullptr) {
-                                connection_->async_request->response.handshake_end_ts_ns =
-                                    monotonic_now_ns();
-                            }
-                            if (handshake_ec) {
-                                close_connection_();
-                                complete_async_request_(
-                                    build_disconnected_response_(transport_error_message(
-                                        "transport_retry",
-                                        "handshake",
-                                        handshake_ec)));
-                                return;
-                            }
-                            beast::get_lowest_layer(*connection_->stream).expires_never();
-                            connection_->connected = true;
-                            begin_async_write_();
-                        });
-                });
+                auto& lowest_layer = beast::get_lowest_layer(*connection_->stream);
+                lowest_layer.socket().set_option(net::socket_base::keep_alive{true});
+                lowest_layer.expires_after(kConnectTimeout);
+                if (connection_ != nullptr && connection_->async_request != nullptr) {
+                    connection_->async_request->response.handshake_start_ts_ns = monotonic_now_ns();
+                }
+                connection_->stream->async_handshake(
+                    ssl::stream_base::client, [this](const beast::error_code& handshake_ec) {
+                        if (connection_ != nullptr && connection_->async_request != nullptr) {
+                            connection_->async_request->response.handshake_end_ts_ns =
+                                monotonic_now_ns();
+                        }
+                        if (handshake_ec) {
+                            close_connection_();
+                            complete_async_request_(
+                                build_disconnected_response_(transport_error_message(
+                                    "transport_retry", "handshake", handshake_ec)));
+                            return;
+                        }
+                        beast::get_lowest_layer(*connection_->stream).expires_never();
+                        connection_->connected = true;
+                        begin_async_write_();
+                    });
+            });
         });
 }
 
@@ -522,14 +505,11 @@ void PersistentHttpSession::begin_async_write_() {
     lowest.expires_after(kIoTimeout);
     async.response.write_start_ts_ns = monotonic_now_ns();
     http::async_write(
-        stream,
-        async.raw_request,
-        [this](const beast::error_code& write_ec, std::size_t) {
+        stream, async.raw_request, [this](const beast::error_code& write_ec, std::size_t) {
             if (write_ec) {
                 close_connection_();
                 complete_async_request_(build_transport_error_response_(
-                    transport_error_message("transport_retry", "write", write_ec),
-                    0));
+                    transport_error_message("transport_retry", "write", write_ec), 0));
                 return;
             }
 
@@ -545,9 +525,7 @@ void PersistentHttpSession::begin_async_write_() {
             auto& lowest_layer = beast::get_lowest_layer(current_stream);
             lowest_layer.expires_after(kIoTimeout);
             http::async_read(
-                current_stream,
-                current_async.read_buffer,
-                current_async.raw_response,
+                current_stream, current_async.read_buffer, current_async.raw_response,
                 [this](const beast::error_code& read_ec, std::size_t) {
                     if (read_ec) {
                         const auto request_sent_ts_ns =
@@ -563,7 +541,8 @@ void PersistentHttpSession::begin_async_write_() {
 
                     if (connection_ == nullptr || connection_->async_request == nullptr ||
                         !connection_->stream.has_value()) {
-                        complete_async_request_(build_disconnected_response_("transport_disconnected"));
+                        complete_async_request_(
+                            build_disconnected_response_("transport_disconnected"));
                         return;
                     }
 
@@ -574,7 +553,8 @@ void PersistentHttpSession::begin_async_write_() {
                     last_call_ts_ = std::chrono::steady_clock::now();
 
                     const auto response_recv_ts_ns = monotonic_now_ns();
-                    const int status_code = static_cast<int>(finished_async.raw_response.result_int());
+                    const int status_code =
+                        static_cast<int>(finished_async.raw_response.result_int());
                     const bool ok = status_code >= 200 && status_code < 300;
                     HttpResponse response{
                         .ok = ok,
@@ -591,10 +571,9 @@ void PersistentHttpSession::begin_async_write_() {
                         .request_sent_ts_ns = finished_async.response.request_sent_ts_ns,
                         .response_recv_ts_ns = response_recv_ts_ns,
                         .body = finished_async.raw_response.body(),
-                        .error_message = ok
-                            ? std::string{}
-                            : "HTTP " + std::to_string(status_code) +
-                                  " body=" + finished_async.raw_response.body(),
+                        .error_message = ok ? std::string{}
+                                            : "HTTP " + std::to_string(status_code) +
+                                                  " body=" + finished_async.raw_response.body(),
                         .keep_alive = finished_async.raw_response.keep_alive(),
                     };
                     if (!response.keep_alive) {
@@ -613,14 +592,13 @@ void PersistentHttpSession::complete_async_request_(HttpResponse response) noexc
     connection_->async_request->completed = true;
 }
 
-HttpResponse PersistentHttpSession::build_disconnected_response_(
-    std::string error_message) const noexcept {
+HttpResponse
+PersistentHttpSession::build_disconnected_response_(std::string error_message) const noexcept {
     return build_transport_error_response_(std::move(error_message), 0);
 }
 
 HttpResponse PersistentHttpSession::build_transport_error_response_(
-    std::string error_message,
-    internal::TimestampNs request_sent_ts_ns) const noexcept {
+    std::string error_message, internal::TimestampNs request_sent_ts_ns) const noexcept {
     return {
         .ok = false,
         .status_code = 0,
@@ -646,9 +624,8 @@ std::string PersistentHttpSession::build_request_target_(std::string_view target
     join_path_into(request_target, endpoint_base_path_, target);
     return request_target;
 }
-//NOLINTNEXTLINE 
-std::string PersistentHttpSession::build_signing_target_(
-    std::string_view request_target) const {
+// NOLINTNEXTLINE
+std::string PersistentHttpSession::build_signing_target_(std::string_view request_target) const {
     const auto query_pos = request_target.find('?');
     if (query_pos == std::string_view::npos) {
         return std::string(request_target);

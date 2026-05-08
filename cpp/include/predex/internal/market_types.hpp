@@ -68,8 +68,7 @@ enum class Side : std::uint8_t {
     return static_cast<double>(qty_lots) / static_cast<double>(kQtyScale);
 }
 
-[[nodiscard]] inline bool parse_quantity_fp(std::string_view value,
-                                            QtyLots& out_qty_lots,
+[[nodiscard]] inline bool parse_quantity_fp(std::string_view value, QtyLots& out_qty_lots,
                                             bool allow_negative = true) noexcept {
     if (value.empty()) {
         return false;
@@ -105,7 +104,8 @@ enum class Side : std::uint8_t {
     }
 
     std::int64_t whole = 0;
-    const auto [ptr, ec] = std::from_chars(int_part.data(), int_part.data() + int_part.size(), whole);
+    const auto [ptr, ec] =
+        std::from_chars(int_part.data(), int_part.data() + int_part.size(), whole);
     if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
         return false;
     }
@@ -144,9 +144,8 @@ enum class Side : std::uint8_t {
 [[nodiscard]] inline std::string format_quantity_fp(QtyLots qty_lots) {
     const bool negative = qty_lots < 0;
     using UnsignedQtyLots = std::uint64_t;
-    const auto magnitude = negative
-        ? static_cast<UnsignedQtyLots>(-(qty_lots + 1)) + 1U
-        : static_cast<UnsignedQtyLots>(qty_lots);
+    const auto magnitude = negative ? static_cast<UnsignedQtyLots>(-(qty_lots + 1)) + 1U
+                                    : static_cast<UnsignedQtyLots>(qty_lots);
     const auto whole = magnitude / static_cast<UnsignedQtyLots>(kQtyScale);
     const auto fractional = magnitude % static_cast<UnsignedQtyLots>(kQtyScale);
 

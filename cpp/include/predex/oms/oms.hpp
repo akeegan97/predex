@@ -11,8 +11,8 @@
 #include "predex/audit/audit_types.hpp"
 #include "predex/oms/execution_transport.hpp"
 #include "predex/oms/global_risk.hpp"
-#include "predex/oms/order_store.hpp"
 #include "predex/oms/oms_types.hpp"
+#include "predex/oms/order_store.hpp"
 #include "predex/utils/spsc_queue.hpp"
 
 namespace predex::core::oms::kalshi {
@@ -47,14 +47,13 @@ class Oms {
     using ShardDecisionQueue = utils::SPSCQueue<OmsToShardDecision>;
     using ShardLifecycleQueue = utils::SPSCQueue<OmsToShardLifecycleEvent>;
 
-    explicit Oms(std::vector<ShardRequestQueue*> shard_request_queues,
-                 std::vector<ShardDecisionQueue*> shard_decision_queues,
-                 std::vector<ShardLifecycleQueue*> shard_lifecycle_queues,
-                 ExecutionTransportQueues transport_queues = {},
-                 GlobalRiskLimits global_risk_limits = {},
-                 utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue = nullptr,
-                 std::function<std::optional<std::string>(internal::MarketId)>
-                     market_ticker_resolver = {});
+    explicit Oms(
+        std::vector<ShardRequestQueue*> shard_request_queues,
+        std::vector<ShardDecisionQueue*> shard_decision_queues,
+        std::vector<ShardLifecycleQueue*> shard_lifecycle_queues,
+        ExecutionTransportQueues transport_queues = {}, GlobalRiskLimits global_risk_limits = {},
+        utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue = nullptr,
+        std::function<std::optional<std::string>(internal::MarketId)> market_ticker_resolver = {});
 
     [[nodiscard]] OmsPumpResult pump(std::size_t max_kalshi_events,
                                      std::size_t max_shard_requests) noexcept;
@@ -77,7 +76,7 @@ class Oms {
 
   private:
     GlobalRisk global_risk_;
-    OrderStore order_store_{};
+    OrderStore order_store_;
     ExecutionTransport transport_;
     utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue_{nullptr};
     std::function<std::optional<std::string>(internal::MarketId)> market_ticker_resolver_;
@@ -108,27 +107,26 @@ class Oms {
     [[nodiscard]] OmsProcessCode handle_new_order_intent(
         const NewOrderIntent& intent,
         std::optional<GroupExecutionPolicy> group_execution_policy = std::nullopt) noexcept;
-    [[nodiscard]] OmsProcessCode handle_group_order_intent(
-        const GroupOrderIntent& intent) noexcept;
-    [[nodiscard]] OmsProcessCode handle_cancel_order_intent(
-        const CancelOrderIntent& intent) noexcept;
-    [[nodiscard]] OmsProcessCode handle_modify_order_intent(
-        const ModifyOrderIntent& intent) noexcept;
-    [[nodiscard]] bool modify_preserves_immutable_fields(
-        const OrderState& order_state,
-        const NewOrderIntent& replacement) const noexcept;
+    [[nodiscard]] OmsProcessCode handle_group_order_intent(const GroupOrderIntent& intent) noexcept;
+    [[nodiscard]] OmsProcessCode
+    handle_cancel_order_intent(const CancelOrderIntent& intent) noexcept;
+    [[nodiscard]] OmsProcessCode
+    handle_modify_order_intent(const ModifyOrderIntent& intent) noexcept;
+    [[nodiscard]] bool
+    modify_preserves_immutable_fields(const OrderState& order_state,
+                                      const NewOrderIntent& replacement) const noexcept;
 
     [[nodiscard]] OmsProcessCode handle_kalshi_event(const SourcedKalshiEvent& event) noexcept;
 
-    [[nodiscard]] std::optional<ShardOrderCorrelation> resolve_correlation(
-        const OmsOrderRef& order) const noexcept;
-    [[nodiscard]] std::optional<OrderStore::LookupKey> make_lookup_key(
-        const CancelOrderIntent& intent) const noexcept;
-    [[nodiscard]] std::optional<OrderStore::LookupKey> make_lookup_key(
-        const ModifyOrderIntent& intent) const noexcept;
+    [[nodiscard]] std::optional<ShardOrderCorrelation>
+    resolve_correlation(const OmsOrderRef& order) const noexcept;
+    [[nodiscard]] std::optional<OrderStore::LookupKey>
+    make_lookup_key(const CancelOrderIntent& intent) const noexcept;
+    [[nodiscard]] std::optional<OrderStore::LookupKey>
+    make_lookup_key(const ModifyOrderIntent& intent) const noexcept;
 
     [[nodiscard]] OmsOrderRef make_order_ref();
-    [[nodiscard]] ClientOrderId make_client_order_id(OmsRequestId oms_request_id);
+    [[nodiscard]] ClientOrderId make_client_order_id(OmsRequestId oms_request_id) noexcept;
 
     [[nodiscard]] bool emit_kalshi_command(const OmsToKalshiCommand& command) noexcept;
     [[nodiscard]] bool emit_shard_decision(const OmsToShardDecision& decision,
@@ -136,33 +134,24 @@ class Oms {
     [[nodiscard]] bool emit_shard_lifecycle(const OmsToShardLifecycleEvent& event,
                                             std::uint16_t shard_id) noexcept;
     void emit_audit(const predex::core::audit::AuditEvent& event) noexcept;
-    void emit_decision_audit(const IntentContext& context,
-                             OmsRequestId oms_request_id,
-                             internal::TimestampNs decision_ts_ns,
-                             std::uint8_t decision_code,
-                             std::uint8_t reject_reason,
-                             internal::QtyLots qty_lots) noexcept;
+    void emit_decision_audit(const IntentContext& context, OmsRequestId oms_request_id,
+                             internal::TimestampNs decision_ts_ns, std::uint8_t decision_code,
+                             std::uint8_t reject_reason, internal::QtyLots qty_lots) noexcept;
     void emit_transport_audit(const ShardOrderCorrelation& corr,
                               internal::TimestampNs oms_decision_ts_ns,
                               internal::TimestampNs transport_submit_ts_ns,
                               internal::TimestampNs transport_response_ts_ns,
-                              std::uint8_t decision_code,
-                              std::uint16_t transport_http_status,
-                              std::uint16_t transport_retry_count,
-                              internal::QtyLots qty_lots,
+                              std::uint8_t decision_code, std::uint16_t transport_http_status,
+                              std::uint16_t transport_retry_count, internal::QtyLots qty_lots,
                               internal::PriceTicks price_ticks) noexcept;
     void emit_lifecycle_audit(const ShardOrderCorrelation& corr,
-                              internal::TimestampNs lifecycle_ts_ns,
-                              std::uint8_t lifecycle_kind,
-                              std::uint8_t order_status,
-                              std::uint8_t reject_reason,
-                              internal::QtyLots qty_lots,
-                              internal::PriceTicks price_ticks,
+                              internal::TimestampNs lifecycle_ts_ns, std::uint8_t lifecycle_kind,
+                              std::uint8_t order_status, std::uint8_t reject_reason,
+                              internal::QtyLots qty_lots, internal::PriceTicks price_ticks,
                               internal::TimestampNs first_fill_ts_ns,
                               internal::TimestampNs terminal_ts_ns) noexcept;
 
-    [[nodiscard]] std::optional<std::size_t> shard_index_for(
-        std::uint16_t shard_id) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> shard_index_for(std::uint16_t shard_id) const noexcept;
 };
 
 } // namespace predex::core::oms::kalshi

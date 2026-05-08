@@ -120,8 +120,8 @@ Valid topology values: `monotonic_chain`, `mutually_exclusive`, `unordered_group
 |---|---|---|
 | `--output PATH` | stdout | Write config JSON to file. |
 | `--report-output PATH` | — | Write a build report (included/skipped events, topology counts). |
-| `--tape-output PATH` | `predex_tape.bin` | Tape output path embedded in config. |
-| `--audit-output PATH` | `predex_audit.jsonl` | Audit output path embedded in config. |
+| `--tape-output PATH` | `logs/live/predex_tape.bin` | Tape output path embedded in config. |
+| `--audit-output PATH` | `logs/live/predex_audit.jsonl` | Audit output path embedded in config. |
 | `--api-base-url URL` | Kalshi prod | Kalshi REST API base URL for discovery. |
 | `--ws-endpoint URL` | Kalshi prod | WebSocket endpoint embedded in config. |
 | `--key-id-env VAR` | `KALSHI_KEY_ID` | Env var name for key ID embedded in credentials block. |
@@ -165,7 +165,7 @@ Quick statistical overview of a run.
 ```bash
 ./scripts/predex-replay audit-summary \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
+  --audit logs/live/predex_audit.jsonl \
   --limit 10
 ```
 
@@ -186,8 +186,8 @@ Verify a single signal against the order book tape.
 ```bash
 ./scripts/predex-replay inspect-signal \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
-  --tape predex_tape.bin \
+  --audit logs/live/predex_audit.jsonl \
+  --tape logs/live/predex_tape.bin \
   --signal-id 42 \
   --shard-id 0
 ```
@@ -211,8 +211,8 @@ Replay the order book for a full event and export a time-series of top-of-book p
 ```bash
 ./scripts/predex-replay export-event-timeline \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
-  --tape predex_tape.bin \
+  --audit logs/live/predex_audit.jsonl \
+  --tape logs/live/predex_tape.bin \
   --event-id 88422102 \
   --output-dir logs/replay \
   --prefix pgatour_event
@@ -222,8 +222,8 @@ With a single-market focus:
 ```bash
 ./scripts/predex-replay export-event-timeline \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
-  --tape predex_tape.bin \
+  --audit logs/live/predex_audit.jsonl \
+  --tape logs/live/predex_tape.bin \
   --market-ticker KXPGATOUR-VATO26-JSPA \
   --output-dir logs/replay \
   --prefix jspa_market \
@@ -259,7 +259,7 @@ Analyse latency span distributions from the audit log.
 
 ```bash
 ./scripts/predex-replay latency-histograms \
-  --audit predex_audit.jsonl \
+  --audit logs/live/predex_audit.jsonl \
   --backend plotly \
   --output-html logs/replay/latency.html \
   --output-csv logs/replay/latency.csv
@@ -304,8 +304,8 @@ Normalize one runtime artifact set into reusable parquet tables.
 ```bash
 ./scripts/predex-replay ingest-run \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
-  --tape predex_tape.bin \
+  --audit logs/live/predex_audit.jsonl \
+  --tape logs/live/predex_tape.bin \
   --run-id live_2026_05_04
 ```
 

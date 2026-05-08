@@ -1,15 +1,14 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <array>
 #include <deque>
 #include <optional>
 #include <unordered_map>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/internal/normalized_event.hpp"
-
 
 namespace predex::core::shards::kalshi {
 constexpr std::int64_t kMaxPriceTicks = internal::kMaxPriceTicks;
@@ -35,9 +34,8 @@ struct BookFailureTrace {
 };
 
 struct BookState {
-    using BidLevels = std::array<internal::QtyLots,kMaxPriceTicks+1>;
-    using AskLevels = std::array<internal::QtyLots,kMaxPriceTicks+1>;
-
+    using BidLevels = std::array<internal::QtyLots, kMaxPriceTicks + 1>;
+    using AskLevels = std::array<internal::QtyLots, kMaxPriceTicks + 1>;
 
     internal::MarketId market_id{0};
     std::optional<internal::SequenceId> last_seq_id;
@@ -83,7 +81,7 @@ enum class BookApplyRejectReason : unsigned char {
     kInvalidSeq,
     kUnexpectedSnapshotAfterInit,
 };
-enum class DeltaApplyResult: std::uint8_t{
+enum class DeltaApplyResult : std::uint8_t {
     kSuccess = 0,
     kStaleSequence,
     kInvalidSide,

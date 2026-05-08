@@ -1,5 +1,6 @@
 #include "predex/oms/gateway/async_rest_connection.hpp"
 
+#include <filesystem>
 #include <ostream>
 #include <string_view>
 #include <type_traits>
@@ -8,9 +9,9 @@
 namespace predex::core::oms::kalshi::gateway {
 namespace {
 
-[[nodiscard]] internal::TimestampNs completion_timestamp_for(
-    const transport::HttpResponse& response,
-    internal::TimestampNs fallback_ts) noexcept {
+[[nodiscard]] internal::TimestampNs
+completion_timestamp_for(const transport::HttpResponse& response,
+                         internal::TimestampNs fallback_ts) noexcept {
     if (response.response_recv_ts_ns != 0) {
         return response.response_recv_ts_ns;
     }
@@ -22,18 +23,18 @@ namespace {
 
 [[nodiscard]] const char* request_state_to_string(DispatchRequestState state) noexcept {
     switch (state) {
-        case DispatchRequestState::kQueued:
-            return "queued";
-        case DispatchRequestState::kAdmitted:
-            return "admitted";
-        case DispatchRequestState::kDispatchedPreWrite:
-            return "dispatched_pre_write";
-        case DispatchRequestState::kPostWriteUnknown:
-            return "post_write_unknown";
-        case DispatchRequestState::kCompleted:
-            return "completed";
-        case DispatchRequestState::kAbandonedToRecovery:
-            return "abandoned_to_recovery";
+    case DispatchRequestState::kQueued:
+        return "queued";
+    case DispatchRequestState::kAdmitted:
+        return "admitted";
+    case DispatchRequestState::kDispatchedPreWrite:
+        return "dispatched_pre_write";
+    case DispatchRequestState::kPostWriteUnknown:
+        return "post_write_unknown";
+    case DispatchRequestState::kCompleted:
+        return "completed";
+    case DispatchRequestState::kAbandonedToRecovery:
+        return "abandoned_to_recovery";
     }
     return "unknown";
 }
@@ -42,24 +43,24 @@ void append_json_escaped(std::ostream& out, std::string_view value) {
     out.put('"');
     for (const char ch : value) {
         switch (ch) {
-            case '\\':
-                out << "\\\\";
-                break;
-            case '"':
-                out << "\\\"";
-                break;
-            case '\n':
-                out << "\\n";
-                break;
-            case '\r':
-                out << "\\r";
-                break;
-            case '\t':
-                out << "\\t";
-                break;
-            default:
-                out.put(ch);
-                break;
+        case '\\':
+            out << "\\\\";
+            break;
+        case '"':
+            out << "\\\"";
+            break;
+        case '\n':
+            out << "\\n";
+            break;
+        case '\r':
+            out << "\\r";
+            break;
+        case '\t':
+            out << "\\t";
+            break;
+        default:
+            out.put(ch);
+            break;
         }
     }
     out.put('"');
@@ -71,7 +72,11 @@ AsyncRestConnection::AsyncRestConnection(transport::KalshiRestAdapter adapter,
                                          AsyncRestConnectionConfig config)
     : adapter_(std::move(adapter)), config_(std::move(config)) {
     if (!config_.trace_output_path.empty()) {
-        trace_output_file_.open(config_.trace_output_path, std::ios::out | std::ios::trunc);
+        const std::filesystem::path output_path{config_.trace_output_path};
+        if (output_path.has_parent_path()) {
+            std::filesystem::create_directories(output_path.parent_path());
+        }
+        trace_output_file_.open(output_path, std::ios::out | std::ios::trunc);
     }
 }
 
@@ -79,9 +84,7 @@ bool AsyncRestConnection::idle() const noexcept {
     return !inflight_request_.has_value() && !pending_completion_.has_value();
 }
 
-bool AsyncRestConnection::has_inflight() const noexcept {
-    return inflight_request_.has_value();
-}
+bool AsyncRestConnection::has_inflight() const noexcept { return inflight_request_.has_value(); }
 
 std::optional<DispatchRequestId> AsyncRestConnection::inflight_request_id() const noexcept {
     if (!inflight_request_.has_value()) {
@@ -144,11 +147,10 @@ ConnectionPollResult AsyncRestConnection::poll() noexcept {
                                      "transport_disconnected");
     } else if (poll_result.status == transport::AsyncHttpRequestStatus::kCompleted &&
                poll_result.response.has_value()) {
-        auto command_result =
-            inflight_request_->batch_kind == DispatchBatchKind::kGroupedSubmit
-                ? complete_batched_submit_request_(*poll_result.response)
-                : complete_item_(inflight_request_->items[inflight_item_index_],
-                                 *poll_result.response);
+        auto command_result = inflight_request_->batch_kind == DispatchBatchKind::kGroupedSubmit
+                                  ? complete_batched_submit_request_(*poll_result.response)
+                                  : complete_item_(inflight_request_->items[inflight_item_index_],
+                                                   *poll_result.response);
         if (command_result.trace.request_sent_ts_ns != 0 ||
             command_result.trace.response_recv_ts_ns != 0 ||
             !command_result.trace.request_target.empty() ||
@@ -164,11 +166,10 @@ ConnectionPollResult AsyncRestConnection::poll() noexcept {
         }
 
         if (inflight_request_->batch_kind == DispatchBatchKind::kGroupedSubmit) {
-            finalize_pending_completion_(
-                command_result.ok || !command_result.events.empty()
-                    ? DispatchRequestState::kCompleted
-                    : DispatchRequestState::kPostWriteUnknown,
-                command_result.error_message);
+            finalize_pending_completion_(command_result.ok || !command_result.events.empty()
+                                             ? DispatchRequestState::kCompleted
+                                             : DispatchRequestState::kPostWriteUnknown,
+                                         command_result.error_message);
         } else if (!command_result.ok) {
             if (command_result.event.has_value()) {
                 ++inflight_item_index_;
@@ -248,14 +249,14 @@ void AsyncRestConnection::finalize_pending_completion_(DispatchRequestState term
     if (!inflight_request_.has_value()) {
         return;
     }
-    const internal::TimestampNs completed_ts_ns = last_trace_.has_value()
-        ? completion_timestamp_for(
-              transport::HttpResponse{
-                  .request_sent_ts_ns = last_trace_->request_sent_ts_ns,
-                  .response_recv_ts_ns = last_trace_->response_recv_ts_ns,
-              },
-              inflight_request_->queued_ts_ns)
-        : inflight_request_->queued_ts_ns;
+    const internal::TimestampNs completed_ts_ns =
+        last_trace_.has_value() ? completion_timestamp_for(
+                                      transport::HttpResponse{
+                                          .request_sent_ts_ns = last_trace_->request_sent_ts_ns,
+                                          .response_recv_ts_ns = last_trace_->response_recv_ts_ns,
+                                      },
+                                      inflight_request_->queued_ts_ns)
+                                : inflight_request_->queued_ts_ns;
     pending_completion_ = DispatchCompletion{
         .request = *inflight_request_,
         .emitted_events = emitted_events_,
@@ -305,8 +306,8 @@ bool AsyncRestConnection::start_current_item_() noexcept {
     return true;
 }
 
-transport::PreparedCommandRequest AsyncRestConnection::prepare_item_(
-    const DispatchItem& item) const noexcept {
+transport::PreparedCommandRequest
+AsyncRestConnection::prepare_item_(const DispatchItem& item) const noexcept {
     return std::visit(
         [this](const auto& typed_command) -> transport::PreparedCommandRequest {
             using T = std::decay_t<decltype(typed_command)>;
@@ -321,7 +322,8 @@ transport::PreparedCommandRequest AsyncRestConnection::prepare_item_(
         item.command);
 }
 
-transport::PreparedCommandRequest AsyncRestConnection::prepare_batched_submit_request_() const noexcept {
+transport::PreparedCommandRequest
+AsyncRestConnection::prepare_batched_submit_request_() const noexcept {
     if (!inflight_request_.has_value()) {
         return {.ok = false, .error_message = "missing inflight request"};
     }
@@ -337,15 +339,15 @@ transport::PreparedCommandRequest AsyncRestConnection::prepare_batched_submit_re
     return adapter_.prepare_batched_submit_orders(commands);
 }
 
-transport::CommandResult AsyncRestConnection::complete_item_(
-    const DispatchItem& item,
-    const transport::HttpResponse& response) noexcept {
+transport::CommandResult
+AsyncRestConnection::complete_item_(const DispatchItem& item,
+                                    const transport::HttpResponse& response) noexcept {
     return std::visit(
         [&response, this](const auto& typed_command) -> transport::CommandResult {
             using T = std::decay_t<decltype(typed_command)>;
-            transport::RestTraceInfo trace =
-                inflight_prepared_request_.has_value() ? inflight_prepared_request_->trace
-                                                       : transport::RestTraceInfo{};
+            transport::RestTraceInfo trace = inflight_prepared_request_.has_value()
+                                                 ? inflight_prepared_request_->trace
+                                                 : transport::RestTraceInfo{};
             trace.http_status_code = response.status_code;
             trace.retry_count = response.retry_count;
             trace.reused_connection = response.reused_connection;
@@ -387,9 +389,9 @@ transport::CommandResult AsyncRestConnection::complete_batched_submit_request_(
         commands.push_back(*submit);
     }
 
-    transport::RestTraceInfo trace =
-        inflight_prepared_request_.has_value() ? inflight_prepared_request_->trace
-                                               : transport::RestTraceInfo{};
+    transport::RestTraceInfo trace = inflight_prepared_request_.has_value()
+                                         ? inflight_prepared_request_->trace
+                                         : transport::RestTraceInfo{};
     trace.http_status_code = response.status_code;
     trace.retry_count = response.retry_count;
     trace.reused_connection = response.reused_connection;
@@ -412,31 +414,27 @@ void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion
         return;
     }
 
-    trace_output_file_
-        << '{'
-        << "\"connection_index\":" << config_.connection_index << ','
-        << "\"dispatch_request_id\":" << completion.request.dispatch_request_id << ','
-        << "\"terminal_state\":";
+    trace_output_file_ << '{' << "\"connection_index\":" << config_.connection_index << ','
+                       << "\"dispatch_request_id\":" << completion.request.dispatch_request_id
+                       << ',' << "\"terminal_state\":";
     append_json_escaped(trace_output_file_, request_state_to_string(completion.terminal_state));
     trace_output_file_
-        << ",\"item_count\":" << completion.request.item_count()
-        << ",\"group_intent_id\":"
-        << (completion.request.group_key.has_value()
-                ? completion.request.group_key->group_intent_id
-                : static_cast<GroupIntentId>(0))
+        << ",\"item_count\":" << completion.request.item_count() << ",\"group_intent_id\":"
+        << (completion.request.group_key.has_value() ? completion.request.group_key->group_intent_id
+                                                     : static_cast<GroupIntentId>(0))
         << ",\"group_leg_count\":"
         << (completion.request.group_key.has_value()
                 ? completion.request.group_key->expected_leg_count
                 : static_cast<std::uint16_t>(0))
         << ",\"queued_ts_ns\":" << completion.request.queued_ts_ns
         << ",\"first_item_sequenced_ts_ns\":"
-        << (!completion.request.items.empty() ? completion.request.items.front().sequenced_ts_ns : 0)
+        << (!completion.request.items.empty() ? completion.request.items.front().sequenced_ts_ns
+                                              : 0)
         << ",\"planned_ts_ns\":" << completion.request.planned_ts_ns
         << ",\"admitted_ts_ns\":" << completion.request.admitted_ts_ns
         << ",\"session_submit_ts_ns\":" << completion.request.session_submit_ts_ns
         << ",\"connection_start_ts_ns\":" << completion.request.connection_start_ts_ns
-        << ",\"completed_ts_ns\":" << completion.completed_ts_ns
-        << ",\"latency_ns\":"
+        << ",\"completed_ts_ns\":" << completion.completed_ts_ns << ",\"latency_ns\":"
         << (completion.completed_ts_ns >= completion.request.queued_ts_ns
                 ? completion.completed_ts_ns - completion.request.queued_ts_ns
                 : 0)
@@ -447,8 +445,7 @@ void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion
         << ",\"ingress_to_sequence_ns\":"
         << ((!completion.request.items.empty() &&
              completion.request.items.front().sequenced_ts_ns >= completion.request.queued_ts_ns)
-                ? completion.request.items.front().sequenced_ts_ns -
-                      completion.request.queued_ts_ns
+                ? completion.request.items.front().sequenced_ts_ns - completion.request.queued_ts_ns
                 : 0)
         << ",\"sequence_to_plan_ns\":"
         << ((!completion.request.items.empty() &&
@@ -472,10 +469,10 @@ void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion
         << ",\"emitted_event_count\":" << completion.emitted_events.size()
         << ",\"http_status_code\":"
         << (completion.trace.has_value() ? completion.trace->http_status_code : 0)
-        << ",\"retry_count\":"
-        << (completion.trace.has_value() ? completion.trace->retry_count : 0)
+        << ",\"retry_count\":" << (completion.trace.has_value() ? completion.trace->retry_count : 0)
         << ",\"reused_connection\":"
-        << ((completion.trace.has_value() && completion.trace->reused_connection) ? "true" : "false")
+        << ((completion.trace.has_value() && completion.trace->reused_connection) ? "true"
+                                                                                  : "false")
         << ",\"resolve_start_ts_ns\":"
         << (completion.trace.has_value() ? completion.trace->resolve_start_ts_ns : 0)
         << ",\"resolve_end_ts_ns\":"
@@ -505,51 +502,43 @@ void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion
         << ",\"handshake_ns\":"
         << ((completion.trace.has_value() &&
              completion.trace->handshake_end_ts_ns >= completion.trace->handshake_start_ts_ns)
-                ? completion.trace->handshake_end_ts_ns -
-                      completion.trace->handshake_start_ts_ns
+                ? completion.trace->handshake_end_ts_ns - completion.trace->handshake_start_ts_ns
                 : 0)
         << ",\"write_queue_ns\":"
         << ((completion.trace.has_value() &&
              completion.trace->write_start_ts_ns >= completion.request.connection_start_ts_ns)
-                ? completion.trace->write_start_ts_ns -
-                      completion.request.connection_start_ts_ns
+                ? completion.trace->write_start_ts_ns - completion.request.connection_start_ts_ns
                 : 0)
         << ",\"connection_start_to_request_sent_ns\":"
         << ((completion.trace.has_value() &&
              completion.trace->request_sent_ts_ns >= completion.request.connection_start_ts_ns)
-                ? completion.trace->request_sent_ts_ns -
-                      completion.request.connection_start_ts_ns
+                ? completion.trace->request_sent_ts_ns - completion.request.connection_start_ts_ns
                 : 0)
         << ",\"write_start_to_request_sent_ns\":"
         << ((completion.trace.has_value() &&
              completion.trace->request_sent_ts_ns >= completion.trace->write_start_ts_ns)
-                ? completion.trace->request_sent_ts_ns -
-                      completion.trace->write_start_ts_ns
+                ? completion.trace->request_sent_ts_ns - completion.trace->write_start_ts_ns
                 : 0)
         << ",\"response_recv_ts_ns\":"
         << (completion.trace.has_value() ? completion.trace->response_recv_ts_ns : 0)
         << ",\"request_target\":";
-    append_json_escaped(
-        trace_output_file_,
-        completion.trace.has_value() ? std::string_view{completion.trace->request_target}
-                                     : std::string_view{});
+    append_json_escaped(trace_output_file_, completion.trace.has_value()
+                                                ? std::string_view{completion.trace->request_target}
+                                                : std::string_view{});
     trace_output_file_ << ",\"trace_error_message\":";
-    append_json_escaped(
-        trace_output_file_,
-        completion.trace.has_value() ? std::string_view{completion.trace->error_message}
-                                     : std::string_view{});
+    append_json_escaped(trace_output_file_, completion.trace.has_value()
+                                                ? std::string_view{completion.trace->error_message}
+                                                : std::string_view{});
     trace_output_file_ << ",\"completion_error_message\":";
     append_json_escaped(trace_output_file_, completion.error_message);
     trace_output_file_ << ",\"request_body\":";
-    append_json_escaped(
-        trace_output_file_,
-        completion.trace.has_value() ? std::string_view{completion.trace->request_body}
-                                     : std::string_view{});
+    append_json_escaped(trace_output_file_, completion.trace.has_value()
+                                                ? std::string_view{completion.trace->request_body}
+                                                : std::string_view{});
     trace_output_file_ << ",\"response_body\":";
-    append_json_escaped(
-        trace_output_file_,
-        completion.trace.has_value() ? std::string_view{completion.trace->response_body}
-                                     : std::string_view{});
+    append_json_escaped(trace_output_file_, completion.trace.has_value()
+                                                ? std::string_view{completion.trace->response_body}
+                                                : std::string_view{});
     trace_output_file_ << "}\n";
     trace_output_file_.flush();
 }

@@ -16,9 +16,9 @@ class MarketMakingStrategy {
     explicit MarketMakingStrategy(MarketMakingConfig config = {}) : config_(config) {}
 
     template <typename SignalSink>
-    void on_event(const AppliedEventUpdate& update,
-                  SignalSink& out_signals) noexcept {
-        if (!config_.enabled || update.event.topology_kind == internal::EventTopologyKind::kUnknown) {
+    void on_event(const AppliedEventUpdate& update, SignalSink& out_signals) noexcept {
+        if (!config_.enabled ||
+            update.event.topology_kind == internal::EventTopologyKind::kUnknown) {
             return;
         }
         static_cast<void>(out_signals);
@@ -28,4 +28,4 @@ class MarketMakingStrategy {
     MarketMakingConfig config_{};
 };
 
-}  // namespace predex::core::shards::kalshi::strategies
+} // namespace predex::core::shards::kalshi::strategies

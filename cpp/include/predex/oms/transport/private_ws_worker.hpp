@@ -27,8 +27,7 @@ struct ReconciliationRequest {};
 // worker-based private websocket path.
 class PrivateWsWorker {
   public:
-    explicit PrivateWsWorker(PrivateWsWorkerQueues queues,
-                             PrivateWsWorkerConfig config,
+    explicit PrivateWsWorker(PrivateWsWorkerQueues queues, PrivateWsWorkerConfig config,
                              KalshiPrivateWsAdapter adapter)
         : queues_(queues), config_(std::move(config)), adapter_(std::move(adapter)) {}
 

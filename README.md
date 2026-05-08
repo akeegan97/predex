@@ -1,108 +1,107 @@
 # Predex
 
-Predex is a full trading pipeline for Kalshi prediction markets: live websocket ingest, shard-local order book maintenance, strategy signal evaluation, OMS coordination, REST order execution, and binary tape persistence.
+Predex is an event-driven trading runtime for Kalshi prediction markets. It ingests live websocket market data, maintains shard-local order books, evaluates strategy signals, routes order intents through a central OMS, executes through Kalshi's REST/private-websocket interfaces, and records both raw feed data and structured audit trails for replay.
 
-## What This Is
+This repository is not trying to pretend Kalshi WebSocket JSON is a colocated binary feed. The point is different: build and validate the architecture around it well. Predex is a systems project about bounded message handoff, ownership discipline, observability, replayability, and execution correctness under real market conditions.
 
-The exchange target is [Kalshi](https://kalshi.com), a regulated prediction market with a free WebSocket API. Individual access to real binary exchange feeds (ITCH, OUCH, SBE, proprietary UDP multicast) is prohibitively expensive — Kalshi is the accessible substrate for building and validating real pipeline architecture.
+## What This Repo Is
 
-The WebSocket transport is the ceiling on wire latency. The internal pipeline after it is not. The goal of this project is to get the internal architecture right: bounded-latency message handoff, correct memory ordering, single-owner thread design, and a full pipeline from feed to execution.
+- A C++20 trading runtime with a thread-per-stage pipeline and strict ownership boundaries
+- A live OMS path with global and local risk controls, order lifecycle tracking, and kill-switch behavior
+- A Python discovery/config toolchain that synthesizes event-centric trader configs from Kalshi metadata
+- A replay and ingest workflow that turns raw tape, audit logs, and REST traces into inspectable datasets
+- An experimental strategy environment where live soak testing is used to validate execution mechanics before adding more features
 
-What the internals do:
+## What This Repo Is Not
 
-- **Lock-free SPSC queues** with cache-line-padded indices and acquire/release memory ordering for each stage handoff
-- **Frame pool** with generation-tracked handles for zero-copy payload passing from IO through the full pipeline and back to recycle
-- **Thread-per-stage** with single ownership per component — no locks on the hot path
-- **Router** using simdjson on-demand parsing to classify and dispatch frames without full deserialization
-- **Shard-local order book** per market with snapshot-first state machine, pending delta buffering, sequence validation, and desync detection
-- **Strategy pipeline** with `LocalRiskManager` pre-gate and strategy hooks per shard (`MonotonicArbStrategy`, stub strategies for CDF violation, market making, mean reversion)
-- **OMS coordinator** with `GlobalRiskManager` pre-trade checks, full order lifecycle tracking, drawdown circuit breaker, and soft/hard halt modes
-- **Order transport** via Kalshi REST API (submit, cancel, modify) and private WebSocket (fills, lifecycle events)
-- **Startup reconciliation** — open orders from prior sessions are adopted into `OrderStore` so the kill switch covers them and fills count against session P&L
-- **Binary tape** for replay, with a simple length-prefixed format
-- **Audit log** — OMS decisions, fills, and latency spans persisted as JSONL
+- A high-frequency, sub-microsecond, colocated feed handler
+- A finished multi-strategy production trading system
+- A claim that all current strategy ideas are mature enough for sizing up aggressively
 
-What this is not: a sub-microsecond co-located feed handler. The WebSocket transport and JSON wire format preclude that. The architecture and the code patterns are the point.
+The runtime is real. Some strategy logic is still experimental by design.
 
 ## Current Status
 
 Working today:
 
-- `trader_app` connects to Kalshi, subscribes to configured channels, maintains shard-local books, runs strategy evaluation, routes order intents through the OMS, submits/cancels/modifies orders via REST, and records inbound payloads to a tape file
-- Core runtime is split into focused libraries: `predex_websocket`, `predex_core_pipeline`, `predex_app`
-- `MonotonicArbStrategy` detects probability-monotonicity violations across chain events and submits IOC leg pairs
-- OMS coordinator tracks full order lifecycle across three lookup indices; kill switch covers current and prior-session orders
-- Python discovery toolchain generates event-centric trader configs from Kalshi metadata
-- Tape format is stable for downstream replay tooling: 4-byte little-endian payload length followed by raw websocket payload bytes
+- `trader_app` connects to Kalshi, subscribes to configured public channels, maintains shard-local books, evaluates strategy signals, routes order intents through the OMS, and records raw inbound payloads to a binary tape
+- The OMS tracks full order lifecycle across request, client-order-id, and exchange-order-id lookups
+- Live order execution uses Kalshi REST for submit/cancel/modify and the private websocket for fills and lifecycle events
+- Startup reconciliation adopts prior-session open orders into `OrderStore` so kill-switch behavior and session accounting cover them
+- `MonotonicArbStrategy` now uses paired IOC limit selection with book-quality gating, continuity checks, and audit telemetry around visible frontier depth
+- The Python discovery pipeline generates event-centric configs and handles safe subchain splitting for multi-entity numeric events
+- Replay tooling can summarize audit logs, export event timelines, and ingest a run into parquet datasets for offline analysis
 
-Intentionally incomplete:
+Still intentionally incomplete:
 
-- `CdfViolationStrategy`, `MarketMakingStrategy`, `MeanReversionStrategy` — stubs
-- Strategy backtesting and normalized run-ingest workflow
-- REST rate limiting on OMS transport
+- `CdfViolationStrategy`, `MarketMakingStrategy`, and `MeanReversionStrategy` remain stubs
+- REST rate limiting is not yet implemented
+- Dynamic sizing is not yet enabled; the current focus is validating execution quality and reducing one-sided fills
+- Public websocket reconnect handling still needs resilience hardening for transient network resets
 
-## Architecture
+## Architecture At A Glance
 
 ```text
-                    +--------------------------------------------------------------+
-                    |                  predex::App::Runtime                        |
-                    +--------------------------------------------------------------+
-
-Kalshi public WS                                      Kalshi private WS
-    |                                                         |
-    v                                                         v
-+------------------+    +------------------+    +---------------------------+
-| WsSession        |--->| ingest::IOWriter |    | OMS private WS thread     |
-| IO thread        |    | acquire + copy   |    | fills + lifecycle events  |
-+------------------+    +--------+---------+    +-------------+-------------+
-                                  |                            |
-                                  v                            |
-                         io_to_router_queue                    |
-                                  |                            |
-                                  v                            v
-                         +------------------+      oms_transport_update_queue (MPSC)
-                         | routing::Router  |                  |
-                         | router thread    |                  |
-                         +---+----------+---+                  |
-                             |          |                      |
-              shard_input[i] |          | router_to_logger     |
-                             v          v                      |
-                    +---------------+  +--------+              |
-                    | shards::Shard |  | logger |              |
-                    | EventStore    |  | queue  |              |
-                    | ShardPipeline |  +--------+              |
-                    +---+---+---+---+       |                  |
-                        |   |   |           v              +---+-------------------+
-          intent queue  |   |   |    +----------+          | oms::Oms coordinator  |
-                        |   |   |    |  Logger  |          | OrderStore            |
-                        v   |   |    |  thread  |          | RiskEngine            |
-               +--------+   |   |    +----+-----+          | HaltMode              |
-               | oms::Oms|   |   |         |               +---+---+---+-----------+
-               | intents |   |   |    recycle_queue            |   |   |
-               +---------+   |   |         |               submit cancel modify
-                        ^    |   |         v                   |   |   |
-          decision      |    |   |    IOWriter recycle         v   v   v
-          + lifecycle   |    |   |                        +------------------+
-                        +----+---+                        | OMS REST thread  |
-                  audit queues   |                        | Kalshi REST API  |
-                                 v                        +------------------+
-                          +------------+
-                          | Audit      |
-                          | thread     |
-                          | JSONL      |
-                          +------------+
+Kalshi public WS -> IO thread -> Router -> Shards -> OMS -> REST/private WS
+                                      |         |       |
+                                      |         |       +-> Audit JSONL
+                                      |         +----------> Order intents / lifecycle
+                                      +--------------------> Binary tape logger
 ```
+
+Key runtime properties:
+
+- **Single-owner threads** across IO, routing, shards, OMS, logger, and audit
+- **Bounded SPSC queues** between hot-path stages
+- **Zero-copy frame handoff** after the initial websocket payload copy into the frame pool
+- **Shard-local event stores** that maintain books and derived event topology state
+- **Central OMS coordinator** as the single writer to order state
+- **Raw tape + structured audit** so strategy and execution behavior can be inspected after live runs
 
 Supporting docs:
 
+- [Docs Guide](docs/README.md)
 - [Architecture](docs/architecture.md)
 - [OMS Design](docs/oms_design.md)
-- [Design Decisions](docs/design_decisions.md)
 - [Ownership and Invariants](docs/ownership_invariants.md)
+- [Design Decisions](docs/design_decisions.md)
 - [Data Contract](docs/data_contract.md)
 - [Python Toolchain](docs/predex-python.md)
-- [Performance Backlog](docs/perf_backlog.md)
-- [Replay Roadmap](docs/replay_matrix.md)
+- [Results](docs/results.md)
+
+Planning/backlog docs that are useful but not front-door material:
+
+- [Performance Backlog](docs/planning/perf_backlog.md)
+- [Replay Roadmap](docs/planning/replay_matrix.md)
+- [Async Gateway Plan](docs/planning/async_gateway_plan.md)
+- [Async Transport Direction](docs/planning/async_transport_direction.md)
+- [Cleanup Notes](docs/planning/cleanup_bugs_etc.md)
+
+Generated examples and working artifacts live in `docs/`, but they are outputs, not canonical documentation:
+
+- `docs/generated_config*.json`
+- `docs/generated_config.report.json`
+- `docs/generated_discovery_report.json`
+
+## Safe Live-Trading Defaults
+
+The repo is intentionally safe by default.
+
+- `oms_transport.enabled` defaults to `false`
+- `local_risk.trading_enabled` defaults to `false`
+
+That means you can generate configs, run the pipeline, inspect signals, and record audit/tape data without accidentally submitting live orders unless you explicitly opt in.
+
+## Observed Runtime Characteristics
+
+Recent soak and replay artifacts show a consistent pattern:
+
+- shard-local signal generation is very fast relative to the full execution loop
+- the healthy warm local path to `request_sent` is typically low-single-digit milliseconds
+- venue/network round trip dominates end-to-end order latency
+- recent strategy improvements have therefore focused more on execution quality and book durability than on pretending the venue wire path can be optimized away
+
+Representative latency snapshots and supporting artifacts live in [docs/results.md](docs/results.md).
 
 ## Build Targets
 
@@ -145,16 +144,16 @@ KALSHI_KEY_ID=...
 KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----...'
 ```
 
-### Run
+### Run The Trader
 
 ```bash
 ./build/dev/cpp/trader_app --config docs/trader_config.example.json
 ```
 
-The runtime prints a health status line to stdout every 30 seconds:
+The runtime prints a periodic health line to stdout:
 
-```
-[timestamp UTC] STATUS | halted=false | pnl_ticks=+0 | live_orders=0 | intents=0 | rejected=0 | transport_updates=0 | router_frames=0 | router_drops=0 | desynced_events=0
+```text
+[timestamp UTC] STATUS | halted=false | live_orders=0 | oms_shard_requests=0 | ...
 ```
 
 The repo wrapper below auto-loads the root `.env` before launching the binary:
@@ -163,9 +162,11 @@ The repo wrapper below auto-loads the root `.env` before launching the binary:
 ./scripts/trader_app --config docs/trader_config.example.json
 ```
 
-### Generate Configs With Python
+## Config Generation With Python
 
-The repo includes a Python discovery toolchain for building event-centric trader configs from Kalshi metadata.
+The Python discovery toolchain builds event-centric trader configs from Kalshi metadata.
+
+Generate config for explicit event tickers:
 
 ```bash
 PYTHONPATH=python/src python3 -m predex.discovery \
@@ -175,7 +176,7 @@ PYTHONPATH=python/src python3 -m predex.discovery \
   --output docs/generated_config.json
 ```
 
-You can also discover by series ticker instead of enumerating events:
+Or discover by series:
 
 ```bash
 PYTHONPATH=python/src python3 -m predex.discovery \
@@ -195,7 +196,7 @@ If you use a repo-root virtualenv, the wrapper below will load `.env` and prefer
   --report-output docs/generated_config.report.json
 ```
 
-To page through every matching event instead of stopping at the default discovery cap:
+To page through every matching event instead of stopping at the default cap:
 
 ```bash
 ./scripts/predex \
@@ -205,15 +206,19 @@ To page through every matching event instead of stopping at the default discover
   --report-output docs/generated_config.report.json
 ```
 
-The same CLI also exposes the main C++ runtime pipeline knobs, such as:
+The same CLI exposes the main runtime capacity knobs, including:
+
 - `--shard-count`
 - `--frame-pool-capacity`
 - `--io-to-router-capacity`
 - `--router-to-logger-capacity`
 - `--shard-input-capacity`
 - `--shard-to-logger-capacity`
+- `--oms-rest-worker-count`
 
-## Tape Format
+## Tape, Replay, And Run Ingest
+
+### Tape Format
 
 ```text
 [u32 payload_len_le][payload bytes][u32 payload_len_le][payload bytes]...
@@ -221,51 +226,51 @@ The same CLI also exposes the main C++ runtime pipeline knobs, such as:
 
 Each payload is the raw websocket text frame received from Kalshi.
 
-## Replay Verification and Timeline Export
-
-Use the Python replay CLI to inspect audit output and generate event timeline artifacts from tape:
+### Replay Summary
 
 ```bash
 PYTHONPATH=python/src python3 -m predex.replay audit-summary \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl
+  --audit logs/live/predex_audit.jsonl
 ```
 
-Export a timeline for one event (or pass `--market-ticker` for a single-market focus):
+### Export Event Timeline
 
 ```bash
 ./scripts/predex-replay export-event-timeline \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
-  --tape predex_tape.bin \
+  --audit logs/live/predex_audit.jsonl \
+  --tape logs/live/predex_tape.bin \
   --event-id 1344469444 \
   --output-dir logs/replay \
   --prefix eggs_event
 ```
 
 This writes:
+
 - timeline CSV (`*.csv`) with top-of-book progression
 - signal-hit CSV (`*.signals.csv`)
 - summary JSON (`*.summary.json`)
 - standalone visualization HTML (`*.html`)
 
-Add `--parquet` to also emit parquet files (`*.parquet`, `*.signals.parquet`). This requires `pyarrow` in your venv:
+Add `--parquet` to also emit parquet files. This requires `pyarrow` in your venv:
 
 ```bash
 .venv/bin/pip install pyarrow
 ```
 
-Normalize a live run into reusable parquet tables for offline analysis:
+### Ingest A Live Run
 
 ```bash
 ./scripts/predex-replay ingest-run \
   --config docs/generated_config.json \
-  --audit predex_audit.jsonl \
-  --tape predex_tape.bin \
+  --audit logs/live/predex_audit.jsonl \
+  --tape logs/live/predex_tape.bin \
   --run-id live_2026_05_04
 ```
 
-This writes a run dataset under `logs/runs/<run_id>/`, including:
+This writes a reusable dataset under `logs/runs/<run_id>/`, including:
+
 - `market_routes.parquet`
 - `frames.parquet`
 - `market_events.parquet`
@@ -279,11 +284,9 @@ This writes a run dataset under `logs/runs/<run_id>/`, including:
 
 If no `--trace` arguments are provided, `ingest-run` auto-detects `predex_rest_trace*.jsonl` files beside the audit log.
 
-Use `--format both` if you also want CSV sidecars for inspection/debugging.
+### Replay Dashboard
 
-### Replay Dashboard (Streamlit)
-
-Install viz dependencies in your venv:
+Install the visualization dependencies:
 
 ```bash
 .venv/bin/pip install '.[replay-viz]'
@@ -295,58 +298,77 @@ Launch:
 ./scripts/predex-replay-dashboard
 ```
 
-The dashboard shows a run-wide view from config+audit (all events, submarkets, and signals), then lets you drill into per-market timeline charts from `logs/replay/*.summary.json` datasets when available.
-
 ## Runtime Config
 
-The config has seven top-level sections: `kalshi`, `market_routes`, `pipeline`, `tape`, `audit`, `oms_transport`, and `local_risk`.
+The config has seven top-level sections:
+
+- `kalshi`
+- `market_routes`
+- `pipeline`
+- `tape`
+- `audit`
+- `oms_transport`
+- `local_risk`
 
 Example: [`docs/trader_config.example.json`](docs/trader_config.example.json)
 
 Key fields:
 
 - `kalshi.endpoint` — websocket URL
-- `kalshi.channels` — channel subscriptions (e.g. `orderbook_delta`, `trade`)
-- `kalshi.lifecycle_channels` — lifecycle channel subscriptions (e.g. `market_lifecycle_v2`)
+- `kalshi.channels` — channel subscriptions such as `orderbook_delta` and `trade`
+- `kalshi.lifecycle_channels` — market lifecycle channels such as `market_lifecycle_v2`
 - `kalshi.market_tickers` — markets to subscribe to
 - `kalshi.credentials.key_id_env` / `private_key_pem_env` — environment variable names for credentials
 - `market_routes[*].event_id` — stable local event id used to group markets in shard-local event stores
-- `market_routes[*].affinity_key` — stable per-event shard affinity; shard choice is `affinity_key % shard_count`
+- `market_routes[*].affinity_key` — per-event shard affinity; shard choice is `affinity_key % shard_count`
 - `market_routes[*].topology_kind` — one of `single_market`, `mutually_exclusive`, `monotonic_chain`, `unordered_group`
-- `market_routes[*].strike_key` — integer ordering key for topology-specific market ordering
-- `market_routes[*].close_time_s` — Unix timestamp of market close; used by `min_seconds_to_close` gating
+- `market_routes[*].strike_key` — integer ordering key for topology-specific ordering
+- `market_routes[*].close_time_s` — Unix timestamp used by close-time gating
 - `market_routes[*].tradeable` — whether the market accepts new orders
 - `pipeline.frame_pool_capacity` — frame pool slot count
 - `pipeline.shard_count` — number of shard threads
 - `tape.output_path` — binary tape output path
 - `audit.output_path` — JSONL audit log output path
-- `oms_transport.enabled` — enable live order submission (default `false`)
+- `oms_transport.enabled` — enable live order submission
 - `oms_transport.rest_endpoint` — Kalshi REST API base URL
 - `oms_transport.private_ws_endpoint` — Kalshi private websocket URL for fills
 - `oms_transport.max_session_loss_ticks` — drawdown limit in ticks; `0` disables the circuit breaker
+- `oms_transport.rest_worker_count` — size of the async REST worker pool
 - `local_risk.max_net_position_lots_per_market` — max absolute net filled position per market; `0` disables
 - `local_risk.min_seconds_to_close` — reject intents for markets closing within this many seconds; `0` disables
 - `local_risk.trading_enabled` — master switch for strategy intent generation
 
-`market_routes` is required by `trader_app`. The Python discovery CLI is the intended way to synthesize it programmatically.
+`market_routes` is required by `trader_app`. The Python discovery CLI is the intended way to synthesize it.
 
 ## Repository Layout
 
 - `cpp/apps` — executable entrypoints
 - `cpp/include/predex` — public headers for websocket, pipeline, and app wiring
 - `cpp/src` — implementations
-- `python/src/predex` — Python discovery and config synthesis tooling
+- `cpp/tests` — C++ tests and scaffolding
+- `python/src/predex` — Python discovery, replay, and config synthesis tooling
 - `python/tests` — Python unit tests
-- `cpp/tests` — tests and scaffolding
-- `docs` — architecture, contracts, config examples, and planning notes
+- `scripts` — repo wrappers for trader, replay, and discovery flows
+- `docs` — canonical docs, planning notes, schema captures, and generated examples
+- `logs` — replay outputs and normalized run datasets
 
-## Near-Term Roadmap
+## How To Read This Repo
 
-- Python tape decoder and replay driver
-- REST rate limiting on OMS transport
-- Soft halt audit event and stderr log on drawdown trigger
-- Fill history recovery after OMS private WS reconnect
-- Stub strategy implementations (CDF violation, market making, mean reversion)
+If you are new here, the fastest path is:
+
+1. Read this README for scope and current status.
+2. Read [docs/README.md](docs/README.md) for the docs map.
+3. Read [docs/architecture.md](docs/architecture.md) for the runtime topology.
+4. Read [docs/oms_design.md](docs/oms_design.md) for order-state ownership and execution flow.
+5. Skim [docs/predex-python.md](docs/predex-python.md) for the discovery/config toolchain.
+6. Use `docs/trader_config.example.json` and the `scripts/` wrappers to run the pipeline safely with trading disabled by default.
+
+## Near-Term Priorities
+
+- Validate whether dynamic sizing is justified after enough depth-aware soak data is collected
+- Harden public websocket reconnect behavior for transient network resets
+- Add REST rate limiting
+- Continue repo cleanup so `main` can serve as the canonical branch and project front door
 
 ## Contributing
 

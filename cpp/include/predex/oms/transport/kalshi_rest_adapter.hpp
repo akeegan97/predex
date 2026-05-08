@@ -79,22 +79,21 @@ class KalshiRestAdapter {
     [[nodiscard]] CommandResult cancel_order(const CancelOrderCmd& command);
     [[nodiscard]] CommandResult modify_order(const ModifyOrderCmd& command);
 
-    [[nodiscard]] OpenOrdersPage fetch_open_orders(
-        std::size_t limit = kDefaultOpenOrderFetchLimit,
-        std::optional<std::string> cursor = std::nullopt);
+    [[nodiscard]] OpenOrdersPage
+    fetch_open_orders(std::size_t limit = kDefaultOpenOrderFetchLimit,
+                      std::optional<std::string> cursor = std::nullopt);
 
     [[nodiscard]] PreparedCommandRequest prepare_submit_order(const SubmitOrderCmd& command) const;
-    [[nodiscard]] PreparedCommandRequest prepare_batched_submit_orders(
-        const std::vector<SubmitOrderCmd>& commands) const;
+    [[nodiscard]] PreparedCommandRequest
+    prepare_batched_submit_orders(const std::vector<SubmitOrderCmd>& commands) const;
     [[nodiscard]] PreparedCommandRequest prepare_cancel_order(const CancelOrderCmd& command) const;
     [[nodiscard]] PreparedCommandRequest prepare_modify_order(const ModifyOrderCmd& command) const;
     [[nodiscard]] CommandResult complete_submit_order(const SubmitOrderCmd& command,
                                                       const HttpResponse& response,
                                                       RestTraceInfo trace) const;
-    [[nodiscard]] CommandResult complete_batched_submit_orders(
-        const std::vector<SubmitOrderCmd>& commands,
-        const HttpResponse& response,
-        RestTraceInfo trace) const;
+    [[nodiscard]] CommandResult
+    complete_batched_submit_orders(const std::vector<SubmitOrderCmd>& commands,
+                                   const HttpResponse& response, RestTraceInfo trace) const;
     [[nodiscard]] CommandResult complete_cancel_order(const CancelOrderCmd& command,
                                                       const HttpResponse& response,
                                                       RestTraceInfo trace) const;
@@ -114,32 +113,25 @@ class KalshiRestAdapter {
 
     [[nodiscard]] static std::string build_submit_target_();
     [[nodiscard]] static std::string build_batched_submit_target_();
-    [[nodiscard]] static std::string build_cancel_target_(
-        const ExchangeOrderId& exchange_order_id);
-    [[nodiscard]] static std::string build_modify_target_(
-        const ExchangeOrderId& exchange_order_id);
-    [[nodiscard]] static std::string build_open_orders_target_(
-        std::size_t limit,
-        const std::optional<std::string>& cursor);
+    [[nodiscard]] static std::string build_cancel_target_(const ExchangeOrderId& exchange_order_id);
+    [[nodiscard]] static std::string build_modify_target_(const ExchangeOrderId& exchange_order_id);
+    [[nodiscard]] static std::string
+    build_open_orders_target_(std::size_t limit, const std::optional<std::string>& cursor);
 
-    [[nodiscard]] static CommandResult parse_submit_response_(
-        const HttpResponse& response,
-        const SubmitOrderCmd& command,
-        RestTraceInfo trace);
-    [[nodiscard]] static CommandResult parse_batched_submit_response_(
-        const HttpResponse& response,
-        const std::vector<SubmitOrderCmd>& commands,
-        RestTraceInfo trace);
-    [[nodiscard]] static CommandResult parse_cancel_response_(
-        const HttpResponse& response,
-        const CancelOrderCmd& command,
-        RestTraceInfo trace);
-    [[nodiscard]] static CommandResult parse_modify_response_(
-        const HttpResponse& response,
-        const ModifyOrderCmd& command,
-        RestTraceInfo trace);
-    [[nodiscard]] static OpenOrdersPage parse_open_orders_response_(
-        const HttpResponse& response);
+    [[nodiscard]] static CommandResult parse_submit_response_(const HttpResponse& response,
+                                                              const SubmitOrderCmd& command,
+                                                              RestTraceInfo trace);
+    [[nodiscard]] static CommandResult
+    parse_batched_submit_response_(const HttpResponse& response,
+                                   const std::vector<SubmitOrderCmd>& commands,
+                                   RestTraceInfo trace);
+    [[nodiscard]] static CommandResult parse_cancel_response_(const HttpResponse& response,
+                                                              const CancelOrderCmd& command,
+                                                              RestTraceInfo trace);
+    [[nodiscard]] static CommandResult parse_modify_response_(const HttpResponse& response,
+                                                              const ModifyOrderCmd& command,
+                                                              RestTraceInfo trace);
+    [[nodiscard]] static OpenOrdersPage parse_open_orders_response_(const HttpResponse& response);
 };
 
 } // namespace predex::core::oms::kalshi::transport

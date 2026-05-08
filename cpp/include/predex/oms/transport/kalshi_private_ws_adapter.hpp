@@ -46,11 +46,9 @@ class KalshiPrivateWsAdapter {
     predex::websocket::kalshi::WsAdapter ws_adapter_;
     std::unordered_map<std::uint64_t, std::uint64_t> last_seq_by_sid_;
 
-    [[nodiscard]] static std::optional<KalshiToOmsEvent> parse_single_event_(
-        const std::string& message_type,
-        const OmsOrderRef& order,
-        internal::TimestampNs recv_ts_ns,
-        const nlohmann::json& payload);
+    [[nodiscard]] static std::optional<KalshiToOmsEvent>
+    parse_single_event_(const std::string& message_type, const OmsOrderRef& order,
+                        internal::TimestampNs recv_ts_ns, const nlohmann::json& payload);
 };
 
 } // namespace predex::core::oms::kalshi::transport

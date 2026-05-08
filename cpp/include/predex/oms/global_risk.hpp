@@ -1,8 +1,8 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cassert>
 #include <limits>
 #include <optional>
 #include <unordered_map>
@@ -58,8 +58,8 @@ class GlobalRisk {
 
     [[nodiscard]] const GlobalRiskState& global_state() const noexcept { return global_state_; }
 
-    [[nodiscard]] RiskToOmsDecision evaluate_new_order(
-        const NewOrderIntent& intent) const noexcept {
+    [[nodiscard]] RiskToOmsDecision
+    evaluate_new_order(const NewOrderIntent& intent) const noexcept {
         if (!limits_.trading_enabled) {
             return RiskRejected{.reason = IntentRejectReason::kSoftHalt};
         }
@@ -72,8 +72,7 @@ class GlobalRisk {
         if (state.open_orders_global >= limits_.max_open_orders_global ||
             state.open_orders_for_target_event >= limits_.max_open_orders_per_event ||
             state.global_exposure_lots + intent.qty_lots > limits_.max_global_exposure_lots ||
-            state.target_event_exposure_lots + intent.qty_lots >
-                limits_.max_event_exposure_lots) {
+            state.target_event_exposure_lots + intent.qty_lots > limits_.max_event_exposure_lots) {
             return RiskRejected{.reason = IntentRejectReason::kGlobalRiskExceeded};
         }
 
@@ -89,11 +88,10 @@ class GlobalRisk {
         return RiskApproved{.capital_reserved_ticks = reserve_result.value_or(0)};
     }
 
-    [[nodiscard]] RiskToOmsDecision evaluate_modify(
-        const NewOrderIntent& replacement,
-        internal::QtyLots current_working_qty_lots,
-        std::optional<internal::PriceTicks> current_working_limit_price_ticks,
-        internal::EventId event_id) const noexcept {
+    [[nodiscard]] RiskToOmsDecision
+    evaluate_modify(const NewOrderIntent& replacement, internal::QtyLots current_working_qty_lots,
+                    std::optional<internal::PriceTicks> current_working_limit_price_ticks,
+                    internal::EventId event_id) const noexcept {
         if (!limits_.trading_enabled) {
             return RiskRejected{.reason = IntentRejectReason::kSoftHalt};
         }
@@ -148,8 +146,7 @@ class GlobalRisk {
         }
     }
 
-    void on_modify_accepted(internal::EventId event_id,
-                            internal::QtyLots previous_working_qty_lots,
+    void on_modify_accepted(internal::EventId event_id, internal::QtyLots previous_working_qty_lots,
                             internal::QtyLots replacement_working_qty_lots,
                             std::int64_t capital_delta_ticks) noexcept {
         auto event_it = event_state_.find(event_id);
@@ -177,9 +174,8 @@ class GlobalRisk {
                 saturating_subtract_i64(global_state_.locked_capital_ticks, -capital_delta_ticks);
         }
     }
-//NOLINTNEXTLINE
-    void on_fill(internal::EventId event_id,
-                 internal::QtyLots fill_qty_lots,
+    // NOLINTNEXTLINE
+    void on_fill(internal::EventId event_id, internal::QtyLots fill_qty_lots,
                  std::int64_t released_capital_ticks) noexcept {
         if (fill_qty_lots > 0) {
             global_state_.global_exposure_lots =
@@ -195,9 +191,8 @@ class GlobalRisk {
                 saturating_subtract_i64(global_state_.locked_capital_ticks, released_capital_ticks);
         }
     }
-//NOLINTNEXTLINE
-    void on_order_terminal(internal::EventId event_id,
-                           internal::QtyLots remaining_open_qty_lots,
+    // NOLINTNEXTLINE
+    void on_order_terminal(internal::EventId event_id, internal::QtyLots remaining_open_qty_lots,
                            std::int64_t released_capital_ticks) noexcept {
         if (global_state_.open_orders_global > 0) {
             --global_state_.open_orders_global;
@@ -227,14 +222,14 @@ class GlobalRisk {
         internal::QtyLots exposure_lots{0};
     };
 
-    [[nodiscard]] static std::optional<std::int64_t> required_capital_ticks(
-        const NewOrderIntent& intent) noexcept {
+    [[nodiscard]] static std::optional<std::int64_t>
+    required_capital_ticks(const NewOrderIntent& intent) noexcept {
         return working_capital_ticks(intent.qty_lots, intent.limit_price_ticks);
     }
 
-    [[nodiscard]] static std::optional<std::int64_t> working_capital_ticks(
-        internal::QtyLots qty_lots,
-        std::optional<internal::PriceTicks> limit_price_ticks) noexcept {
+    [[nodiscard]] static std::optional<std::int64_t>
+    working_capital_ticks(internal::QtyLots qty_lots,
+                          std::optional<internal::PriceTicks> limit_price_ticks) noexcept {
         if (qty_lots <= 0) {
             return std::nullopt;
         }

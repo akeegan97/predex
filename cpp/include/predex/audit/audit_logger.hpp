@@ -12,9 +12,8 @@ namespace predex::core::audit {
 
 class AuditLogger {
   public:
-    explicit AuditLogger(
-        std::vector<predex::utils::SPSCQueue<AuditEvent>*> input_queues,
-        std::string_view output_file_path);
+    explicit AuditLogger(std::vector<predex::utils::SPSCQueue<AuditEvent>*> input_queues,
+                         std::string_view output_file_path);
 
     [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
 

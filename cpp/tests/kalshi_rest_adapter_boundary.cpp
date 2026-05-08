@@ -15,9 +15,9 @@ using predex::core::oms::kalshi::SubmitOrderCmd;
 using predex::core::oms::kalshi::VenueOrderAck;
 using predex::core::oms::kalshi::VenueOrderCanceled;
 using predex::core::oms::kalshi::VenueOrderFill;
+using predex::core::oms::kalshi::transport::HttpResponse;
 using predex::core::oms::kalshi::transport::KalshiRestAdapter;
 using predex::core::oms::kalshi::transport::PersistentHttpSession;
-using predex::core::oms::kalshi::transport::HttpResponse;
 using predex::core::oms::kalshi::transport::RestTraceInfo;
 using predex::internal::ExchangeId;
 using predex::internal::MarketId;
@@ -30,11 +30,8 @@ int fail(std::string_view message) {
     return 1;
 }
 
-SubmitOrderCmd make_submit_command(MarketId market_id,
-                                   Side side,
-                                   Outcome outcome,
-                                   std::int64_t price_ticks,
-                                   std::string client_order_id) {
+SubmitOrderCmd make_submit_command(MarketId market_id, Side side, Outcome outcome,
+                                   std::int64_t price_ticks, std::string client_order_id) {
     SubmitOrderCmd command{};
     command.intent.context = IntentContext{
         .shard_id = 1,
@@ -65,15 +62,15 @@ SubmitOrderCmd make_submit_command(MarketId market_id,
     return command;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     AuthSigner signer{Credentials{.key_id = "test", .private_key_pem = "test"}};
     KalshiRestAdapter adapter{
         PersistentHttpSession{std::move(signer), "https://api.elections.kalshi.com"}};
 
-    const auto good =
-        adapter.prepare_submit_order(make_submit_command(1, Side::kBuy, Outcome::kYes, 460, "cid-good"));
+    const auto good = adapter.prepare_submit_order(
+        make_submit_command(1, Side::kBuy, Outcome::kYes, 460, "cid-good"));
     if (!good.ok) {
         std::cerr << good.error_message << '\n';
         return fail("expected 460 internal ticks to serialize successfully");
@@ -95,7 +92,8 @@ int main() {
     const auto bad = adapter.prepare_submit_order(
         make_submit_command(3, Side::kSell, Outcome::kYes, 165, "cid-bad"));
     if (bad.ok) {
-        return fail("expected non-cent-aligned internal ticks to be rejected before hitting the wire");
+        return fail(
+            "expected non-cent-aligned internal ticks to be rejected before hitting the wire");
     }
     if (bad.error_message.find("Kalshi integer cents") == std::string::npos) {
         std::cerr << bad.error_message << '\n';
@@ -109,16 +107,18 @@ int main() {
     HttpResponse batched_response{
         .ok = true,
         .status_code = 201,
-        .body =
-            "{\"orders\":["
-            "{\"order\":{\"order_id\":\"ex-fill\",\"status\":\"executed\",\"fill_count_fp\":\"1.00\","
-            "\"initial_count_fp\":\"1.00\",\"remaining_count_fp\":\"0.00\",\"yes_price_dollars\":\"0.0100\"}},"
-            "{\"order\":{\"order_id\":\"ex-cancel\",\"status\":\"canceled\",\"fill_count_fp\":\"0.00\","
-            "\"initial_count_fp\":\"1.00\",\"remaining_count_fp\":\"0.00\",\"yes_price_dollars\":\"0.0800\"}}]}",
+        .body = "{\"orders\":["
+                "{\"order\":{\"order_id\":\"ex-fill\",\"status\":\"executed\",\"fill_count_fp\":"
+                "\"1.00\","
+                "\"initial_count_fp\":\"1.00\",\"remaining_count_fp\":\"0.00\",\"yes_price_"
+                "dollars\":\"0.0100\"}},"
+                "{\"order\":{\"order_id\":\"ex-cancel\",\"status\":\"canceled\",\"fill_count_fp\":"
+                "\"0.00\","
+                "\"initial_count_fp\":\"1.00\",\"remaining_count_fp\":\"0.00\",\"yes_price_"
+                "dollars\":\"0.0800\"}}]}",
     };
     auto completed = adapter.complete_batched_submit_orders(
-        batched_commands,
-        batched_response,
+        batched_commands, batched_response,
         RestTraceInfo{.request_sent_ts_ns = 11, .response_recv_ts_ns = 22});
     if (!completed.ok) {
         std::cerr << completed.error_message << '\n';

@@ -23,8 +23,8 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -54,33 +54,23 @@ using EventDefinition = predex::core::shards::kalshi::EventDefinition;
 using EventMarketDefinition = predex::core::shards::kalshi::EventMarketDefinition;
 using LocalRiskManager = predex::core::shards::kalshi::LocalRiskManager;
 using LocalRiskLimits = predex::core::shards::kalshi::LocalRiskLimits;
-using MonotonicArbStrategy =
-    predex::core::shards::kalshi::strategies::MonotonicArbStrategy;
-using CdfViolationStrategy =
-    predex::core::shards::kalshi::strategies::CdfViolationStrategy;
-using MarketMakingStrategy =
-    predex::core::shards::kalshi::strategies::MarketMakingStrategy;
-using MeanReversionStrategy =
-    predex::core::shards::kalshi::strategies::MeanReversionStrategy;
-using ShardPipeline = predex::core::shards::kalshi::DefaultShardPipeline<
-    LocalRiskManager,
-    MonotonicArbStrategy,
-    CdfViolationStrategy,
-    MarketMakingStrategy,
-    MeanReversionStrategy>;
+using MonotonicArbStrategy = predex::core::shards::kalshi::strategies::MonotonicArbStrategy;
+using CdfViolationStrategy = predex::core::shards::kalshi::strategies::CdfViolationStrategy;
+using MarketMakingStrategy = predex::core::shards::kalshi::strategies::MarketMakingStrategy;
+using MeanReversionStrategy = predex::core::shards::kalshi::strategies::MeanReversionStrategy;
+using ShardPipeline =
+    predex::core::shards::kalshi::DefaultShardPipeline<LocalRiskManager, MonotonicArbStrategy,
+                                                       CdfViolationStrategy, MarketMakingStrategy,
+                                                       MeanReversionStrategy>;
 using Shard = predex::core::shards::kalshi::Shard<ShardPipeline>;
 using Oms = predex::core::oms::kalshi::Oms;
-using OmsIntentQueue =
-    predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsSubmission>;
-using OmsDecisionQueue =
-    predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsToShardDecision>;
+using OmsIntentQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsSubmission>;
+using OmsDecisionQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsToShardDecision>;
 using OmsLifecycleQueue =
     predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsToShardLifecycleEvent>;
 using AuditQueue = predex::utils::SPSCQueue<predex::core::audit::AuditEvent>;
-using OmsCommandQueue =
-    predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsToKalshiCommand>;
-using KalshiEventQueue =
-    predex::utils::SPSCQueue<predex::core::oms::kalshi::KalshiToOmsEvent>;
+using OmsCommandQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::OmsToKalshiCommand>;
+using KalshiEventQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::KalshiToOmsEvent>;
 
 struct ReplayOptions {
     std::string config_path;
@@ -88,9 +78,7 @@ struct ReplayOptions {
     std::string audit_path;
 };
 
-std::optional<std::string> find_arg_value(int argc,
-                                          char** argv,
-                                          std::string_view flag) {
+std::optional<std::string> find_arg_value(int argc, char** argv, std::string_view flag) {
     for (int index = 1; index < argc; ++index) {
         if (argv[index] == nullptr || std::string_view{argv[index]} != flag) {
             continue;
@@ -132,10 +120,8 @@ std::vector<MarketRegistryEntry> build_market_registry_entries(const predex::App
 }
 
 bool build_event_definitions_by_shard(
-    const std::vector<predex::MarketRouteConfig>& routes,
-    std::size_t shard_count,
-    std::vector<std::vector<EventDefinition>>& definitions_by_shard,
-    std::string& error_out) {
+    const std::vector<predex::MarketRouteConfig>& routes, std::size_t shard_count,
+    std::vector<std::vector<EventDefinition>>& definitions_by_shard, std::string& error_out) {
     definitions_by_shard.clear();
     definitions_by_shard.resize(shard_count);
     if (shard_count == 0) {
@@ -173,24 +159,23 @@ bool build_event_definitions_by_shard(
             accumulator.topology_kind = route.topology_kind;
         } else if (accumulator.affinity_key != affinity_key16) {
             error_out = "event " + std::to_string(event_id32) +
-                " has inconsistent affinity_key values in config";
+                        " has inconsistent affinity_key values in config";
             return false;
         } else if (accumulator.topology_kind != route.topology_kind) {
             error_out = "event " + std::to_string(event_id32) +
-                " has inconsistent topology_kind values in config";
+                        " has inconsistent topology_kind values in config";
             return false;
         }
 
         const auto market_id32 = static_cast<std::uint32_t>(route.market_id);
-        const auto duplicate_market = std::find_if(
-            accumulator.markets.begin(),
-            accumulator.markets.end(),
-            [market_id32](const EventMarketDefinition& market) {
-                return market.market_id == market_id32;
-            });
+        const auto duplicate_market =
+            std::find_if(accumulator.markets.begin(), accumulator.markets.end(),
+                         [market_id32](const EventMarketDefinition& market) {
+                             return market.market_id == market_id32;
+                         });
         if (duplicate_market != accumulator.markets.end()) {
-            error_out = "event " + std::to_string(event_id32) +
-                " contains duplicate market_id " + std::to_string(market_id32) + " in config";
+            error_out = "event " + std::to_string(event_id32) + " contains duplicate market_id " +
+                        std::to_string(market_id32) + " in config";
             return false;
         }
 
@@ -217,8 +202,7 @@ bool build_event_definitions_by_shard(
 
 class TapeReader {
   public:
-    explicit TapeReader(const std::string& path)
-        : path_(path), input_(path, std::ios::binary) {}
+    explicit TapeReader(const std::string& path) : path_(path), input_(path, std::ios::binary) {}
 
     [[nodiscard]] bool ok() const noexcept { return input_.is_open(); }
     [[nodiscard]] std::string error() const { return error_; }
@@ -369,7 +353,8 @@ class SyntheticRejectTransport {
                                 .raw_reason_code = "replay_read_only",
                                 .raw_reason_message = "synthetic replay reject",
                             }});
-                    } else if constexpr (std::is_same_v<T, predex::core::oms::kalshi::CancelOrderCmd>) {
+                    } else if constexpr (std::is_same_v<
+                                             T, predex::core::oms::kalshi::CancelOrderCmd>) {
                         return event_queue_.try_push(predex::core::oms::kalshi::KalshiToOmsEvent{
                             predex::core::oms::kalshi::VenueCancelReject{
                                 .order = typed_command.corr.order,
@@ -412,16 +397,14 @@ class SyntheticRejectTransport {
 class ReplayRuntime {
   public:
     ReplayRuntime(predex::AppConfig config, std::string tape_path, std::string audit_path)
-        : config_(std::move(config)),
-          tape_path_(std::move(tape_path)),
+        : config_(std::move(config)), tape_path_(std::move(tape_path)),
           audit_path_(std::move(audit_path)),
           market_registry_entries_(build_market_registry_entries(config_)),
           frame_pool_(config_.pipeline.frame_pool_capacity),
           io_to_router_queue_(config_.pipeline.io_to_router_capacity),
           router_to_logger_queue_(config_.pipeline.router_to_logger_capacity),
           recycle_from_router_(config_.pipeline.frame_pool_capacity),
-          market_registry_(market_registry_entries_),
-          tape_reader_(tape_path_),
+          market_registry_(market_registry_entries_), tape_reader_(tape_path_),
           synthetic_transport_(oms_command_queue_, oms_rest_event_queue_) {
         init();
     }
@@ -467,7 +450,8 @@ class ReplayRuntime {
             return false;
         }
         print_status_line("finalizing");
-        while (audit_logger_ != nullptr && audit_logger_->pump(kPumpBatchSize) > 0) {}
+        while (audit_logger_ != nullptr && audit_logger_->pump(kPumpBatchSize) > 0) {
+        }
 
         std::cout << "Replay complete | frames=" << tape_reader_.records_read()
                   << " | total_frames=" << total_records_.value_or(0)
@@ -555,28 +539,24 @@ class ReplayRuntime {
             event_stores_.emplace_back();
         }
 
-        router_audit_queue_ =
-            std::make_unique<AuditQueue>(config_.pipeline.shard_input_capacity);
-        oms_audit_queue_ =
-            std::make_unique<AuditQueue>(config_.pipeline.shard_input_capacity);
+        router_audit_queue_ = std::make_unique<AuditQueue>(config_.pipeline.shard_input_capacity);
+        oms_audit_queue_ = std::make_unique<AuditQueue>(config_.pipeline.shard_input_capacity);
 
         std::vector<std::vector<EventDefinition>> event_definitions_by_shard;
         std::string definition_error;
-        if (!build_event_definitions_by_shard(
-                config_.market_routes,
-                config_.pipeline.shard_count,
-                event_definitions_by_shard,
-                definition_error)) {
+        if (!build_event_definitions_by_shard(config_.market_routes, config_.pipeline.shard_count,
+                                              event_definitions_by_shard, definition_error)) {
             init_ok_ = false;
             error_ = std::move(definition_error);
             return;
         }
 
-        for (std::size_t shard_index = 0; shard_index < config_.pipeline.shard_count; ++shard_index) {
+        for (std::size_t shard_index = 0; shard_index < config_.pipeline.shard_count;
+             ++shard_index) {
             if (!event_stores_[shard_index].initialize(event_definitions_by_shard[shard_index])) {
                 init_ok_ = false;
-                error_ = "Failed to initialize event store for shard " +
-                    std::to_string(shard_index);
+                error_ =
+                    "Failed to initialize event store for shard " + std::to_string(shard_index);
                 return;
             }
         }
@@ -586,15 +566,9 @@ class ReplayRuntime {
         }
 
         shard_dispatch_ = std::make_unique<ShardDispatch>(shard_input_queue_ptrs_);
-        router_ = std::make_unique<Router>(
-            io_to_router_queue_,
-            frame_pool_,
-            market_registry_,
-            *shard_dispatch_,
-            router_to_logger_queue_,
-            router_audit_queue_.get(),
-            recycle_from_router_,
-            false);
+        router_ = std::make_unique<Router>(io_to_router_queue_, frame_pool_, market_registry_,
+                                           *shard_dispatch_, router_to_logger_queue_,
+                                           router_audit_queue_.get(), recycle_from_router_, false);
 
         predex::core::oms::kalshi::GlobalRiskLimits global_risk_limits{};
         global_risk_limits.available_capital_ticks = config_.oms_transport.available_capital_ticks;
@@ -619,16 +593,14 @@ class ReplayRuntime {
         audit_input_queue_ptrs.push_back(router_audit_queue_.get());
 
         oms_ = std::make_unique<Oms>(
-            shard_to_oms_intent_queue_ptrs,
-            oms_to_shard_decision_queue_ptrs,
+            shard_to_oms_intent_queue_ptrs, oms_to_shard_decision_queue_ptrs,
             oms_to_shard_lifecycle_queue_ptrs,
             predex::core::oms::kalshi::ExecutionTransportQueues{
                 .command_queues = {&oms_command_queue_},
                 .rest_event_queues = {&oms_rest_event_queue_},
                 .ws_event_queue = nullptr,
             },
-            global_risk_limits,
-            oms_audit_queue_.get(),
+            global_risk_limits, oms_audit_queue_.get(),
             [this](predex::internal::MarketId market_id) -> std::optional<std::string> {
                 const auto it = market_ticker_by_id_.find(market_id);
                 if (it == market_ticker_by_id_.end()) {
@@ -646,29 +618,25 @@ class ReplayRuntime {
         local_risk_limits.trading_enabled = config_.local_risk.trading_enabled;
 
         for (std::size_t i = 0; i < config_.pipeline.shard_count; ++i) {
-            shards_.push_back(std::make_unique<Shard>(
-                *shard_input_queues_[i],
-                frame_pool_,
-                *shard_to_logger_queues_[i],
-                *recycle_from_shards_[i],
-                event_stores_[i],
-                ShardPipeline{
-                    static_cast<std::uint16_t>(i),
-                    LocalRiskManager{local_risk_limits},
-                    shard_to_oms_intent_queues_[i].get(),
-                    oms_to_shard_decision_queues_[i].get(),
-                    oms_to_shard_lifecycle_queues_[i].get(),
-                    shard_audit_queues_[i].get(),
-                    MonotonicArbStrategy{},
-                    CdfViolationStrategy{},
-                    MarketMakingStrategy{},
-                    MeanReversionStrategy{},
-                }));
+            shards_.push_back(std::make_unique<Shard>(*shard_input_queues_[i], frame_pool_,
+                                                      *shard_to_logger_queues_[i],
+                                                      *recycle_from_shards_[i], event_stores_[i],
+                                                      ShardPipeline{
+                                                          static_cast<std::uint16_t>(i),
+                                                          LocalRiskManager{local_risk_limits},
+                                                          shard_to_oms_intent_queues_[i].get(),
+                                                          oms_to_shard_decision_queues_[i].get(),
+                                                          oms_to_shard_lifecycle_queues_[i].get(),
+                                                          shard_audit_queues_[i].get(),
+                                                          MonotonicArbStrategy{},
+                                                          CdfViolationStrategy{},
+                                                          MarketMakingStrategy{},
+                                                          MeanReversionStrategy{},
+                                                      }));
         }
 
-        audit_logger_ = std::make_unique<predex::core::audit::AuditLogger>(
-            audit_input_queue_ptrs,
-            audit_path_);
+        audit_logger_ =
+            std::make_unique<predex::core::audit::AuditLogger>(audit_input_queue_ptrs, audit_path_);
     }
 
     [[nodiscard]] bool drain_to_quiescence() {
@@ -747,22 +715,18 @@ class ReplayRuntime {
         const std::uint64_t total_frames = total_records_.value_or(0);
         const std::uint64_t remaining_frames =
             total_frames >= processed_frames ? total_frames - processed_frames : 0;
-        const auto elapsed_seconds =
-            start_time_.has_value()
-                ? std::chrono::duration_cast<std::chrono::seconds>(
-                      std::chrono::steady_clock::now() - *start_time_)
-                      .count()
-                : 0;
-        std::cout << "Replay status"
-                  << " | phase=" << phase
-                  << " | elapsed_s=" << elapsed_seconds
+        const auto elapsed_seconds = start_time_.has_value()
+                                         ? std::chrono::duration_cast<std::chrono::seconds>(
+                                               std::chrono::steady_clock::now() - *start_time_)
+                                               .count()
+                                         : 0;
+        std::cout << "Replay status" << " | phase=" << phase << " | elapsed_s=" << elapsed_seconds
                   << " | frames_processed=" << processed_frames
                   << " | frames_remaining=" << remaining_frames
                   << " | total_frames=" << total_frames
                   << " | router_frames=" << router_->telemetry().processed_frames_
                   << " | oms_requests=" << oms_->processed_shard_request_count()
-                  << " | oms_events=" << oms_->processed_kalshi_event_count()
-                  << '\n';
+                  << " | oms_events=" << oms_->processed_kalshi_event_count() << '\n';
         std::cout.flush();
     }
 };
@@ -775,13 +739,11 @@ std::optional<ReplayOptions> parse_options(int argc, char** argv, std::string& e
     }
 
     std::string config_error;
-    auto app_config = predex::apps::load_app_config(
-        *config_path,
-        config_error,
-        predex::apps::AppConfigParseOptions{
-            .require_credentials = false,
-            .require_public_channels = false,
-        });
+    auto app_config = predex::apps::load_app_config(*config_path, config_error,
+                                                    predex::apps::AppConfigParseOptions{
+                                                        .require_credentials = false,
+                                                        .require_public_channels = false,
+                                                    });
     if (!app_config.has_value()) {
         error_out = "Invalid replay config: " + config_error;
         return std::nullopt;
@@ -790,8 +752,8 @@ std::optional<ReplayOptions> parse_options(int argc, char** argv, std::string& e
     ReplayOptions options{
         .config_path = *config_path,
         .tape_path = find_arg_value(argc, argv, "--tape").value_or(app_config->tape.output_path),
-        .audit_path = find_arg_value(argc, argv, "--audit").value_or(
-            derive_replay_audit_path(app_config->audit.output_path)),
+        .audit_path = find_arg_value(argc, argv, "--audit")
+                          .value_or(derive_replay_audit_path(app_config->audit.output_path)),
     };
     if (options.tape_path.empty()) {
         error_out = "Replay tape path is empty. Use --tape <path> or configure tape.output_path.";
@@ -811,13 +773,11 @@ int main(int argc, char** argv) {
     }
 
     std::string config_error;
-    auto app_config = predex::apps::load_app_config(
-        options->config_path,
-        config_error,
-        predex::apps::AppConfigParseOptions{
-            .require_credentials = false,
-            .require_public_channels = false,
-        });
+    auto app_config = predex::apps::load_app_config(options->config_path, config_error,
+                                                    predex::apps::AppConfigParseOptions{
+                                                        .require_credentials = false,
+                                                        .require_public_channels = false,
+                                                    });
     if (!app_config.has_value()) {
         std::cerr << "Invalid replay config: " << config_error << '\n';
         return kExitConfigFailure;

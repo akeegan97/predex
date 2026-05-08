@@ -42,11 +42,16 @@ struct GatewayQueues {
 };
 
 struct GatewayConfig {
-    std::size_t hot_queue_capacity{1024};
-    std::size_t recovery_queue_capacity{256};
-    std::size_t reconcile_queue_capacity{256};
-    std::size_t post_write_recovery_attempts{3};
-    std::uint64_t post_write_recovery_backoff_ms{25};
+    inline constexpr static std::size_t kDefaultHotQueueCapacity = 1024;
+    inline constexpr static std::size_t kDefaultRecoveryQueueCapacity = 256;
+    inline constexpr static std::size_t kDefaultReconcileQueueCapacity = 256;
+    inline constexpr static std::size_t kDefaultPostWriteRecoveryAttempts = 3;
+    inline constexpr static std::uint64_t kDefaultPostWriteRecoveryBackoffMs = 25;
+    std::size_t hot_queue_capacity{kDefaultHotQueueCapacity};
+    std::size_t recovery_queue_capacity{kDefaultRecoveryQueueCapacity};
+    std::size_t reconcile_queue_capacity{kDefaultReconcileQueueCapacity};
+    std::size_t post_write_recovery_attempts{kDefaultPostWriteRecoveryAttempts};
+    std::uint64_t post_write_recovery_backoff_ms{kDefaultPostWriteRecoveryBackoffMs};
     std::size_t post_write_recovery_fetch_limit{
         predex::core::oms::kalshi::transport::kDefaultOpenOrderFetchLimit};
 };
@@ -89,14 +94,15 @@ struct GatewayTelemetry {
 
 class Gateway {
   public:
-    explicit Gateway(GatewayQueues queues,
-                     SessionPool session_pool,
-                     std::optional<transport::KalshiRestAdapter> recovery_rest_adapter = std::nullopt,
-                     GatewayConfig config = {})
+    explicit Gateway(
+        GatewayQueues queues, SessionPool session_pool,
+        std::optional<transport::KalshiRestAdapter> recovery_rest_adapter = std::nullopt,
+        GatewayConfig config = {})
         : queues_(queues),
           hot_envelope_queue_(std::make_unique<EnvelopeQueue>(config.hot_queue_capacity)),
           recovery_envelope_queue_(std::make_unique<EnvelopeQueue>(config.recovery_queue_capacity)),
-          reconcile_envelope_queue_(std::make_unique<EnvelopeQueue>(config.reconcile_queue_capacity)),
+          reconcile_envelope_queue_(
+              std::make_unique<EnvelopeQueue>(config.reconcile_queue_capacity)),
           hot_item_queue_(std::make_unique<ItemQueue>(config.hot_queue_capacity)),
           recovery_item_queue_(std::make_unique<ItemQueue>(config.recovery_queue_capacity)),
           reconcile_item_queue_(std::make_unique<ItemQueue>(config.reconcile_queue_capacity)),
@@ -108,46 +114,41 @@ class Gateway {
               std::make_unique<RequestQueue>(config.recovery_queue_capacity)),
           admitted_reconcile_request_queue_(
               std::make_unique<RequestQueue>(config.reconcile_queue_capacity)),
-          command_ingress_(
-              CommandIngressQueues{
-                  .oms_command_queue = queues_.oms_command_queue,
-                  .session_class_queues =
-                      SessionClassQueues{
-                          .hot_queue = hot_envelope_queue_.get(),
-                          .recovery_queue = recovery_envelope_queue_.get(),
-                          .reconcile_queue = reconcile_envelope_queue_.get(),
-                      },
-              }),
-          order_sequencer_(
-              OrderSequencerQueues{
-                  .hot_input_queue = hot_envelope_queue_.get(),
-                  .recovery_input_queue = recovery_envelope_queue_.get(),
-                  .reconcile_input_queue = reconcile_envelope_queue_.get(),
-                  .hot_output_queue = hot_item_queue_.get(),
-                  .recovery_output_queue = recovery_item_queue_.get(),
-                  .reconcile_output_queue = reconcile_item_queue_.get(),
-              }),
-          batch_planner_(
-              BatchPlannerQueues{
-                  .hot_input_queue = hot_item_queue_.get(),
-                  .recovery_input_queue = recovery_item_queue_.get(),
-                  .reconcile_input_queue = reconcile_item_queue_.get(),
-                  .hot_output_queue = hot_request_queue_.get(),
-                  .recovery_output_queue = recovery_request_queue_.get(),
-                  .reconcile_output_queue = reconcile_request_queue_.get(),
-              }),
-          rate_limiter_(
-              RateLimiterQueues{
-                  .hot_input_queue = hot_request_queue_.get(),
-                  .recovery_input_queue = recovery_request_queue_.get(),
-                  .reconcile_input_queue = reconcile_request_queue_.get(),
-                  .hot_output_queue = admitted_hot_request_queue_.get(),
-                  .recovery_output_queue = admitted_recovery_request_queue_.get(),
-                  .reconcile_output_queue = admitted_reconcile_request_queue_.get(),
-              }),
+          command_ingress_(CommandIngressQueues{
+              .oms_command_queue = queues_.oms_command_queue,
+              .session_class_queues =
+                  SessionClassQueues{
+                      .hot_queue = hot_envelope_queue_.get(),
+                      .recovery_queue = recovery_envelope_queue_.get(),
+                      .reconcile_queue = reconcile_envelope_queue_.get(),
+                  },
+          }),
+          order_sequencer_(OrderSequencerQueues{
+              .hot_input_queue = hot_envelope_queue_.get(),
+              .recovery_input_queue = recovery_envelope_queue_.get(),
+              .reconcile_input_queue = reconcile_envelope_queue_.get(),
+              .hot_output_queue = hot_item_queue_.get(),
+              .recovery_output_queue = recovery_item_queue_.get(),
+              .reconcile_output_queue = reconcile_item_queue_.get(),
+          }),
+          batch_planner_(BatchPlannerQueues{
+              .hot_input_queue = hot_item_queue_.get(),
+              .recovery_input_queue = recovery_item_queue_.get(),
+              .reconcile_input_queue = reconcile_item_queue_.get(),
+              .hot_output_queue = hot_request_queue_.get(),
+              .recovery_output_queue = recovery_request_queue_.get(),
+              .reconcile_output_queue = reconcile_request_queue_.get(),
+          }),
+          rate_limiter_(RateLimiterQueues{
+              .hot_input_queue = hot_request_queue_.get(),
+              .recovery_input_queue = recovery_request_queue_.get(),
+              .reconcile_input_queue = reconcile_request_queue_.get(),
+              .hot_output_queue = admitted_hot_request_queue_.get(),
+              .recovery_output_queue = admitted_recovery_request_queue_.get(),
+              .reconcile_output_queue = admitted_reconcile_request_queue_.get(),
+          }),
           session_pool_(std::move(session_pool)),
-          recovery_rest_adapter_(std::move(recovery_rest_adapter)),
-          config_(config) {}
+          recovery_rest_adapter_(std::move(recovery_rest_adapter)), config_(config) {}
 
     [[nodiscard]] bool pump_once() {
         bool made_progress = false;
@@ -211,23 +212,23 @@ class Gateway {
             try_take_admitted_request(DispatchClass::kReconcile, request)) {
             ++telemetry_.rate_limited_requests;
             switch (session_pool_.submit(request)) {
-                case SessionPoolSubmitResult::kAccepted:
-                    telemetry_.sequenced_items += request.item_count();
-                    ++telemetry_.submitted_to_session_pool;
-                    return true;
-                case SessionPoolSubmitResult::kNoIdleConnection:
-                case SessionPoolSubmitResult::kPoolUnavailable:
-                    requeue_request(std::move(request));
-                    ++telemetry_.session_pool_backpressure;
-                    return false;
-                case SessionPoolSubmitResult::kInvalidRequest:
-                    release_request_lineages(request);
-                    return true;
+            case SessionPoolSubmitResult::kAccepted:
+                telemetry_.sequenced_items += request.item_count();
+                ++telemetry_.submitted_to_session_pool;
+                return true;
+            case SessionPoolSubmitResult::kNoIdleConnection:
+            case SessionPoolSubmitResult::kPoolUnavailable:
+                requeue_request(std::move(request));
+                ++telemetry_.session_pool_backpressure;
+                return false;
+            case SessionPoolSubmitResult::kInvalidRequest:
+                release_request_lineages(request);
+                return true;
             }
         }
         return false;
     }
-
+//NOLINTNEXTLINE 
     [[nodiscard]] bool flush_session_pool_completions() {
         bool made_progress = false;
         while (auto completion = session_pool_.poll_completion()) {
@@ -263,18 +264,16 @@ class Gateway {
                 completion.completion.request.planned_ts_ns >= first_item_sequenced_ts_ns
                     ? completion.completion.request.planned_ts_ns - first_item_sequenced_ts_ns
                     : 0;
-            const auto queue_to_plan_ns =
-                completion.completion.request.planned_ts_ns >=
-                        completion.completion.request.queued_ts_ns
-                    ? completion.completion.request.planned_ts_ns -
-                          completion.completion.request.queued_ts_ns
-                    : 0;
-            const auto plan_to_admit_ns =
-                completion.completion.request.admitted_ts_ns >=
-                        completion.completion.request.planned_ts_ns
-                    ? completion.completion.request.admitted_ts_ns -
-                          completion.completion.request.planned_ts_ns
-                    : 0;
+            const auto queue_to_plan_ns = completion.completion.request.planned_ts_ns >=
+                                                  completion.completion.request.queued_ts_ns
+                                              ? completion.completion.request.planned_ts_ns -
+                                                    completion.completion.request.queued_ts_ns
+                                              : 0;
+            const auto plan_to_admit_ns = completion.completion.request.admitted_ts_ns >=
+                                                  completion.completion.request.planned_ts_ns
+                                              ? completion.completion.request.admitted_ts_ns -
+                                                    completion.completion.request.planned_ts_ns
+                                              : 0;
             const auto admit_to_start_ns =
                 completion.completion.request.connection_start_ts_ns >=
                         completion.completion.request.admitted_ts_ns
@@ -354,7 +353,8 @@ class Gateway {
 
     [[nodiscard]] static bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                                   internal::PriceTicks& out_ticks) {
-        constexpr std::uint64_t kDollarToTicksScale =
+        constexpr auto kScaleFactor = 10U;
+        constexpr auto kDollarToTicksScale =
             static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
         if (value.empty() || value.front() == '-' || value.front() == '+') {
             return false;
@@ -373,7 +373,7 @@ class Gateway {
             if (digit_char < '0' || digit_char > '9') {
                 return false;
             }
-            dollars = dollars * 10U + static_cast<std::uint64_t>(digit_char - '0');
+            dollars = dollars * kScaleFactor + static_cast<std::uint64_t>(digit_char - '0');
         }
 
         std::uint64_t subcent_units = 0;
@@ -384,18 +384,18 @@ class Gateway {
             if (frac_char < '0' || frac_char > '9') {
                 return false;
             }
-            subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_char - '0');
+            subcent_units = subcent_units * kScaleFactor + static_cast<std::uint64_t>(frac_char - '0');
         }
         for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
-            subcent_units *= 10U;
+            subcent_units *= kScaleFactor;
         }
 
-        out_ticks = static_cast<internal::PriceTicks>(dollars * kDollarToTicksScale + subcent_units);
+        out_ticks =
+            static_cast<internal::PriceTicks>(dollars * kDollarToTicksScale + subcent_units);
         return true;
     }
 
-    [[nodiscard]] static OmsOrderRef order_ref_for_command(
-        const OmsToKalshiCommand& command) {
+    [[nodiscard]] static OmsOrderRef order_ref_for_command(const OmsToKalshiCommand& command) {
         return std::visit(
             [](const auto& typed_command) -> OmsOrderRef {
                 using T = std::decay_t<decltype(typed_command)>;
@@ -408,32 +408,36 @@ class Gateway {
             command);
     }
 
-    [[nodiscard]] static const OmsOrderRef* order_ref_for_event(
-        const KalshiToOmsEvent& event) noexcept {
+    [[nodiscard]] static const OmsOrderRef*
+    order_ref_for_event(const KalshiToOmsEvent& event) noexcept {
         return std::visit(
-            [](const auto& typed_event) noexcept -> const OmsOrderRef* { return &typed_event.order; },
+            [](const auto& typed_event) noexcept -> const OmsOrderRef* {
+                return &typed_event.order;
+            },
             event);
     }
 
     [[nodiscard]] static std::string stable_order_key(const OmsOrderRef& order) {
-        if (!order.client_order_id.value.empty()) {
-            return "cid:" + order.client_order_id.value;
+        if (!order.client_order_id.empty()) {
+            return "cid:" + std::string{order.client_order_id.view()};
         }
-        if (order.exchange_order_id.has_value() && !order.exchange_order_id->value.empty()) {
-            return "xid:" + order.exchange_order_id->value;
+        if (order.exchange_order_id.has_value() && !order.exchange_order_id->empty()) {
+            return "xid:" + std::string{order.exchange_order_id->view()};
         }
         return "rid:" + std::to_string(order.oms_request_id);
     }
 
-    [[nodiscard]] static std::optional<ReconcileOpenOrderSnapshot> build_reconcile_snapshot(
-        const SubmitOrderCmd& command,
-        const transport::OpenOrderSnapshot& snapshot,
-        internal::TimestampNs recv_ts_ns) {
+    [[nodiscard]] static std::optional<ReconcileOpenOrderSnapshot>
+    build_reconcile_snapshot(const SubmitOrderCmd& command,
+                             const transport::OpenOrderSnapshot& snapshot,
+                             internal::TimestampNs recv_ts_ns) {
         internal::QtyLots initial_qty_lots = 0;
         internal::QtyLots working_qty_lots = 0;
         internal::QtyLots cumulative_filled_qty_lots = 0;
-        if (!internal::parse_non_negative_quantity_fp(snapshot.initial_count_fp, initial_qty_lots) ||
-            !internal::parse_non_negative_quantity_fp(snapshot.remaining_count_fp, working_qty_lots) ||
+        if (!internal::parse_non_negative_quantity_fp(snapshot.initial_count_fp,
+                                                      initial_qty_lots) ||
+            !internal::parse_non_negative_quantity_fp(snapshot.remaining_count_fp,
+                                                      working_qty_lots) ||
             !internal::parse_non_negative_quantity_fp(snapshot.fill_count_fp,
                                                       cumulative_filled_qty_lots)) {
             return std::nullopt;
@@ -441,24 +445,24 @@ class Gateway {
 
         std::optional<internal::PriceTicks> working_limit_price_ticks;
         internal::PriceTicks parsed_ticks = 0;
-        const std::string& price_text =
-            command.intent.outcome == Outcome::kYes ? snapshot.yes_price_dollars
-                                                    : snapshot.no_price_dollars;
+        const std::string& price_text = command.intent.outcome == Outcome::kYes
+                                            ? snapshot.yes_price_dollars
+                                            : snapshot.no_price_dollars;
         if (!price_text.empty() && parse_non_negative_dollars_to_ticks(price_text, parsed_ticks)) {
             working_limit_price_ticks = parsed_ticks;
         }
 
         OmsOrderRef order = command.order;
-        if (!snapshot.order.client_order_id.value.empty()) {
+        if (!snapshot.order.client_order_id.empty()) {
             order.client_order_id = snapshot.order.client_order_id;
         }
         if (snapshot.order.exchange_order_id.has_value() &&
-            !snapshot.order.exchange_order_id->value.empty()) {
+            !snapshot.order.exchange_order_id->empty()) {
             order.exchange_order_id = snapshot.order.exchange_order_id;
         }
 
         return ReconcileOpenOrderSnapshot{
-            .order = std::move(order),
+            .order = order,
             .context = command.intent.context,
             .exchange = command.intent.exchange,
             .side = command.intent.side,
@@ -470,7 +474,7 @@ class Gateway {
             .recv_ts_ns = recv_ts_ns,
         };
     }
-
+//NOLINTNEXTLINE
     void maybe_recover_post_write_unknown(DispatchCompletion& completion) {
         if (completion.terminal_state != DispatchRequestState::kPostWriteUnknown) {
             return;
@@ -501,39 +505,38 @@ class Gateway {
         }
 
         const internal::TimestampNs recovery_ts_ns = recovery_now_ns();
-        std::size_t unresolved_count = unresolved_submit_items.size() + unresolved_other_items.size();
+        std::size_t unresolved_count =
+            unresolved_submit_items.size() + unresolved_other_items.size();
 
         if (!unresolved_submit_items.empty()) {
             ++telemetry_.recovery_attempts;
-            const bool request_was_sent = completion.trace.has_value() &&
-                                          completion.trace->request_sent_ts_ns != 0;
+            const bool request_was_sent =
+                completion.trace.has_value() && completion.trace->request_sent_ts_ns != 0;
             std::unordered_map<std::string, transport::OpenOrderSnapshot> recovered_by_client_id;
             if (request_was_sent && recovery_rest_adapter_.has_value()) {
                 std::unordered_set<std::string> remaining_client_ids;
                 for (const auto* item : unresolved_submit_items) {
                     const auto& submit = std::get<SubmitOrderCmd>(item->command);
-                    if (!submit.order.client_order_id.value.empty()) {
-                        remaining_client_ids.insert(submit.order.client_order_id.value);
+                    if (!submit.order.client_order_id.empty()) {
+                        remaining_client_ids.insert(std::string{submit.order.client_order_id.view()});
                     }
                 }
 
-                for (std::size_t attempt = 0;
-                     attempt < config_.post_write_recovery_attempts &&
-                     !remaining_client_ids.empty();
+                for (std::size_t attempt = 0; attempt < config_.post_write_recovery_attempts &&
+                                              !remaining_client_ids.empty();
                      ++attempt) {
                     std::optional<std::string> cursor;
                     bool fetch_failed = false;
                     do {
                         auto page = recovery_rest_adapter_->fetch_open_orders(
-                            config_.post_write_recovery_fetch_limit,
-                            cursor);
+                            config_.post_write_recovery_fetch_limit, cursor);
                         if (!page.ok) {
                             fetch_failed = true;
                             ++telemetry_.recovery_failures;
                             break;
                         }
                         for (auto& snapshot : page.orders) {
-                            const auto& client_id = snapshot.order.client_order_id.value;
+                            const std::string client_id{snapshot.order.client_order_id.view()};
                             if (client_id.empty() || !remaining_client_ids.contains(client_id)) {
                                 continue;
                             }
@@ -548,8 +551,8 @@ class Gateway {
                         break;
                     }
                     if (config_.post_write_recovery_backoff_ms > 0) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds{
-                            config_.post_write_recovery_backoff_ms});
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds{config_.post_write_recovery_backoff_ms});
                     }
                 }
             }
@@ -557,11 +560,12 @@ class Gateway {
             for (const auto* item : unresolved_submit_items) {
                 const auto& submit = std::get<SubmitOrderCmd>(item->command);
                 const auto recovered_it =
-                    recovered_by_client_id.find(submit.order.client_order_id.value);
+                    recovered_by_client_id.find(std::string{submit.order.client_order_id.view()});
                 if (recovered_it != recovered_by_client_id.end()) {
                     if (auto snapshot =
                             build_reconcile_snapshot(submit, recovered_it->second, recovery_ts_ns);
                         snapshot.has_value()) {
+                            //NOLINTNEXTLINE 
                         completion.emitted_events.push_back(std::move(*snapshot));
                         ++telemetry_.recovery_resolved_items;
                         --unresolved_count;
@@ -569,7 +573,7 @@ class Gateway {
                     }
                     ++telemetry_.recovery_failures;
                 }
-                completion.emitted_events.push_back(VenueOrderUncertain{
+                completion.emitted_events.emplace_back(VenueOrderUncertain{
                     .order = submit.order,
                     .recv_ts_ns = recovery_ts_ns,
                 });
@@ -578,7 +582,7 @@ class Gateway {
         }
 
         for (const auto* item : unresolved_other_items) {
-            completion.emitted_events.push_back(VenueOrderUncertain{
+            completion.emitted_events.emplace_back(VenueOrderUncertain{
                 .order = order_ref_for_command(item->command),
                 .recv_ts_ns = recovery_ts_ns,
             });
@@ -637,27 +641,26 @@ class Gateway {
         }
     }
 
-    [[nodiscard]] std::deque<DispatchRequest>& pending_for_class(
-        DispatchClass dispatch_class) {
+    [[nodiscard]] std::deque<DispatchRequest>& pending_for_class(DispatchClass dispatch_class) {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return pending_hot_;
-            case DispatchClass::kRecovery:
-                return pending_recovery_;
-            case DispatchClass::kReconcile:
-                return pending_reconcile_;
+        case DispatchClass::kHot:
+            return pending_hot_;
+        case DispatchClass::kRecovery:
+            return pending_recovery_;
+        case DispatchClass::kReconcile:
+            return pending_reconcile_;
         }
         return pending_hot_;
     }
 
     [[nodiscard]] RequestQueue* admitted_queue_for_class(DispatchClass dispatch_class) noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return admitted_hot_request_queue_.get();
-            case DispatchClass::kRecovery:
-                return admitted_recovery_request_queue_.get();
-            case DispatchClass::kReconcile:
-                return admitted_reconcile_request_queue_.get();
+        case DispatchClass::kHot:
+            return admitted_hot_request_queue_.get();
+        case DispatchClass::kRecovery:
+            return admitted_recovery_request_queue_.get();
+        case DispatchClass::kReconcile:
+            return admitted_reconcile_request_queue_.get();
         }
         return nullptr;
     }

@@ -16,8 +16,7 @@ class CdfViolationStrategy {
     explicit CdfViolationStrategy(CdfViolationConfig config = {}) : config_(config) {}
 
     template <typename SignalSink>
-    void on_event(const AppliedEventUpdate& update,
-                  SignalSink& out_signals) noexcept {
+    void on_event(const AppliedEventUpdate& update, SignalSink& out_signals) noexcept {
         if (!config_.enabled ||
             update.event.topology_kind != internal::EventTopologyKind::kMonotonicChain) {
             return;
@@ -29,4 +28,4 @@ class CdfViolationStrategy {
     CdfViolationConfig config_{};
 };
 
-}  // namespace predex::core::shards::kalshi::strategies
+} // namespace predex::core::shards::kalshi::strategies

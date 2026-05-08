@@ -70,10 +70,10 @@
     "shard_to_logger_capacity": 8192
   },
   "tape": {
-    "output_path": "predex_tape.bin"
+    "output_path": "logs/live/predex_tape.bin"
   },
   "audit": {
-    "output_path": "predex_audit.jsonl"
+    "output_path": "logs/live/predex_audit.jsonl"
   },
   "oms_transport": {
     "enabled": false,

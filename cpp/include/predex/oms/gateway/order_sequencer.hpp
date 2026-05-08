@@ -109,9 +109,7 @@ class OrderSequencer {
         ++telemetry_.output_backpressure;
     }
 
-    [[nodiscard]] const OrderSequencerTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    [[nodiscard]] const OrderSequencerTelemetry& telemetry() const noexcept { return telemetry_; }
 
   private:
     struct PendingSequencedItem {
@@ -152,15 +150,15 @@ class OrderSequencer {
         return queue->try_push(std::move(item));
     }
 
-    [[nodiscard]] utils::SPSCQueue<DispatchItem>* output_queue_for_class(
-        DispatchClass dispatch_class) noexcept {
+    [[nodiscard]] utils::SPSCQueue<DispatchItem>*
+    output_queue_for_class(DispatchClass dispatch_class) noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return queues_.hot_output_queue;
-            case DispatchClass::kRecovery:
-                return queues_.recovery_output_queue;
-            case DispatchClass::kReconcile:
-                return queues_.reconcile_output_queue;
+        case DispatchClass::kHot:
+            return queues_.hot_output_queue;
+        case DispatchClass::kRecovery:
+            return queues_.recovery_output_queue;
+        case DispatchClass::kReconcile:
+            return queues_.reconcile_output_queue;
         }
         return nullptr;
     }

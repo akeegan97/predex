@@ -55,7 +55,8 @@ struct MarketLifecycleData {
     std::uint64_t close_ts_s{0};
 };
 
-using EventData = std::variant<std::monostate, SnapshotData, DeltaData, TradeData, MarketLifecycleData>;
+using EventData =
+    std::variant<std::monostate, SnapshotData, DeltaData, TradeData, MarketLifecycleData>;
 
 struct NormalizedEvent {
     EventType type{EventType::kUnknown};
@@ -73,9 +74,7 @@ struct NormalizedEvent {
         return std::nullopt;
     }
 
-    [[nodiscard]] bool has_event_context() const noexcept {
-        return meta.has_routing_identity();
-    }
+    [[nodiscard]] bool has_event_context() const noexcept { return meta.has_routing_identity(); }
 };
 
 } // namespace predex::internal

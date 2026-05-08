@@ -27,8 +27,7 @@ std::string mask_secret(std::string_view value) {
     if (value.size() <= 8) {
         return std::string(value.size(), '*');
     }
-    return std::string{value.substr(0, 4)} + "..." +
-        std::string{value.substr(value.size() - 4)};
+    return std::string{value.substr(0, 4)} + "..." + std::string{value.substr(value.size() - 4)};
 }
 
 std::string describe_pem_source(std::string_view value) {
@@ -53,7 +52,8 @@ void handle_shutdown_signal(int signal) {
 int main(int argc, char** argv) {
     const auto config_path = predex::apps::resolve_config_path(argc, argv);
     if (!config_path.has_value()) {
-        std::cerr << "Missing trader config path. Use --config <path> or set TRADING_CONFIG_PATH.\n";
+        std::cerr
+            << "Missing trader config path. Use --config <path> or set TRADING_CONFIG_PATH.\n";
         return kExitArgsFailure;
     }
 
@@ -68,10 +68,8 @@ int main(int argc, char** argv) {
               << " | ws_endpoint=" << app_config->kalshi_ws.endpoint
               << " | key_id=" << mask_secret(app_config->kalshi_ws.key_id)
               << " | private_key_source="
-              << describe_pem_source(app_config->kalshi_ws.private_key_pem)
-              << " | has_private_key="
-              << (!app_config->kalshi_ws.private_key_pem.empty() ? "true" : "false")
-              << '\n';
+              << describe_pem_source(app_config->kalshi_ws.private_key_pem) << " | has_private_key="
+              << (!app_config->kalshi_ws.private_key_pem.empty() ? "true" : "false") << '\n';
 
     std::signal(SIGINT, handle_shutdown_signal);
     std::signal(SIGTERM, handle_shutdown_signal);

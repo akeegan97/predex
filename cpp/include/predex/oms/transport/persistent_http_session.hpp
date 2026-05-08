@@ -60,9 +60,8 @@ struct AsyncHttpPollResult {
 // but it should not know anything about OMS order commands or venue events.
 class PersistentHttpSession {
   public:
-    explicit PersistentHttpSession(
-        predex::websocket::kalshi::AuthSigner signer,
-        std::string endpoint = "https://api.elections.kalshi.com");
+    explicit PersistentHttpSession(predex::websocket::kalshi::AuthSigner signer,
+                                   std::string endpoint = "https://api.elections.kalshi.com");
     ~PersistentHttpSession();
 
     PersistentHttpSession(const PersistentHttpSession&) = delete;
@@ -107,17 +106,16 @@ class PersistentHttpSession {
     void close_connection_() noexcept;
     void reset_async_request_() noexcept;
 
-    [[nodiscard]] static bool parse_endpoint(std::string_view endpoint,
-                                            EndpointParts& out,
-                                            std::string& error);
+    [[nodiscard]] static bool parse_endpoint(std::string_view endpoint, EndpointParts& out,
+                                             std::string& error);
     void begin_async_request_(HttpRequest request);
     void begin_async_write_();
     void complete_async_request_(HttpResponse response) noexcept;
-    [[nodiscard]] HttpResponse build_disconnected_response_(
-        std::string error_message) const noexcept;
-    [[nodiscard]] HttpResponse build_transport_error_response_(
-        std::string error_message,
-        internal::TimestampNs request_sent_ts_ns) const noexcept;
+    [[nodiscard]] HttpResponse
+    build_disconnected_response_(std::string error_message) const noexcept;
+    [[nodiscard]] HttpResponse
+    build_transport_error_response_(std::string error_message,
+                                    internal::TimestampNs request_sent_ts_ns) const noexcept;
     [[nodiscard]] HttpResponse send_json_request_once_(const HttpRequest& request);
     [[nodiscard]] HttpResponse run_async_request_to_completion_(HttpRequest request);
     [[nodiscard]] std::string build_request_target_(std::string_view target) const;

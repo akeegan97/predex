@@ -14,9 +14,8 @@ struct AppConfigParseOptions {
 
 [[nodiscard]] std::optional<std::string> resolve_config_path(int argc, char** argv);
 
-[[nodiscard]] std::optional<AppConfig> load_app_config(
-    const std::string& config_path,
-    std::string& error_out,
-    AppConfigParseOptions options = {});
+[[nodiscard]] std::optional<AppConfig> load_app_config(const std::string& config_path,
+                                                       std::string& error_out,
+                                                       AppConfigParseOptions options = {});
 
 } // namespace predex::apps

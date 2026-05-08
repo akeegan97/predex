@@ -37,8 +37,9 @@ predex::websocket::adapter::ConnectRequest WsAdapter::build_connect_request() co
     };
 }
 
-std::string WsAdapter::build_subscribe_message(
-    std::string_view channel, const std::vector<std::string>& market_tickers) const {
+std::string
+WsAdapter::build_subscribe_message(std::string_view channel,
+                                   const std::vector<std::string>& market_tickers) const {
     nlohmann::json params{{"channels", {channel}}};
     if (!market_tickers.empty()) {
         params["market_tickers"] = market_tickers;

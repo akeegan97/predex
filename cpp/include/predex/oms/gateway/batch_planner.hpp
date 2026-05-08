@@ -70,9 +70,7 @@ class BatchPlanner {
         return emit_or_buffer(make_singleton_request(std::move(item)));
     }
 
-    [[nodiscard]] const BatchPlannerTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    [[nodiscard]] const BatchPlannerTelemetry& telemetry() const noexcept { return telemetry_; }
 
   private:
     struct PendingGroup {
@@ -165,7 +163,8 @@ class BatchPlanner {
             pending.execution_policy = batch_group.execution_policy;
             pending.earliest_ingress_ts_ns = item.ingress_ts_ns;
             pending.legs.resize(batch_group.group_key.expected_leg_count);
-        } else if (pending.group_key.expected_leg_count != batch_group.group_key.expected_leg_count ||
+        } else if (pending.group_key.expected_leg_count !=
+                       batch_group.group_key.expected_leg_count ||
                    pending.execution_policy != batch_group.execution_policy ||
                    pending.dispatch_class != item.dispatch_class ||
                    batch_group.leg_index >= pending.legs.size()) {
@@ -173,10 +172,10 @@ class BatchPlanner {
             return emit_or_buffer(make_singleton_request(std::move(item)));
         }
 
-        pending.earliest_ingress_ts_ns = pending.earliest_ingress_ts_ns == 0
-                                             ? item.ingress_ts_ns
-                                             : std::min(pending.earliest_ingress_ts_ns,
-                                                        item.ingress_ts_ns);
+        pending.earliest_ingress_ts_ns =
+            pending.earliest_ingress_ts_ns == 0
+                ? item.ingress_ts_ns
+                : std::min(pending.earliest_ingress_ts_ns, item.ingress_ts_ns);
 
         if (!pending.legs[batch_group.leg_index].has_value()) {
             ++pending.filled_legs;
@@ -193,18 +192,19 @@ class BatchPlanner {
             .dispatch_class = pending.dispatch_class,
             .batch_kind = DispatchBatchKind::kGroupedSubmit,
             .state = DispatchRequestState::kQueued,
-            .budget_cost =
-                DispatchBudgetCost{.transaction_units = static_cast<std::uint32_t>(pending.legs.size())},
+            .budget_cost = DispatchBudgetCost{.transaction_units =
+                                                  static_cast<std::uint32_t>(pending.legs.size())},
             .queued_ts_ns = pending.earliest_ingress_ts_ns,
             .planned_ts_ns = gateway_now_ns(),
             .admitted_ts_ns = 0,
             .session_submit_ts_ns = 0,
             .connection_start_ts_ns = 0,
             .group_key = pending.group_key,
-            .batch_group = BatchGroupRequestMetadata{
-                .group_key = pending.group_key,
-                .execution_policy = pending.execution_policy,
-            },
+            .batch_group =
+                BatchGroupRequestMetadata{
+                    .group_key = pending.group_key,
+                    .execution_policy = pending.execution_policy,
+                },
         };
 
         request.items.reserve(pending.legs.size());
@@ -233,40 +233,38 @@ class BatchPlanner {
             .session_submit_ts_ns = 0,
             .connection_start_ts_ns = 0,
             .group_key = item.group_key,
-            .batch_group =
-                item.batch_group.has_value()
-                    ? std::optional<BatchGroupRequestMetadata>(BatchGroupRequestMetadata{
-                          .group_key = item.batch_group->group_key,
-                          .execution_policy = item.batch_group->execution_policy,
-                      })
-                    : std::nullopt,
+            .batch_group = item.batch_group.has_value()
+                               ? std::optional<BatchGroupRequestMetadata>(BatchGroupRequestMetadata{
+                                     .group_key = item.batch_group->group_key,
+                                     .execution_policy = item.batch_group->execution_policy,
+                                 })
+                               : std::nullopt,
         };
         request.items.push_back(std::move(item));
         return request;
     }
 
-    [[nodiscard]] std::deque<DispatchRequest>& ready_queue_for_class(
-        DispatchClass dispatch_class) {
+    [[nodiscard]] std::deque<DispatchRequest>& ready_queue_for_class(DispatchClass dispatch_class) {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return ready_hot_;
-            case DispatchClass::kRecovery:
-                return ready_recovery_;
-            case DispatchClass::kReconcile:
-                return ready_reconcile_;
+        case DispatchClass::kHot:
+            return ready_hot_;
+        case DispatchClass::kRecovery:
+            return ready_recovery_;
+        case DispatchClass::kReconcile:
+            return ready_reconcile_;
         }
         return ready_hot_;
     }
 
-    [[nodiscard]] utils::SPSCQueue<DispatchRequest>* output_queue_for_class(
-        DispatchClass dispatch_class) noexcept {
+    [[nodiscard]] utils::SPSCQueue<DispatchRequest>*
+    output_queue_for_class(DispatchClass dispatch_class) noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return queues_.hot_output_queue;
-            case DispatchClass::kRecovery:
-                return queues_.recovery_output_queue;
-            case DispatchClass::kReconcile:
-                return queues_.reconcile_output_queue;
+        case DispatchClass::kHot:
+            return queues_.hot_output_queue;
+        case DispatchClass::kRecovery:
+            return queues_.recovery_output_queue;
+        case DispatchClass::kReconcile:
+            return queues_.reconcile_output_queue;
         }
         return nullptr;
     }

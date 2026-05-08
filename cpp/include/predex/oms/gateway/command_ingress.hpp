@@ -70,9 +70,7 @@ class CommandIngress {
         return emit_envelope(std::move(envelope));
     }
 
-    [[nodiscard]] const CommandIngressTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    [[nodiscard]] const CommandIngressTelemetry& telemetry() const noexcept { return telemetry_; }
 
   private:
     CommandIngressQueues queues_{};
@@ -81,21 +79,21 @@ class CommandIngress {
     DispatchItemId next_dispatch_item_id_{1};
     LineageId next_lineage_id_{1};
 
-    [[nodiscard]] static internal::TimestampNs ingress_timestamp_for(
-        const OmsToKalshiCommand& command) noexcept {
+    [[nodiscard]] static internal::TimestampNs
+    ingress_timestamp_for(const OmsToKalshiCommand& command) noexcept {
         return std::visit(
             [](const auto& typed_command) noexcept -> internal::TimestampNs {
                 using T = std::decay_t<decltype(typed_command)>;
                 return typed_command.transport_enqueue_ts_ns != 0
-                    ? typed_command.transport_enqueue_ts_ns
-                    : ([](const auto& fallback_command) noexcept -> internal::TimestampNs {
-                          using U = std::decay_t<decltype(fallback_command)>;
-                          if constexpr (std::is_same_v<U, SubmitOrderCmd>) {
-                              return fallback_command.intent.intent_ts_ns;
-                          } else {
-                              return fallback_command.cmd_ts_ns;
-                          }
-                      })(typed_command);
+                           ? typed_command.transport_enqueue_ts_ns
+                           : ([](const auto& fallback_command) noexcept -> internal::TimestampNs {
+                                 using U = std::decay_t<decltype(fallback_command)>;
+                                 if constexpr (std::is_same_v<U, SubmitOrderCmd>) {
+                                     return fallback_command.intent.intent_ts_ns;
+                                 } else {
+                                     return fallback_command.cmd_ts_ns;
+                                 }
+                             })(typed_command);
             },
             command);
     }
@@ -113,28 +111,28 @@ class CommandIngress {
         }
 
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                ++telemetry_.emitted_hot_requests;
-                break;
-            case DispatchClass::kRecovery:
-                ++telemetry_.emitted_recovery_requests;
-                break;
-            case DispatchClass::kReconcile:
-                ++telemetry_.emitted_reconcile_requests;
-                break;
+        case DispatchClass::kHot:
+            ++telemetry_.emitted_hot_requests;
+            break;
+        case DispatchClass::kRecovery:
+            ++telemetry_.emitted_recovery_requests;
+            break;
+        case DispatchClass::kReconcile:
+            ++telemetry_.emitted_reconcile_requests;
+            break;
         }
         return true;
     }
 
-    [[nodiscard]] utils::SPSCQueue<CommandEnvelope>* queue_for_class(
-        DispatchClass dispatch_class) noexcept {
+    [[nodiscard]] utils::SPSCQueue<CommandEnvelope>*
+    queue_for_class(DispatchClass dispatch_class) noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return queues_.session_class_queues.hot_queue;
-            case DispatchClass::kRecovery:
-                return queues_.session_class_queues.recovery_queue;
-            case DispatchClass::kReconcile:
-                return queues_.session_class_queues.reconcile_queue;
+        case DispatchClass::kHot:
+            return queues_.session_class_queues.hot_queue;
+        case DispatchClass::kRecovery:
+            return queues_.session_class_queues.recovery_queue;
+        case DispatchClass::kReconcile:
+            return queues_.session_class_queues.reconcile_queue;
         }
         return nullptr;
     }

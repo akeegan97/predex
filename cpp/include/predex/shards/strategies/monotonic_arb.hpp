@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -22,25 +21,28 @@ inline constexpr std::int64_t kMinEdgeTicks = 20;
 inline constexpr std::uint64_t kNanosecPerSec = 1'000'000'000ULL;
 
 struct MonotonicArbConfig {
+    inline constexpr static std::int64_t kMaxTopGapTicks = 20;
+    inline constexpr static std::int64_t kMaxEasierAggressionTicks = 30;
+    inline constexpr static std::int64_t kMaxHarderAggressionTicks = 30;
+    inline constexpr static std::uint16_t kMinNearTopLevels = 2;
+    inline constexpr static std::int64_t kTopDepthWindowTicks = 20;
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
     bool bounded_harder_aggression_enabled{true};
     bool bounded_easier_aggression_enabled{true};
     bool require_top_gap_continuity{true};
-    internal::PriceTicks max_top_gap_ticks{20};
+    internal::PriceTicks max_top_gap_ticks{kMaxTopGapTicks};
     bool require_near_top_multilevel_support{true};
-    internal::PriceTicks near_top_depth_window_ticks{20};
-    std::uint16_t min_near_top_levels{2};
-    internal::PriceTicks max_easier_aggression_ticks{30};
-    internal::PriceTicks max_harder_aggression_ticks{30};
+    internal::PriceTicks near_top_depth_window_ticks{kTopDepthWindowTicks};
+    std::uint16_t min_near_top_levels{kMinNearTopLevels};
+    internal::PriceTicks max_easier_aggression_ticks{kMaxEasierAggressionTicks};
+    internal::PriceTicks max_harder_aggression_ticks{kMaxHarderAggressionTicks};
     std::size_t max_easier_book_levels{3};
     std::size_t max_harder_book_levels{3};
     bool require_full_easier_depth_for_qty{true};
     bool require_full_harder_depth_for_qty{true};
     bool enabled{true};
 };
-
-
 
 class MonotonicArbStrategy {
   public:
@@ -63,30 +65,29 @@ class MonotonicArbStrategy {
             return;
         }
 
-// Kalshi emits no WebSocket event at natural close_time, so markets can transition out
-// of tradeable state without notification. A live half-fill incident at near-close
-// motivated adding strategy-time tradeability checks rather than relying on
-// venue-driven deactivation.
-//
-// Using update.update.meta.recv_ns instead of system_clock::now() keeps decisions
-// deterministic across replay and avoids a syscall on the hot path. Pipeline latency
-// is sub-millisecond, well below close_time's second-resolution grain.
+        // Kalshi emits no WebSocket event at natural close_time, so markets can transition out
+        // of tradeable state without notification. A live half-fill incident at near-close
+        // motivated adding strategy-time tradeability checks rather than relying on
+        // venue-driven deactivation.
+        //
+        // Using update.update.meta.recv_ns instead of system_clock::now() keeps decisions
+        // deterministic across replay and avoids a syscall on the hot path. Pipeline latency
+        // is sub-millisecond, well below close_time's second-resolution grain.
 
         const auto now_s = static_cast<std::uint64_t>(update.update.meta.recv_ns / kNanosecPerSec);
-        
 
         std::optional<GroupSignal> best_signal;
         const std::size_t index = market_index->second;
         if (index > 0) {
-            best_signal = evaluate_pair(chain->markets[index - 1], chain->markets[index],
-                                        update, now_s);
+            best_signal =
+                evaluate_pair(chain->markets[index - 1], chain->markets[index], update, now_s);
         }
         if (index + 1 < chain->markets.size()) {
-            auto candidate = evaluate_pair(chain->markets[index], chain->markets[index + 1],
-                                           update, now_s);
+            auto candidate =
+                evaluate_pair(chain->markets[index], chain->markets[index + 1], update, now_s);
             if (candidate.has_value() &&
                 (!best_signal.has_value() || candidate->score > best_signal->score)) {
-                //NOLINTNEXTLINE(performance-move-const-arg)
+                // NOLINTNEXTLINE(performance-move-const-arg)
                 best_signal = std::move(candidate);
             }
         }
@@ -104,30 +105,20 @@ class MonotonicArbStrategy {
         internal::QtyLots cumulative_qty_lots{0};
         bool bounded_aggression_applied{false};
     };
-    template <std::size_t Depth>
-    struct LegSelectionBuffer{
+    template <std::size_t Depth> struct LegSelectionBuffer {
         std::array<LegSelection, Depth> entries{};
         std::size_t count{0};
 
         void push(const LegSelection& selection) noexcept {
-            if(count < Depth){
+            if (count < Depth) {
                 entries[count++] = selection;
             }
         }
 
-        [[nodiscard]] bool empty() const noexcept {
-            return count == 0;
-        }
-        [[nodiscard]] std::size_t size() const noexcept {
-            return count;
-        }
-        [[nodiscard]] const LegSelection* begin() const noexcept{
-            return entries.data();
-        }
-        [[nodiscard]] const LegSelection* end() const noexcept{
-            return entries.data() + count;
-        }
-
+        [[nodiscard]] bool empty() const noexcept { return count == 0; }
+        [[nodiscard]] std::size_t size() const noexcept { return count; }
+        [[nodiscard]] const LegSelection* begin() const noexcept { return entries.data(); }
+        [[nodiscard]] const LegSelection* end() const noexcept { return entries.data() + count; }
     };
     static constexpr std::size_t kMaxBookLevelScan = 10;
 
@@ -135,10 +126,8 @@ class MonotonicArbStrategy {
     std::uint64_t next_signal_id_{1};
 
     [[nodiscard]] static internal::PriceTicks fee_ticks_(
-        //NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-        double fee_rate,
-        internal::PriceTicks price_ticks,
-        internal::QtyLots qty) noexcept {
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+        double fee_rate, internal::PriceTicks price_ticks, internal::QtyLots qty) noexcept {
         if (qty <= 0 || price_ticks <= 0 ||
             price_ticks >= static_cast<internal::PriceTicks>(kPriceScale)) {
             return 0;
@@ -151,50 +140,47 @@ class MonotonicArbStrategy {
         return static_cast<internal::PriceTicks>(fee_cents) * kTicksPerCent;
     }
 
-    [[nodiscard]] static internal::PriceTicks taker_fee_ticks_(
-        internal::PriceTicks price_ticks,
-        internal::QtyLots qty) noexcept {
+    [[nodiscard]] static internal::PriceTicks taker_fee_ticks_(internal::PriceTicks price_ticks,
+                                                               internal::QtyLots qty) noexcept {
         return fee_ticks_(kTakerFeeRate, price_ticks, qty);
     }
 
-    [[nodiscard]] static internal::PriceTicks maker_fee_ticks_(
-        internal::PriceTicks price_ticks,
-        internal::QtyLots qty) noexcept {
+    [[nodiscard]] static internal::PriceTicks maker_fee_ticks_(internal::PriceTicks price_ticks,
+                                                               internal::QtyLots qty) noexcept {
         return fee_ticks_(kMakerFeeRate, price_ticks, qty);
     }
 
-    [[nodiscard]] static std::optional<internal::PriceTicks> best_bid_ticks_(
-        const EventMarketView& market) noexcept {
+    [[nodiscard]] static std::optional<internal::PriceTicks>
+    best_bid_ticks_(const EventMarketView& market) noexcept {
         return market.depth.bids[0].price_ticks;
     }
 
-    [[nodiscard]] static std::optional<internal::QtyLots> best_bid_qty_(
-        const EventMarketView& market) noexcept {
+    [[nodiscard]] static std::optional<internal::QtyLots>
+    best_bid_qty_(const EventMarketView& market) noexcept {
         return market.depth.bids[0].qty_lots;
     }
 
-    [[nodiscard]] static std::optional<internal::PriceTicks> best_ask_ticks_(
-        const EventMarketView& market) noexcept {
+    [[nodiscard]] static std::optional<internal::PriceTicks>
+    best_ask_ticks_(const EventMarketView& market) noexcept {
         return market.depth.asks[0].price_ticks;
     }
 
-    [[nodiscard]] static std::optional<internal::QtyLots> best_ask_qty_(
-        const EventMarketView& market) noexcept {
+    [[nodiscard]] static std::optional<internal::QtyLots>
+    best_ask_qty_(const EventMarketView& market) noexcept {
         return market.depth.asks[0].qty_lots;
     }
 
-    [[nodiscard]] internal::PriceTicks net_edge_ticks_for_pair_(
-        internal::PriceTicks easier_buy_ticks,
-        internal::PriceTicks harder_sell_ticks,
-        internal::QtyLots executable_qty) const noexcept {
+    [[nodiscard]] internal::PriceTicks
+    net_edge_ticks_for_pair_(internal::PriceTicks easier_buy_ticks,
+                             internal::PriceTicks harder_sell_ticks,
+                             internal::QtyLots executable_qty) const noexcept {
         if (easier_buy_ticks <= 0 || harder_sell_ticks <= easier_buy_ticks || executable_qty <= 0) {
             return std::numeric_limits<internal::PriceTicks>::min();
         }
 
         const internal::PriceTicks gross_edge_per_contract = harder_sell_ticks - easier_buy_ticks;
-        const internal::PriceTicks gross_edge_ticks =
-            static_cast<internal::PriceTicks>(
-                internal::scale_ticks_by_qty_floor(gross_edge_per_contract, executable_qty));
+        const auto gross_edge_ticks = static_cast<internal::PriceTicks>(
+            internal::scale_ticks_by_qty_floor(gross_edge_per_contract, executable_qty));
         const internal::PriceTicks total_fees_ticks =
             taker_fee_ticks_(easier_buy_ticks, executable_qty) +
             taker_fee_ticks_(harder_sell_ticks, executable_qty);
@@ -202,9 +188,9 @@ class MonotonicArbStrategy {
     }
 
     template <std::size_t Depth>
-    [[nodiscard]] std::pair<std::uint16_t, internal::QtyLots> near_top_support_(
-        const std::array<SideDepthLevel, Depth>& levels,
-        bool descending_prices) const noexcept {
+    [[nodiscard]] std::pair<std::uint16_t, internal::QtyLots>
+    near_top_support_(const std::array<SideDepthLevel, Depth>& levels,
+                      bool descending_prices) const noexcept {
         std::optional<internal::PriceTicks> top_price_ticks;
         std::uint16_t level_count = 0;
         internal::QtyLots cumulative_qty_lots = 0;
@@ -221,10 +207,9 @@ class MonotonicArbStrategy {
                 top_price_ticks = price_ticks;
             } else {
                 const internal::PriceTicks distance_ticks = descending_prices
-                    ? (*top_price_ticks - price_ticks)
-                    : (price_ticks - *top_price_ticks);
-                if (distance_ticks < 0 ||
-                    distance_ticks > config_.near_top_depth_window_ticks) {
+                                                                ? (*top_price_ticks - price_ticks)
+                                                                : (price_ticks - *top_price_ticks);
+                if (distance_ticks < 0 || distance_ticks > config_.near_top_depth_window_ticks) {
                     break;
                 }
             }
@@ -237,24 +222,21 @@ class MonotonicArbStrategy {
     }
 
     template <std::size_t Depth>
-    [[nodiscard]] bool has_near_top_support_(
-        const std::array<SideDepthLevel, Depth>& levels,
-        bool descending_prices,
-        internal::QtyLots executable_qty) const noexcept {
+    [[nodiscard]] bool has_near_top_support_(const std::array<SideDepthLevel, Depth>& levels,
+                                             bool descending_prices,
+                                             internal::QtyLots executable_qty) const noexcept {
         if (!config_.require_near_top_multilevel_support) {
             return true;
         }
 
         const auto [level_count, cumulative_qty_lots] =
             near_top_support_(levels, descending_prices);
-        return level_count >= config_.min_near_top_levels &&
-               cumulative_qty_lots >= executable_qty;
+        return level_count >= config_.min_near_top_levels && cumulative_qty_lots >= executable_qty;
     }
 
     template <std::size_t Depth>
-    [[nodiscard]] bool top_gap_within_limit_(
-        const std::array<SideDepthLevel, Depth>& levels,
-        bool descending_prices) const noexcept {
+    [[nodiscard]] bool top_gap_within_limit_(const std::array<SideDepthLevel, Depth>& levels,
+                                             bool descending_prices) const noexcept {
         if (!config_.require_top_gap_continuity || config_.max_top_gap_ticks <= 0) {
             return true;
         }
@@ -281,125 +263,125 @@ class MonotonicArbStrategy {
             return false;
         }
 
-        const internal::PriceTicks gap_ticks = descending_prices
-            ? (*first_price - *second_price)
-            : (*second_price - *first_price);
+        const internal::PriceTicks gap_ticks =
+            descending_prices ? (*first_price - *second_price) : (*second_price - *first_price);
         return gap_ticks >= 0 && gap_ticks <= config_.max_top_gap_ticks;
     }
 
+    [[nodiscard]] LegSelectionBuffer<kMaxBookLevelScan>
+    collect_easier_buy_candidates_(const EventMarketView& easier_market,
+                                   internal::QtyLots executable_qty) const noexcept {
+        const auto easier_ask = best_ask_ticks_(easier_market);
+        if (!easier_ask.has_value()) {
+            return {};
+        }
+        LegSelectionBuffer<kMaxBookLevelScan> candidates{};
+        LegSelection selection{
+            .observed_top_ticks = *easier_ask,
+            .chosen_limit_ticks = *easier_ask,
+            .scanned_levels = 0,
+            .cumulative_qty_lots = 0,
+            .bounded_aggression_applied = false,
+        };
 
-    [[nodiscard]] LegSelectionBuffer<kMaxBookLevelScan> collect_easier_buy_candidates_(
-        const EventMarketView& easier_market,
-        internal::QtyLots executable_qty) const noexcept {
-            const auto easier_ask = best_ask_ticks_(easier_market);
-            if(!easier_ask.has_value()){
-                return{};
+        const std::size_t max_levels =
+            std::min<std::size_t>(config_.max_easier_book_levels,
+                                  std::min(easier_market.depth.asks.size(), kMaxBookLevelScan));
+
+        internal::PriceTicks previous_price_ticks = *easier_ask;
+        for (std::size_t level_index = 0; level_index < max_levels; ++level_index) {
+            const auto& level = easier_market.depth.asks[level_index];
+            if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
+                *level.qty_lots <= 0) {
+                break;
             }
-            LegSelectionBuffer<kMaxBookLevelScan> candidates{};
-            LegSelection selection{
-                .observed_top_ticks = *easier_ask,
-                .chosen_limit_ticks = *easier_ask,
-                .scanned_levels = 0,
-                .cumulative_qty_lots = 0,
-                .bounded_aggression_applied = false,
-            };
 
-            const std::size_t max_levels = std::min<std::size_t>(
-                config_.max_easier_book_levels,
-                std::min(
-                    easier_market.depth.asks.size(),
-                    kMaxBookLevelScan
-                )
-            );
-
-            internal::PriceTicks previous_price_ticks = *easier_ask;
-            for(std::size_t level_index = 0; level_index < max_levels; ++level_index){
-                const auto& level = easier_market.depth.asks[level_index];
-                if(!level.price_ticks.has_value() || !level.qty_lots.has_value() || 
-                    *level.qty_lots <= 0){
-                        break;
+            const internal::PriceTicks candidate_ticks = *level.price_ticks;
+            if (level_index > 0 && config_.require_top_gap_continuity) {
+                const internal::PriceTicks gap_ticks = candidate_ticks - previous_price_ticks;
+                if (gap_ticks < 0 || gap_ticks > config_.max_top_gap_ticks) {
+                    break;
                 }
-
-                const internal::PriceTicks candidate_ticks = *level.price_ticks;
-                if(level_index > 0 && config_.require_top_gap_continuity){
-                    const internal::PriceTicks gap_ticks = candidate_ticks - previous_price_ticks;
-                    if(gap_ticks < 0 || gap_ticks > config_.max_top_gap_ticks){
-                        break;
-                    }
-                }
-                selection.scanned_levels = static_cast<std::uint16_t>(level_index+1);
-                selection.cumulative_qty_lots += *level.qty_lots;
-                previous_price_ticks = candidate_ticks;
-                
-                const internal::PriceTicks aggression_ticks = candidate_ticks - *easier_ask;
-                if(aggression_ticks < 0 || (!config_.bounded_easier_aggression_enabled && aggression_ticks > 0)
-                    || aggression_ticks > config_.max_easier_aggression_ticks){
-                        break;
-                }
-                if(config_.require_full_easier_depth_for_qty && selection.cumulative_qty_lots < executable_qty){
-                    continue;
-                }
-                selection.chosen_limit_ticks = candidate_ticks;
-                selection.bounded_aggression_applied = selection.chosen_limit_ticks != selection.observed_top_ticks;
-                candidates.push(selection);
             }
-            return candidates;
+            selection.scanned_levels = static_cast<std::uint16_t>(level_index + 1);
+            selection.cumulative_qty_lots += *level.qty_lots;
+            previous_price_ticks = candidate_ticks;
+
+            const internal::PriceTicks aggression_ticks = candidate_ticks - *easier_ask;
+            if (aggression_ticks < 0 ||
+                (!config_.bounded_easier_aggression_enabled && aggression_ticks > 0) ||
+                aggression_ticks > config_.max_easier_aggression_ticks) {
+                break;
+            }
+            if (config_.require_full_easier_depth_for_qty &&
+                selection.cumulative_qty_lots < executable_qty) {
+                continue;
+            }
+            selection.chosen_limit_ticks = candidate_ticks;
+            selection.bounded_aggression_applied =
+                selection.chosen_limit_ticks != selection.observed_top_ticks;
+            candidates.push(selection);
+        }
+        return candidates;
     }
 
-
-    [[nodiscard]] LegSelectionBuffer<kMaxBookLevelScan> collect_harder_sell_candidates_(
-        const EventMarketView& harder_market,
-        internal::QtyLots executable_qty) const noexcept{
-            const auto harder_bid = best_bid_ticks_(harder_market);
-            if(!harder_bid.has_value()){
-                return {};
+    [[nodiscard]] LegSelectionBuffer<kMaxBookLevelScan>
+    collect_harder_sell_candidates_(const EventMarketView& harder_market,
+                                    internal::QtyLots executable_qty) const noexcept {
+        const auto harder_bid = best_bid_ticks_(harder_market);
+        if (!harder_bid.has_value()) {
+            return {};
+        }
+        LegSelectionBuffer<kMaxBookLevelScan> candidates{};
+        LegSelection selection{
+            .observed_top_ticks = *harder_bid,
+            .chosen_limit_ticks = *harder_bid,
+            .scanned_levels = 0,
+            .cumulative_qty_lots = 0,
+            .bounded_aggression_applied = false,
+        };
+        const std::size_t max_levels =
+            std::min<std::size_t>(config_.max_harder_book_levels,
+                                  std::min(harder_market.depth.bids.size(), kMaxBookLevelScan));
+        internal::PriceTicks previous_price_ticks = *harder_bid;
+        for (std::size_t level_index = 0; level_index < max_levels; ++level_index) {
+            const auto& level = harder_market.depth.bids[level_index];
+            if (!level.price_ticks.has_value() || !level.qty_lots.has_value() ||
+                *level.qty_lots <= 0) {
+                break;
             }
-            LegSelectionBuffer<kMaxBookLevelScan> candidates{};
-            LegSelection selection{
-                .observed_top_ticks = *harder_bid,
-                .chosen_limit_ticks = *harder_bid,
-                .scanned_levels = 0,
-                .cumulative_qty_lots = 0,
-                .bounded_aggression_applied = false,
-             };
-            const std::size_t max_levels = std::min<std::size_t>(
-                config_.max_harder_book_levels,std::min(
-                harder_market.depth.bids.size(),kMaxBookLevelScan));
-            internal::PriceTicks previous_price_ticks = *harder_bid;
-            for(std::size_t level_index = 0; level_index < max_levels; ++level_index){
-                const auto& level = harder_market.depth.bids[level_index];
-                if(!level.price_ticks.has_value() || !level.qty_lots.has_value() || *level.qty_lots <= 0){
+            const internal::PriceTicks candidate_ticks = *level.price_ticks;
+            if (level_index > 0 && config_.require_top_gap_continuity) {
+                const internal::PriceTicks gap_ticks = previous_price_ticks - candidate_ticks;
+                if (gap_ticks < 0 || gap_ticks > config_.max_top_gap_ticks) {
                     break;
                 }
-                const internal::PriceTicks candidate_ticks = *level.price_ticks;
-                if(level_index > 0 && config_.require_top_gap_continuity){
-                    const internal::PriceTicks gap_ticks = previous_price_ticks - candidate_ticks;
-                    if(gap_ticks <0 || gap_ticks > config_.max_top_gap_ticks){
-                        break;
-                    }
-                }
-                selection.scanned_levels = static_cast<std::uint16_t>(level_index +1);
-                selection.cumulative_qty_lots += *level.qty_lots;
-                previous_price_ticks = candidate_ticks;
-                const internal::PriceTicks aggression_ticks = *harder_bid - candidate_ticks;
-                if(aggression_ticks < 0 || (!config_.bounded_harder_aggression_enabled && aggression_ticks > 0)
-                 || aggression_ticks > config_.max_harder_aggression_ticks){
-                    break;
-                }
-                if(config_.require_full_harder_depth_for_qty && selection.cumulative_qty_lots < executable_qty){
-                    continue;
-                }
-                selection.chosen_limit_ticks = candidate_ticks;
-                selection.bounded_aggression_applied = selection.chosen_limit_ticks != selection.observed_top_ticks;
-                candidates.push(selection);
             }
-            return candidates;
+            selection.scanned_levels = static_cast<std::uint16_t>(level_index + 1);
+            selection.cumulative_qty_lots += *level.qty_lots;
+            previous_price_ticks = candidate_ticks;
+            const internal::PriceTicks aggression_ticks = *harder_bid - candidate_ticks;
+            if (aggression_ticks < 0 ||
+                (!config_.bounded_harder_aggression_enabled && aggression_ticks > 0) ||
+                aggression_ticks > config_.max_harder_aggression_ticks) {
+                break;
+            }
+            if (config_.require_full_harder_depth_for_qty &&
+                selection.cumulative_qty_lots < executable_qty) {
+                continue;
+            }
+            selection.chosen_limit_ticks = candidate_ticks;
+            selection.bounded_aggression_applied =
+                selection.chosen_limit_ticks != selection.observed_top_ticks;
+            candidates.push(selection);
+        }
+        return candidates;
     };
 
-    [[nodiscard]] std::optional<std::pair<LegSelection, LegSelection>> select_paired_limits_(
-        const EventMarketView& easier_market,
-        const EventMarketView& harder_market,
-        internal::QtyLots executable_qty) const noexcept {
+    [[nodiscard]] std::optional<std::pair<LegSelection, LegSelection>>
+    select_paired_limits_(const EventMarketView& easier_market,
+                          const EventMarketView& harder_market,
+                          internal::QtyLots executable_qty) const noexcept {
         const auto easier_ask = best_ask_ticks_(easier_market);
         const auto harder_bid = best_bid_ticks_(harder_market);
         if (!easier_ask.has_value() || !harder_bid.has_value()) {
@@ -413,8 +395,10 @@ class MonotonicArbStrategy {
             return std::nullopt;
         }
 
-        const auto easier_candidates = collect_easier_buy_candidates_(easier_market, executable_qty);
-        const auto harder_candidates = collect_harder_sell_candidates_(harder_market, executable_qty);
+        const auto easier_candidates =
+            collect_easier_buy_candidates_(easier_market, executable_qty);
+        const auto harder_candidates =
+            collect_harder_sell_candidates_(harder_market, executable_qty);
         if (easier_candidates.empty() || harder_candidates.empty()) {
             return std::nullopt;
         }
@@ -425,10 +409,9 @@ class MonotonicArbStrategy {
 
         for (const auto& easier_selection : easier_candidates) {
             for (const auto& harder_selection : harder_candidates) {
-                const internal::PriceTicks candidate_net_edge_ticks = net_edge_ticks_for_pair_(
-                    easier_selection.chosen_limit_ticks,
-                    harder_selection.chosen_limit_ticks,
-                    executable_qty);
+                const internal::PriceTicks candidate_net_edge_ticks =
+                    net_edge_ticks_for_pair_(easier_selection.chosen_limit_ticks,
+                                             harder_selection.chosen_limit_ticks, executable_qty);
                 if (candidate_net_edge_ticks < config_.min_net_edge_ticks) {
                     continue;
                 }
@@ -449,14 +432,12 @@ class MonotonicArbStrategy {
         return best_selection;
     }
 
-    [[nodiscard]] std::optional<GroupSignal> evaluate_pair(
-        const ChainEntry& easier,
-        const ChainEntry& harder,
-        const AppliedEventUpdate& update,
-        std::uint64_t now_s) noexcept {
-        if (!easier.market.has_book || !harder.market.has_book ||
-            easier.market.desynced || harder.market.desynced ||
-            !easier.market.lifecycle.is_tradeable_at(now_s) ||
+    [[nodiscard]] std::optional<GroupSignal> evaluate_pair(const ChainEntry& easier,
+                                                           const ChainEntry& harder,
+                                                           const AppliedEventUpdate& update,
+                                                           std::uint64_t now_s) noexcept {
+        if (!easier.market.has_book || !harder.market.has_book || easier.market.desynced ||
+            harder.market.desynced || !easier.market.lifecycle.is_tradeable_at(now_s) ||
             !harder.market.lifecycle.is_tradeable_at(now_s)) {
             return std::nullopt;
         }
@@ -465,8 +446,8 @@ class MonotonicArbStrategy {
         const auto easier_ask_qty = best_ask_qty_(easier.market);
         const auto harder_bid = best_bid_ticks_(harder.market);
         const auto harder_bid_qty = best_bid_qty_(harder.market);
-        if (!easier_ask.has_value() || !easier_ask_qty.has_value() ||
-            !harder_bid.has_value() || !harder_bid_qty.has_value()) {
+        if (!easier_ask.has_value() || !easier_ask_qty.has_value() || !harder_bid.has_value() ||
+            !harder_bid_qty.has_value()) {
             return std::nullopt;
         }
 
@@ -487,10 +468,9 @@ class MonotonicArbStrategy {
         const auto [harder_near_top_levels, harder_near_top_qty_lots] =
             near_top_support_(harder.market.depth.bids, true);
 
-        const internal::PriceTicks net_edge_ticks = net_edge_ticks_for_pair_(
-            easier_selection.chosen_limit_ticks,
-            harder_selection.chosen_limit_ticks,
-            executable_qty);
+        const internal::PriceTicks net_edge_ticks =
+            net_edge_ticks_for_pair_(easier_selection.chosen_limit_ticks,
+                                     harder_selection.chosen_limit_ticks, executable_qty);
         if (net_edge_ticks < config_.min_net_edge_ticks) {
             return std::nullopt;
         }
@@ -540,4 +520,4 @@ class MonotonicArbStrategy {
     }
 };
 
-}  // namespace predex::core::shards::kalshi::strategies
+} // namespace predex::core::shards::kalshi::strategies

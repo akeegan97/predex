@@ -19,11 +19,7 @@ namespace predex::core::shards::kalshi {
 // Each Event owns the raw per-market BookStore plus a derived topology-specific view.
 inline constexpr std::size_t kMaxDepth = 5;
 
-enum class EventApplyCode: std::uint8_t{
-    kApplied = 1,
-    kRejected = 2,
-    kParseFail=3
-};
+enum class EventApplyCode : std::uint8_t { kApplied = 1, kRejected = 2, kParseFail = 3 };
 
 enum class ShardDesyncReason : std::uint8_t {
     kNone = 0,
@@ -50,8 +46,7 @@ struct SideDepthLevel {
     std::optional<internal::QtyLots> qty_lots;
 };
 
-template <std::size_t Depth>
-struct DepthView {
+template <std::size_t Depth> struct DepthView {
     std::array<SideDepthLevel, Depth> bids{};
     std::array<SideDepthLevel, Depth> asks{};
 };
@@ -65,11 +60,10 @@ struct MarketLifecycleState {
     // when close_ts_s passes in wall-clock time; the `tradeable` flag on its own will
     // stay true past close_ts_s forever. Callers must route all "is this market
     // tradeable right now?" checks through this helper, not a direct .tradeable read.
-    // Switched now_s from wall-clock time to frame recv timestamp to avoid syscall 
+    // Switched now_s from wall-clock time to frame recv timestamp to avoid syscall
     [[nodiscard]] bool is_tradeable_at(std::uint64_t now_s) const noexcept {
-        return tradeable
-            && (open_ts_s == 0 || now_s >= open_ts_s)
-            && (close_ts_s == 0 || now_s < close_ts_s);
+        return tradeable && (open_ts_s == 0 || now_s >= open_ts_s) &&
+               (close_ts_s == 0 || now_s < close_ts_s);
     }
 };
 
@@ -102,7 +96,7 @@ struct EventDefinition {
 };
 
 struct MonotonicChainState {
-    std::vector<ChainEntry> markets;  // ordered by strike_key, easiest -> hardest
+    std::vector<ChainEntry> markets; // ordered by strike_key, easiest -> hardest
     std::unordered_map<internal::MarketId, std::size_t> market_index_by_id;
     bool complete{false};
     bool desynced{false};
@@ -153,13 +147,8 @@ struct SingleMarketState {
     internal::TimestampNs last_update_ns{0};
 };
 
-
-
-using EventDerivedState = std::variant<std::monostate,
-                                       MonotonicChainState,
-                                       MutuallyExclusiveState,
-                                       UnorderedGroupState,
-                                       SingleMarketState>;
+using EventDerivedState = std::variant<std::monostate, MonotonicChainState, MutuallyExclusiveState,
+                                       UnorderedGroupState, SingleMarketState>;
 
 struct Event {
     internal::EventId event_id{0};
@@ -172,8 +161,8 @@ struct Event {
 
     EventApplyResult apply_market_update(const internal::NormalizedEvent& event);
 
-    [[nodiscard]] const EventMarketView* find_market_view(
-        internal::MarketId market_id) const noexcept;
+    [[nodiscard]] const EventMarketView*
+    find_market_view(internal::MarketId market_id) const noexcept;
 };
 
 class EventStore {
@@ -211,4 +200,4 @@ class EventStore {
     std::unordered_map<internal::EventId, Event> events_;
 };
 
-}  // namespace predex::core::shards::kalshi
+} // namespace predex::core::shards::kalshi

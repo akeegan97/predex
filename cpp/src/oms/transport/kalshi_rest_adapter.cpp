@@ -3,9 +3,9 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <chrono>
-#include <cctype>
 #include <limits>
 #include <optional>
 #include <string_view>
@@ -24,41 +24,41 @@ namespace {
 
 [[nodiscard]] std::string_view action_from_side(internal::Side side) noexcept {
     switch (side) {
-        case internal::Side::kBuy:
-            return "buy";
-        case internal::Side::kSell:
-            return "sell";
-        default:
-            return {};
+    case internal::Side::kBuy:
+        return "buy";
+    case internal::Side::kSell:
+        return "sell";
+    default:
+        return {};
     }
 }
 
 [[nodiscard]] std::string_view outcome_to_string(Outcome outcome) noexcept {
     switch (outcome) {
-        case Outcome::kUnknown:
-            return {};
-        case Outcome::kYes:
-            return "yes";
-        case Outcome::kNo:
-            return "no";
+    case Outcome::kUnknown:
+        return {};
+    case Outcome::kYes:
+        return "yes";
+    case Outcome::kNo:
+        return "no";
     }
     return {};
 }
 
 [[nodiscard]] std::string_view tif_to_string(TimeInForce tif) noexcept {
     switch (tif) {
-        case TimeInForce::kGtc:
-            return "good_til_cancelled";
-        case TimeInForce::kIoc:
-            return "immediate_or_cancel";
-        case TimeInForce::kFok:
-            return "fill_or_kill";
+    case TimeInForce::kGtc:
+        return "good_til_cancelled";
+    case TimeInForce::kIoc:
+        return "immediate_or_cancel";
+    case TimeInForce::kFok:
+        return "fill_or_kill";
     }
     return {};
 }
 
-[[nodiscard]] VenueRejectReason venue_reject_reason_for_response(
-    const HttpResponse& response) noexcept {
+[[nodiscard]] VenueRejectReason
+venue_reject_reason_for_response(const HttpResponse& response) noexcept {
     if (response.status_code == 429) {
         return VenueRejectReason::kRateLimit;
     }
@@ -72,24 +72,24 @@ void append_json_escaped(std::string& out, std::string_view value) {
     out.push_back('"');
     for (const char car : value) {
         switch (car) {
-            case '\\':
-                out.append("\\\\");
-                break;
-            case '"':
-                out.append("\\\"");
-                break;
-            case '\n':
-                out.append("\\n");
-                break;
-            case '\r':
-                out.append("\\r");
-                break;
-            case '\t':
-                out.append("\\t");
-                break;
-            default:
-                out.push_back(car);
-                break;
+        case '\\':
+            out.append("\\\\");
+            break;
+        case '"':
+            out.append("\\\"");
+            break;
+        case '\n':
+            out.append("\\n");
+            break;
+        case '\r':
+            out.append("\\r");
+            break;
+        case '\t':
+            out.append("\\t");
+            break;
+        default:
+            out.push_back(car);
+            break;
         }
     }
     out.push_back('"');
@@ -100,8 +100,8 @@ void append_json_escaped(std::string& out, std::string_view value) {
     return std::isalnum(uch) != 0 || car == '-' || car == '_' || car == '.' || car == '~';
 }
 
-[[nodiscard]] std::optional<std::int64_t> internal_ticks_to_kalshi_price(
-    internal::PriceTicks price_ticks) noexcept {
+[[nodiscard]] std::optional<std::int64_t>
+internal_ticks_to_kalshi_price(internal::PriceTicks price_ticks) noexcept {
     if (price_ticks <= 0 || price_ticks >= internal::kMaxPriceTicks) {
         return std::nullopt;
     }
@@ -117,7 +117,7 @@ void append_json_escaped(std::string& out, std::string_view value) {
 }
 
 void append_url_encoded(std::string& out, std::string_view value) {
-    //NOLINTNEXTLINE
+    // NOLINTNEXTLINE
     static constexpr char kHex[] = "0123456789ABCDEF";
     for (const char car : value) {
         if (is_unreserved(car)) {
@@ -126,28 +126,27 @@ void append_url_encoded(std::string& out, std::string_view value) {
         }
         out.push_back('%');
         const auto uch = static_cast<unsigned char>(car);
+        // NOLINTNEXTLINE
         out.push_back(kHex[(uch >> 4) & 0x0F]);
+        // NOLINTNEXTLINE
         out.push_back(kHex[uch & 0x0F]);
     }
 }
 
 void build_submit_body(const SubmitOrderCmd& command,
-    //NOLINTNEXTLINE
-                       std::string_view action,
-                       std::string_view outcome_side,
-                       std::string_view time_in_force,
-                       std::string_view price_field,
-                       std::optional<std::int64_t> price_cents,
-                       std::string& body) {
+                       // NOLINTNEXTLINE
+                       std::string_view action, std::string_view outcome_side,
+                       std::string_view time_in_force, std::string_view price_field,
+                       std::optional<std::int64_t> price_cents, std::string& body) {
     body.clear();
-    body.reserve(256 + command.market_ticker.size() + command.order.client_order_id.value.size());
+    body.reserve(256 + command.market_ticker.size() + command.order.client_order_id.view().size());
     body.push_back('{');
     body.append("\"ticker\":");
     append_json_escaped(body, command.market_ticker);
     body.append(",\"action\":");
     append_json_escaped(body, action);
     body.append(",\"client_order_id\":");
-    append_json_escaped(body, command.order.client_order_id.value);
+    append_json_escaped(body, command.order.client_order_id.view());
     body.append(",\"side\":");
     append_json_escaped(body, outcome_side);
     body.append(",\"count_fp\":");
@@ -164,6 +163,7 @@ void build_submit_body(const SubmitOrderCmd& command,
 }
 
 [[nodiscard]] bool append_submit_order_json_object(const SubmitOrderCmd& command,
+    // NOLINTNEXTLINE
                                                    std::string& out_body,
                                                    std::string& error_message) {
     if (command.market_ticker.empty()) {
@@ -192,7 +192,8 @@ void build_submit_body(const SubmitOrderCmd& command,
     if (command.intent.limit_price_ticks.has_value()) {
         price_cents = internal_ticks_to_kalshi_price(*command.intent.limit_price_ticks);
         if (!price_cents.has_value()) {
-            error_message = "submit_order: limit_price_ticks must convert to Kalshi integer cents in [1,99]";
+            error_message =
+                "submit_order: limit_price_ticks must convert to Kalshi integer cents in [1,99]";
             return false;
         }
     }
@@ -201,20 +202,18 @@ void build_submit_body(const SubmitOrderCmd& command,
 }
 
 void build_modify_body(const ModifyOrderCmd& command,
-    //NOLINTNEXTLINE
-                       std::string_view action,
-                       std::string_view outcome_side,
-                       std::string_view price_field,
-                       std::optional<std::int64_t> price_cents,
+                       // NOLINTNEXTLINE
+                       std::string_view action, std::string_view outcome_side,
+                       std::string_view price_field, std::optional<std::int64_t> price_cents,
                        std::string& body) {
     body.clear();
-    body.reserve(256 + command.corr.order.client_order_id.value.size() +
-                 command.updated_client_order_id.value.size());
+    body.reserve(256 + command.corr.order.client_order_id.view().size() +
+                 command.updated_client_order_id.view().size());
     body.push_back('{');
     body.append("\"client_order_id\":");
-    append_json_escaped(body, command.corr.order.client_order_id.value);
+    append_json_escaped(body, command.corr.order.client_order_id.view());
     body.append(",\"updated_client_order_id\":");
-    append_json_escaped(body, command.updated_client_order_id.value);
+    append_json_escaped(body, command.updated_client_order_id.view());
     body.append(",\"side\":");
     append_json_escaped(body, outcome_side);
     body.append(",\"action\":");
@@ -241,21 +240,22 @@ void build_modify_body(const ModifyOrderCmd& command,
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                        internal::PriceTicks& out_ticks);
 
-[[nodiscard]] std::optional<internal::PriceTicks> parse_snapshot_price_ticks(
-    const nlohmann::json& order_json,
-    Outcome outcome) {
+[[nodiscard]] std::optional<internal::PriceTicks>
+parse_snapshot_price_ticks(const nlohmann::json& order_json, Outcome outcome) {
     internal::PriceTicks parsed_ticks = 0;
-    const auto* price_text = outcome == Outcome::kYes
-        ? order_json.contains("yes_price_dollars") && order_json["yes_price_dollars"].is_string()
-              ? &order_json["yes_price_dollars"]
-              : nullptr
+    const auto* price_text =
+        outcome == Outcome::kYes ? order_json.contains("yes_price_dollars") &&
+                                           order_json["yes_price_dollars"].is_string()
+                                       ? &order_json["yes_price_dollars"]
+                                       : nullptr
         : order_json.contains("no_price_dollars") && order_json["no_price_dollars"].is_string()
-              ? &order_json["no_price_dollars"]
-              : nullptr;
+            ? &order_json["no_price_dollars"]
+            : nullptr;
     if (price_text == nullptr) {
         return std::nullopt;
     }
-    if (!parse_non_negative_dollars_to_ticks(price_text->get_ref<const std::string&>(), parsed_ticks)) {
+    if (!parse_non_negative_dollars_to_ticks(price_text->get_ref<const std::string&>(),
+                                             parsed_ticks)) {
         return std::nullopt;
     }
     return parsed_ticks;
@@ -266,15 +266,14 @@ void build_modify_body(const ModifyOrderCmd& command,
         return {};
     }
     std::string status = order_json["status"].get<std::string>();
-    std::transform(status.begin(), status.end(), status.begin(), [](unsigned char car) {
-        return static_cast<char>(std::tolower(car));
-    });
+    std::transform(status.begin(), status.end(), status.begin(),
+                   [](unsigned char car) { return static_cast<char>(std::tolower(car)); });
     return status;
 }
 
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
-                                                        internal::PriceTicks& out_ticks) {
-    constexpr std::uint64_t kDollarToTicksScale =
+                                                       internal::PriceTicks& out_ticks) {
+    constexpr auto kDollarToTicksScale =
         static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
     constexpr auto kI64MaxAsU64 =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
@@ -411,6 +410,7 @@ CommandResult KalshiRestAdapter::modify_order(const ModifyOrderCmd& command) {
 }
 
 OpenOrdersPage KalshiRestAdapter::fetch_open_orders(std::size_t limit,
+    //NOLINTNEXTLINE -- accepting the copy of cursor for trace info capture
                                                     std::optional<std::string> cursor) {
     const auto response = session_.send_json_request(HttpRequest{
         .method = HttpMethod::kGet,
@@ -419,7 +419,8 @@ OpenOrdersPage KalshiRestAdapter::fetch_open_orders(std::size_t limit,
     return parse_open_orders_response_(response);
 }
 
-PreparedCommandRequest KalshiRestAdapter::prepare_submit_order(const SubmitOrderCmd& command) const {
+PreparedCommandRequest
+KalshiRestAdapter::prepare_submit_order(const SubmitOrderCmd& command) const {
     thread_local std::string body_scratch;
     std::string error_message;
     if (!append_submit_order_json_object(command, body_scratch, error_message)) {
@@ -429,15 +430,17 @@ PreparedCommandRequest KalshiRestAdapter::prepare_submit_order(const SubmitOrder
     const auto target = build_submit_target_();
     return PreparedCommandRequest{
         .ok = true,
-        .request = HttpRequest{
-            .method = HttpMethod::kPost,
-            .target = target,
-            .body = body_scratch,
-        },
-        .trace = RestTraceInfo{
-            .request_target = target,
-            .request_body = body_scratch,
-        },
+        .request =
+            HttpRequest{
+                .method = HttpMethod::kPost,
+                .target = target,
+                .body = body_scratch,
+            },
+        .trace =
+            RestTraceInfo{
+                .request_target = target,
+                .request_body = body_scratch,
+            },
     };
 }
 
@@ -467,44 +470,50 @@ PreparedCommandRequest KalshiRestAdapter::prepare_batched_submit_orders(
     const auto target = build_batched_submit_target_();
     return PreparedCommandRequest{
         .ok = true,
-        .request = HttpRequest{
-            .method = HttpMethod::kPost,
-            .target = target,
-            .body = body_scratch,
-        },
-        .trace = RestTraceInfo{
-            .request_target = target,
-            .request_body = body_scratch,
-        },
+        .request =
+            HttpRequest{
+                .method = HttpMethod::kPost,
+                .target = target,
+                .body = body_scratch,
+            },
+        .trace =
+            RestTraceInfo{
+                .request_target = target,
+                .request_body = body_scratch,
+            },
     };
 }
 
-PreparedCommandRequest KalshiRestAdapter::prepare_cancel_order(const CancelOrderCmd& command) const {
+PreparedCommandRequest
+KalshiRestAdapter::prepare_cancel_order(const CancelOrderCmd& command) const {
     if (!command.corr.order.exchange_order_id.has_value() ||
-        command.corr.order.exchange_order_id->value.empty()) {
+        command.corr.order.exchange_order_id->empty()) {
         return {.ok = false, .error_message = "exchange order id required for cancel"};
     }
 
     const auto target = build_cancel_target_(*command.corr.order.exchange_order_id);
     return PreparedCommandRequest{
         .ok = true,
-        .request = HttpRequest{
-            .method = HttpMethod::kDelete,
-            .target = target,
-        },
-        .trace = RestTraceInfo{
-            .request_target = target,
-            .request_body = {},
-        },
+        .request =
+            HttpRequest{
+                .method = HttpMethod::kDelete,
+                .target = target,
+            },
+        .trace =
+            RestTraceInfo{
+                .request_target = target,
+                .request_body = {},
+            },
     };
 }
 
-PreparedCommandRequest KalshiRestAdapter::prepare_modify_order(const ModifyOrderCmd& command) const {
+PreparedCommandRequest
+KalshiRestAdapter::prepare_modify_order(const ModifyOrderCmd& command) const {
     if (!command.corr.order.exchange_order_id.has_value() ||
-        command.corr.order.exchange_order_id->value.empty()) {
+        command.corr.order.exchange_order_id->empty()) {
         return {.ok = false, .error_message = "exchange order id required for amend"};
     }
-    if (command.updated_client_order_id.value.empty()) {
+    if (command.updated_client_order_id.empty()) {
         return {.ok = false, .error_message = "updated_client_order_id is required for amend"};
     }
 
@@ -525,8 +534,8 @@ PreparedCommandRequest KalshiRestAdapter::prepare_modify_order(const ModifyOrder
         price_cents = internal_ticks_to_kalshi_price(*command.replacement.limit_price_ticks);
         if (!price_cents.has_value()) {
             return {.ok = false,
-                    .error_message =
-                        "modify_order: limit_price_ticks must convert to Kalshi integer cents in [1,99]"};
+                    .error_message = "modify_order: limit_price_ticks must convert to Kalshi "
+                                     "integer cents in [1,99]"};
         }
     }
     build_modify_body(command, action, outcome_side, price_field, price_cents, body_scratch);
@@ -534,15 +543,17 @@ PreparedCommandRequest KalshiRestAdapter::prepare_modify_order(const ModifyOrder
     const auto target = build_modify_target_(*command.corr.order.exchange_order_id);
     return PreparedCommandRequest{
         .ok = true,
-        .request = HttpRequest{
-            .method = HttpMethod::kPost,
-            .target = target,
-            .body = body_scratch,
-        },
-        .trace = RestTraceInfo{
-            .request_target = target,
-            .request_body = body_scratch,
-        },
+        .request =
+            HttpRequest{
+                .method = HttpMethod::kPost,
+                .target = target,
+                .body = body_scratch,
+            },
+        .trace =
+            RestTraceInfo{
+                .request_target = target,
+                .request_body = body_scratch,
+            },
     };
 }
 
@@ -552,10 +563,10 @@ CommandResult KalshiRestAdapter::complete_submit_order(const SubmitOrderCmd& com
     return parse_submit_response_(response, command, std::move(trace));
 }
 
-CommandResult KalshiRestAdapter::complete_batched_submit_orders(
-    const std::vector<SubmitOrderCmd>& commands,
-    const HttpResponse& response,
-    RestTraceInfo trace) const {
+CommandResult
+KalshiRestAdapter::complete_batched_submit_orders(const std::vector<SubmitOrderCmd>& commands,
+                                                  const HttpResponse& response,
+                                                  RestTraceInfo trace) const {
     return parse_batched_submit_response_(response, commands, std::move(trace));
 }
 
@@ -582,37 +593,35 @@ AsyncHttpPollResult KalshiRestAdapter::poll_active_request() {
     return session_.poll_json_request();
 }
 
-bool KalshiRestAdapter::warm_up() {
-    return session_.warm_up();
-}
+bool KalshiRestAdapter::warm_up() { return session_.warm_up(); }
 
 void KalshiRestAdapter::check_and_keep_warm(std::uint64_t threshold_seconds) {
     session_.check_and_keep_warm(threshold_seconds);
 }
 
-void KalshiRestAdapter::close() noexcept {
-    session_.close();
-}
+void KalshiRestAdapter::close() noexcept { session_.close(); }
 
-std::string KalshiRestAdapter::build_submit_target_() {
-    return "/trade-api/v2/portfolio/orders";
-}
+std::string KalshiRestAdapter::build_submit_target_() { return "/trade-api/v2/portfolio/orders"; }
 
 std::string KalshiRestAdapter::build_batched_submit_target_() {
     return "/trade-api/v2/portfolio/orders/batched";
 }
 
 std::string KalshiRestAdapter::build_cancel_target_(const ExchangeOrderId& exchange_order_id) {
-    return "/trade-api/v2/portfolio/orders/" + exchange_order_id.value;
+    std::string target = "/trade-api/v2/portfolio/orders/";
+    target.append(exchange_order_id.view());
+    return target;
 }
 
 std::string KalshiRestAdapter::build_modify_target_(const ExchangeOrderId& exchange_order_id) {
-    return "/trade-api/v2/portfolio/orders/" + exchange_order_id.value + "/amend";
+    std::string target = "/trade-api/v2/portfolio/orders/";
+    target.append(exchange_order_id.view());
+    target.append("/amend");
+    return target;
 }
 
-std::string KalshiRestAdapter::build_open_orders_target_(
-    std::size_t limit,
-    const std::optional<std::string>& cursor) {
+std::string KalshiRestAdapter::build_open_orders_target_(std::size_t limit,
+                                                         const std::optional<std::string>& cursor) {
     std::string target = "/trade-api/v2/portfolio/orders?limit=" + std::to_string(limit);
     if (cursor.has_value() && !cursor->empty()) {
         target.append("&cursor=");
@@ -652,28 +661,32 @@ CommandResult KalshiRestAdapter::parse_submit_response_(const HttpResponse& resp
         if (parsed.contains("order") && parsed["order"].is_object()) {
             const auto& order_json = parsed["order"];
             if (order_json.contains("order_id") && order_json["order_id"].is_string()) {
-                order.exchange_order_id = ExchangeOrderId{
-                    .value = order_json["order_id"].get<std::string>()};
+                ExchangeOrderId exchange_id{};
+                const std::string_view order_id = order_json["order_id"].get_ref<const std::string&>();
+                if (exchange_id.assign_from(order_id)) {
+                    order.exchange_order_id = exchange_id;
+                }
             }
         }
 
-        if (!order.exchange_order_id.has_value() || order.exchange_order_id->value.empty()) {
+        if (!order.exchange_order_id.has_value() || order.exchange_order_id->empty()) {
             trace.error_message = "submit response missing order_id";
             return {.ok = false, .error_message = trace.error_message, .trace = std::move(trace)};
         }
 
         return {
             .ok = true,
-            .event = VenueOrderAck{
-                .order = std::move(order),
-                .transport_submit_ts_ns = trace.request_sent_ts_ns,
-                .recv_ts_ns = trace.response_recv_ts_ns,
-                .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
-                .retry_count = static_cast<std::uint16_t>(trace.retry_count),
-                .accepted_qty_lots = command.intent.qty_lots,
-            },
+            .event =
+                VenueOrderAck{
+                    .order = (order),
+                    .transport_submit_ts_ns = trace.request_sent_ts_ns,
+                    .recv_ts_ns = trace.response_recv_ts_ns,
+                    .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+                    .retry_count = static_cast<std::uint16_t>(trace.retry_count),
+                    .accepted_qty_lots = command.intent.qty_lots,
+                },
             .events = {VenueOrderAck{
-                .order = std::move(order),
+                .order = (order),
                 .transport_submit_ts_ns = trace.request_sent_ts_ns,
                 .recv_ts_ns = trace.response_recv_ts_ns,
                 .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
@@ -688,10 +701,11 @@ CommandResult KalshiRestAdapter::parse_submit_response_(const HttpResponse& resp
     }
 }
 
-CommandResult KalshiRestAdapter::parse_batched_submit_response_(
-    const HttpResponse& response,
-    const std::vector<SubmitOrderCmd>& commands,
-    RestTraceInfo trace) {
+CommandResult
+//NOLINTNEXTLINE
+KalshiRestAdapter::parse_batched_submit_response_(const HttpResponse& response,
+                                                  const std::vector<SubmitOrderCmd>& commands,
+                                                  RestTraceInfo trace) {
     CommandResult result{
         .ok = false,
         .trace = trace,
@@ -702,10 +716,8 @@ CommandResult KalshiRestAdapter::parse_batched_submit_response_(
         return result;
     }
 
-    auto make_reject_event = [&](const SubmitOrderCmd& command,
-                                 VenueRejectReason reason,
-                                 std::string raw_reason_code,
-                                 std::string raw_reason_message) {
+    auto make_reject_event = [&](const SubmitOrderCmd& command, VenueRejectReason reason,
+                                 std::string raw_reason_code, std::string raw_reason_message) {
         return KalshiToOmsEvent{VenueOrderReject{
             .order = command.order,
             .transport_submit_ts_ns = trace.request_sent_ts_ns,
@@ -723,18 +735,16 @@ CommandResult KalshiRestAdapter::parse_batched_submit_response_(
         if (!parsed.contains("orders") || !parsed["orders"].is_array()) {
             if (response.status_code != 0) {
                 for (const auto& command : commands) {
-                    result.events.push_back(make_reject_event(
-                        command,
-                        venue_reject_reason_for_response(response),
-                        std::to_string(response.status_code),
-                        response.body));
+                    result.events.push_back(
+                        make_reject_event(command, venue_reject_reason_for_response(response),
+                                          std::to_string(response.status_code), response.body));
                 }
                 result.ok = true;
                 return result;
             }
             result.error_message = response.error_message.empty()
-                ? "batched submit response missing orders array"
-                : response.error_message;
+                                       ? "batched submit response missing orders array"
+                                       : response.error_message;
             return result;
         }
 
@@ -754,8 +764,11 @@ CommandResult KalshiRestAdapter::parse_batched_submit_response_(
                 OmsOrderRef order = command.order;
                 const auto& order_json = entry["order"];
                 if (order_json.contains("order_id") && order_json["order_id"].is_string()) {
-                    order.exchange_order_id = ExchangeOrderId{
-                        .value = order_json["order_id"].get<std::string>()};
+                    ExchangeOrderId exchange_id{};
+                    const std::string_view order_id = order_json["order_id"].get_ref<const std::string&>();
+                    if (exchange_id.assign_from(order_id)) {
+                        order.exchange_order_id = exchange_id;
+                    }
                 }
                 const internal::QtyLots accepted_qty_lots =
                     std::max(parse_count_fp_to_lots(order_json.value("initial_count_fp", "")),
@@ -768,56 +781,55 @@ CommandResult KalshiRestAdapter::parse_batched_submit_response_(
                     parse_snapshot_price_ticks(order_json, command.intent.outcome);
                 const auto status = normalized_order_status(order_json);
 
-                result.events.push_back(KalshiToOmsEvent{VenueOrderAck{
-                    .order = std::move(order),
+                result.events.emplace_back(VenueOrderAck{
+                    .order = order,
                     .transport_submit_ts_ns = trace.request_sent_ts_ns,
                     .recv_ts_ns = trace.response_recv_ts_ns,
                     .http_status_code = static_cast<std::uint16_t>(response.status_code),
                     .retry_count = static_cast<std::uint16_t>(response.retry_count),
                     .accepted_qty_lots = accepted_qty_lots,
-                }});
-
+                });
                 const OmsOrderRef& emitted_order =
                     std::get<VenueOrderAck>(result.events.back()).order;
                 if (fill_qty_lots > 0) {
                     const bool terminal_fill = remaining_qty_lots == 0 && status != "canceled";
                     if (terminal_fill) {
-                        result.events.push_back(KalshiToOmsEvent{VenueOrderFill{
+                        result.events.emplace_back(VenueOrderFill{
                             .order = emitted_order,
                             .recv_ts_ns = trace.response_recv_ts_ns,
                             .fill_qty_lots = fill_qty_lots,
                             .fill_price_ticks = fill_price_ticks.value_or(0),
                             .side = command.intent.side,
-                        }});
+                        });
                     } else {
-                        result.events.push_back(KalshiToOmsEvent{VenueOrderPartialFill{
+                        result.events.emplace_back(VenueOrderPartialFill{
                             .order = emitted_order,
                             .recv_ts_ns = trace.response_recv_ts_ns,
                             .fill_qty_lots = fill_qty_lots,
                             .fill_price_ticks = fill_price_ticks.value_or(0),
                             .side = command.intent.side,
-                        }});
+                        });
                     }
                 }
                 if (status == "canceled") {
-                    result.events.push_back(KalshiToOmsEvent{VenueOrderCanceled{
+                    result.events.emplace_back(VenueOrderCanceled{
                         .order = emitted_order,
                         .recv_ts_ns = trace.response_recv_ts_ns,
-                    }});
+                    });
                 }
                 continue;
             }
 
             if (entry.contains("error") && entry["error"].is_object()) {
                 const auto& error_json = entry["error"];
-                const auto raw_code = error_json.value("code", std::to_string(response.status_code));
+                const auto raw_code =
+                    error_json.value("code", std::to_string(response.status_code));
                 const auto raw_message = error_json.value("message", response.body);
                 result.events.push_back(make_reject_event(
                     command,
                     response.status_code != 0 ? venue_reject_reason_for_response(response)
                                               : VenueRejectReason::kUnknown,
-                    raw_code,
-                    raw_message));
+                    raw_code, raw_message));
                 continue;
             }
 
@@ -832,11 +844,9 @@ CommandResult KalshiRestAdapter::parse_batched_submit_response_(
         if (response.status_code != 0) {
             result.ok = true;
             for (const auto& command : commands) {
-                result.events.push_back(make_reject_event(
-                    command,
-                    venue_reject_reason_for_response(response),
-                    std::to_string(response.status_code),
-                    response.body));
+                result.events.push_back(
+                    make_reject_event(command, venue_reject_reason_for_response(response),
+                                      std::to_string(response.status_code), response.body));
             }
             return result;
         }
@@ -871,13 +881,14 @@ CommandResult KalshiRestAdapter::parse_cancel_response_(const HttpResponse& resp
 
     return {
         .ok = true,
-        .event = VenueCancelAck{
-            .order = command.corr.order,
-            .transport_submit_ts_ns = trace.request_sent_ts_ns,
-            .recv_ts_ns = trace.response_recv_ts_ns,
-            .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
-            .retry_count = static_cast<std::uint16_t>(trace.retry_count),
-        },
+        .event =
+            VenueCancelAck{
+                .order = command.corr.order,
+                .transport_submit_ts_ns = trace.request_sent_ts_ns,
+                .recv_ts_ns = trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+                .retry_count = static_cast<std::uint16_t>(trace.retry_count),
+            },
         .trace = std::move(trace),
     };
 }
@@ -911,15 +922,16 @@ CommandResult KalshiRestAdapter::parse_modify_response_(const HttpResponse& resp
 
     return {
         .ok = true,
-        .event = VenueModifyAck{
-            .order = std::move(order),
-            .transport_submit_ts_ns = trace.request_sent_ts_ns,
-            .recv_ts_ns = trace.response_recv_ts_ns,
-            .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
-            .retry_count = static_cast<std::uint16_t>(trace.retry_count),
-            .working_qty_lots = command.replacement.qty_lots,
-            .working_price_ticks = command.replacement.limit_price_ticks,
-        },
+        .event =
+            VenueModifyAck{
+                .order = order,
+                .transport_submit_ts_ns = trace.request_sent_ts_ns,
+                .recv_ts_ns = trace.response_recv_ts_ns,
+                .http_status_code = static_cast<std::uint16_t>(trace.http_status_code),
+                .retry_count = static_cast<std::uint16_t>(trace.retry_count),
+                .working_qty_lots = command.replacement.qty_lots,
+                .working_price_ticks = command.replacement.limit_price_ticks,
+            },
         .trace = std::move(trace),
     };
 }
@@ -938,13 +950,20 @@ OpenOrdersPage KalshiRestAdapter::parse_open_orders_response_(const HttpResponse
                     continue;
                 }
 
-                OpenOrderSnapshot snapshot;
-                snapshot.order.client_order_id = ClientOrderId{
-                    .value = order_json.value("client_order_id", std::string{})};
+            OpenOrderSnapshot snapshot;
 
-                const std::string order_id = order_json.value("order_id", std::string{});
-                if (!order_id.empty()) {
-                    snapshot.order.exchange_order_id = ExchangeOrderId{.value = order_id};
+            if (order_json.contains("order_id") && order_json["order_id"].is_string()) {
+                const auto& order_id_text = order_json["order_id"].get_ref<const std::string&>();
+                ExchangeOrderId exchange_id{};
+                if (exchange_id.assign_from(order_id_text)) {
+                    snapshot.order.exchange_order_id = exchange_id;
+                }
+            }
+
+                const auto& order_id_text = order_json["order_id"].get_ref<const std::string&>();
+                ExchangeOrderId exchange_id{};
+                if (exchange_id.assign_from(order_id_text)) {
+                    snapshot.order.exchange_order_id = exchange_id;
                 }
 
                 snapshot.ticker = order_json.value("ticker", std::string{});
@@ -956,10 +975,8 @@ OpenOrdersPage KalshiRestAdapter::parse_open_orders_response_(const HttpResponse
                     order_json.value("remaining_count_fp", std::string{"0.00"});
                 snapshot.initial_count_fp =
                     order_json.value("initial_count_fp", std::string{"0.00"});
-                snapshot.yes_price_dollars =
-                    order_json.value("yes_price_dollars", std::string{});
-                snapshot.no_price_dollars =
-                    order_json.value("no_price_dollars", std::string{});
+                snapshot.yes_price_dollars = order_json.value("yes_price_dollars", std::string{});
+                snapshot.no_price_dollars = order_json.value("no_price_dollars", std::string{});
 
                 page.orders.push_back(std::move(snapshot));
             }

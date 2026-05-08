@@ -13,8 +13,7 @@ enum class ParseError : unsigned char {
     kUnsupportedMessageType,
 };
 
-template <typename T>
-class ParseResult {
+template <typename T> class ParseResult {
   public:
     static ParseResult success(T value) {
         ParseResult out;

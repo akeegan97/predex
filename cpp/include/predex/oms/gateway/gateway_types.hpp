@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -8,7 +9,6 @@
 #include <type_traits>
 #include <variant>
 #include <vector>
-#include <chrono>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/oms/oms_types.hpp"
@@ -105,9 +105,7 @@ struct BatchGroupRequestMetadata {
     GroupKey group_key{};
     GroupExecutionPolicy execution_policy{GroupExecutionPolicy::kAbortRemaining};
 
-    [[nodiscard]] bool valid() const noexcept {
-        return group_key.valid();
-    }
+    [[nodiscard]] bool valid() const noexcept { return group_key.valid(); }
 };
 
 struct LineageKey {
@@ -116,9 +114,8 @@ struct LineageKey {
     std::optional<ExchangeOrderId> exchange_order_id;
 
     [[nodiscard]] bool valid() const noexcept {
-        return oms_request_id != 0 ||
-               !client_order_id.value.empty() ||
-               (exchange_order_id.has_value() && !exchange_order_id->value.empty());
+        return oms_request_id != 0 || !client_order_id.empty() ||
+               (exchange_order_id.has_value() && !exchange_order_id->empty());
     }
 };
 
@@ -192,8 +189,7 @@ struct SessionPoolCompletion {
     DispatchCompletion completion;
 };
 
-[[nodiscard]] inline std::optional<GroupKey> group_key_for_context(
-    const IntentContext& context) {
+[[nodiscard]] inline std::optional<GroupKey> group_key_for_context(const IntentContext& context) {
     if (context.group_intent_id == 0 || context.leg_count == 0) {
         return std::nullopt;
     }
@@ -203,8 +199,8 @@ struct SessionPoolCompletion {
     };
 }
 
-[[nodiscard]] inline DispatchOperation operation_for_command(
-    const OmsToKalshiCommand& command) noexcept {
+[[nodiscard]] inline DispatchOperation
+operation_for_command(const OmsToKalshiCommand& command) noexcept {
     return std::visit(
         [](const auto& typed_command) noexcept {
             using T = std::decay_t<decltype(typed_command)>;
@@ -240,8 +236,8 @@ struct SessionPoolCompletion {
         command);
 }
 
-[[nodiscard]] inline std::optional<GroupKey> group_key_for_command(
-    const OmsToKalshiCommand& command) {
+[[nodiscard]] inline std::optional<GroupKey>
+group_key_for_command(const OmsToKalshiCommand& command) {
     return std::visit(
         [](const auto& typed_command) -> std::optional<GroupKey> {
             using T = std::decay_t<decltype(typed_command)>;
@@ -254,8 +250,8 @@ struct SessionPoolCompletion {
         command);
 }
 
-[[nodiscard]] inline std::optional<BatchGroupMetadata> batch_group_metadata_for_command(
-    const OmsToKalshiCommand& command) {
+[[nodiscard]] inline std::optional<BatchGroupMetadata>
+batch_group_metadata_for_command(const OmsToKalshiCommand& command) {
     return std::visit(
         [](const auto& typed_command) -> std::optional<BatchGroupMetadata> {
             using T = std::decay_t<decltype(typed_command)>;
@@ -278,12 +274,12 @@ struct SessionPoolCompletion {
 
 [[nodiscard]] inline std::string_view dispatch_class_name(DispatchClass dispatch_class) noexcept {
     switch (dispatch_class) {
-        case DispatchClass::kHot:
-            return "hot";
-        case DispatchClass::kRecovery:
-            return "recovery";
-        case DispatchClass::kReconcile:
-            return "reconcile";
+    case DispatchClass::kHot:
+        return "hot";
+    case DispatchClass::kRecovery:
+        return "recovery";
+    case DispatchClass::kReconcile:
+        return "reconcile";
     }
     return "unknown";
 }

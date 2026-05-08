@@ -53,8 +53,7 @@ class SessionPool {
                          SessionPoolConfig config = {})
         : hot_connections_(std::move(hot_connections)),
           recovery_connections_(std::move(recovery_connections)),
-          reconcile_connections_(std::move(reconcile_connections)),
-          config_(config) {}
+          reconcile_connections_(std::move(reconcile_connections)), config_(config) {}
 
     // Attempts to assign one admitted dispatch request onto an idle connection
     // in the corresponding scheduling class.
@@ -73,17 +72,17 @@ class SessionPool {
         }
 
         switch (connection->try_start(std::move(request))) {
-            case ConnectionStartResult::kStarted:
-                ++telemetry_.accepted_requests;
-                return SessionPoolSubmitResult::kAccepted;
-            case ConnectionStartResult::kBusy:
-                ++telemetry_.rejected_no_idle_connection;
-                return SessionPoolSubmitResult::kNoIdleConnection;
-            case ConnectionStartResult::kInvalidRequest:
-                ++telemetry_.rejected_invalid_requests;
-                return SessionPoolSubmitResult::kInvalidRequest;
-            case ConnectionStartResult::kConnectionUnavailable:
-                return SessionPoolSubmitResult::kPoolUnavailable;
+        case ConnectionStartResult::kStarted:
+            ++telemetry_.accepted_requests;
+            return SessionPoolSubmitResult::kAccepted;
+        case ConnectionStartResult::kBusy:
+            ++telemetry_.rejected_no_idle_connection;
+            return SessionPoolSubmitResult::kNoIdleConnection;
+        case ConnectionStartResult::kInvalidRequest:
+            ++telemetry_.rejected_invalid_requests;
+            return SessionPoolSubmitResult::kInvalidRequest;
+        case ConnectionStartResult::kConnectionUnavailable:
+            return SessionPoolSubmitResult::kPoolUnavailable;
         }
         return SessionPoolSubmitResult::kPoolUnavailable;
     }
@@ -141,7 +140,8 @@ class SessionPool {
         return idle_count;
     }
 
-    [[nodiscard]] std::size_t inflight_connection_count(DispatchClass dispatch_class) const noexcept {
+    [[nodiscard]] std::size_t
+    inflight_connection_count(DispatchClass dispatch_class) const noexcept {
         const auto* connections = connections_for_class(dispatch_class);
         if (connections == nullptr) {
             return 0;
@@ -156,9 +156,7 @@ class SessionPool {
         return inflight_count;
     }
 
-    [[nodiscard]] const SessionPoolTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    [[nodiscard]] const SessionPoolTelemetry& telemetry() const noexcept { return telemetry_; }
 
   private:
     std::vector<AsyncRestConnection> hot_connections_;
@@ -168,8 +166,7 @@ class SessionPool {
     SessionPoolTelemetry telemetry_{};
     std::deque<SessionPoolCompletion> pending_completions_;
 
-    [[nodiscard]] AsyncRestConnection* find_idle_connection(
-        DispatchClass dispatch_class) noexcept {
+    [[nodiscard]] AsyncRestConnection* find_idle_connection(DispatchClass dispatch_class) noexcept {
         auto* connections = mutable_connections_for_class(dispatch_class);
         if (connections == nullptr) {
             return nullptr;
@@ -207,8 +204,8 @@ class SessionPool {
         }
     }
 
-    [[nodiscard]] static std::size_t warm_up_group(
-        std::vector<AsyncRestConnection>& connections) noexcept {
+    [[nodiscard]] static std::size_t
+    warm_up_group(std::vector<AsyncRestConnection>& connections) noexcept {
         std::size_t warmed_count = 0;
         for (auto& connection : connections) {
             if (connection.warm_up()) {
@@ -217,7 +214,7 @@ class SessionPool {
         }
         return warmed_count;
     }
-    
+
     void keep_warm_group(std::vector<AsyncRestConnection>& connections) noexcept {
         for (auto& connection : connections) {
             if (connection.idle()) {
@@ -232,28 +229,28 @@ class SessionPool {
         }
     }
 
-    [[nodiscard]] std::vector<AsyncRestConnection>* mutable_connections_for_class(
-        DispatchClass dispatch_class) noexcept {
+    [[nodiscard]] std::vector<AsyncRestConnection>*
+    mutable_connections_for_class(DispatchClass dispatch_class) noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return &hot_connections_;
-            case DispatchClass::kRecovery:
-                return &recovery_connections_;
-            case DispatchClass::kReconcile:
-                return &reconcile_connections_;
+        case DispatchClass::kHot:
+            return &hot_connections_;
+        case DispatchClass::kRecovery:
+            return &recovery_connections_;
+        case DispatchClass::kReconcile:
+            return &reconcile_connections_;
         }
         return nullptr;
     }
 
-    [[nodiscard]] const std::vector<AsyncRestConnection>* connections_for_class(
-        DispatchClass dispatch_class) const noexcept {
+    [[nodiscard]] const std::vector<AsyncRestConnection>*
+    connections_for_class(DispatchClass dispatch_class) const noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return &hot_connections_;
-            case DispatchClass::kRecovery:
-                return &recovery_connections_;
-            case DispatchClass::kReconcile:
-                return &reconcile_connections_;
+        case DispatchClass::kHot:
+            return &hot_connections_;
+        case DispatchClass::kRecovery:
+            return &recovery_connections_;
+        case DispatchClass::kReconcile:
+            return &reconcile_connections_;
         }
         return nullptr;
     }

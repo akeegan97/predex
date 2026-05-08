@@ -34,7 +34,7 @@ int fail(std::string_view message) {
     return 1;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     Parser parser{};

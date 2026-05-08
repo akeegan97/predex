@@ -168,7 +168,7 @@ Commands pushed by the OMS coordinator to the REST thread:
 
 ## 11. Audit Contract
 
-`AuditEvent` records are pushed to `shard_audit_queue[i]` (by shards) and `oms_audit_queue` (by the OMS coordinator). The audit thread drains both and writes JSONL records to `predex_audit.jsonl`.
+`AuditEvent` records are pushed to `shard_audit_queue[i]` (by shards) and `oms_audit_queue` (by the OMS coordinator). The audit thread drains both and writes JSONL records to the configured audit output path (for example `logs/live/predex_audit.jsonl`).
 
 Audit events capture: OMS decisions, fills, latency spans, halt transitions.
 

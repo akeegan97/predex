@@ -5,6 +5,7 @@ Checks: >
   portability-*,
   readability-*,
   modernize-*,
+  -readability-convert-member-functions-to-static,
   -modernize-use-trailing-return-type,
 WarningsAsErrors: "*"
 HeaderFilterRegex: ".*"

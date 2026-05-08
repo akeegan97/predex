@@ -7,30 +7,96 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <algorithm>
 
 #include "predex/internal/market_types.hpp"
 
 namespace predex::core::oms::kalshi {
-
+namespace {
+    inline constexpr std::size_t kLengthOfClientOrderId = 64;
+    //exchange generated from kalshi, soaks show 36 chars stably, extend buffer to 64 for safety 
+    inline constexpr std::size_t kMaxExchangeOrderId = 64;
+}
 using OmsRequestId = std::uint64_t;
 using LocalIntentId = std::uint64_t;
 using GroupIntentId = std::uint64_t;
 
 struct ClientOrderId {
-    //might want to convert this to a fixed-sized array to avoid dynamic memory allocation, noting for future PR work on perf.
-    std::string value;
+    static constexpr std::size_t kCapacity = kLengthOfClientOrderId;
+    std::array<char, kCapacity> storage{};
+    std::uint8_t size{0};
+
+    [[nodiscard]] std::string_view view() const noexcept {
+        return {storage.data(), size};
+    }
+
+    [[nodiscard]] const char* c_str() const noexcept {
+        return storage.data();
+    }
 
     [[nodiscard]] bool operator==(const ClientOrderId& other) const noexcept {
-        return value == other.value;
+        return view() == other.view();
+    }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return size == 0;
+    }
+
+    void clear() noexcept {
+        storage[0] = '\0';
+        size = 0;
+    }
+
+    [[nodiscard]] bool assign_from(std::string_view str) noexcept {
+        if (str.size() >= kCapacity) {
+            clear();
+            return false;
+        }
+        std::copy(str.begin(), str.end(), storage.begin());
+        size = static_cast<std::uint8_t>(str.size());
+        storage[size] = '\0';
+        return true;
     }
 };
 
 struct ExchangeOrderId {
-    std::string value;
+    static constexpr std::size_t kCapacity = kMaxExchangeOrderId;
+    std::array<char, kCapacity> storage{};
+    std::uint8_t size{0};
+    
+    [[nodiscard]] std::string_view view() const noexcept {
+        return {storage.data(), size};
+    }
+
+    [[nodiscard]] const char* c_str() const noexcept {
+        return storage.data();
+    }
 
     [[nodiscard]] bool operator==(const ExchangeOrderId& other) const noexcept {
-        return value == other.value;
+        return view() == other.view();
     }
+
+    [[nodiscard]] bool empty() const noexcept {
+        return size == 0;
+    }
+    void clear() noexcept {
+        storage[0] = '\0';
+        size = 0;
+    }
+
+    bool assign_from(std::string_view str) noexcept{
+        if (str.size() >= kCapacity) {
+            clear();
+            return false;
+        }
+        std::copy(str.begin(), str.end(), storage.begin());
+        size = static_cast<std::uint8_t>(str.size());
+        if(size < kCapacity){
+            storage[size] = '\0';
+        }
+        return true;
+    }
+
 };
 
 enum class TimeInForce : std::uint8_t {
@@ -242,8 +308,7 @@ struct ModifyOrderCmd {
     internal::TimestampNs transport_enqueue_ts_ns{0};
 };
 
-using OmsToKalshiCommand =
-    std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>;
+using OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>;
 
 // ---------------------------------------------------------------------------
 // 5. Kalshi -> OMS events
@@ -350,17 +415,10 @@ struct ReconcileOpenOrderSnapshot {
     internal::TimestampNs recv_ts_ns{0};
 };
 
-using KalshiToOmsEvent = std::variant<VenueOrderAck,
-                                      VenueOrderReject,
-                                      VenueOrderPartialFill,
-                                      VenueOrderFill,
-                                      VenueCancelAck,
-                                      VenueCancelReject,
-                                      VenueModifyAck,
-                                      VenueModifyReject,
-                                      VenueOrderCanceled,
-                                      VenueOrderUncertain,
-                                      ReconcileOpenOrderSnapshot>;
+using KalshiToOmsEvent =
+    std::variant<VenueOrderAck, VenueOrderReject, VenueOrderPartialFill, VenueOrderFill,
+                 VenueCancelAck, VenueCancelReject, VenueModifyAck, VenueModifyReject,
+                 VenueOrderCanceled, VenueOrderUncertain, ReconcileOpenOrderSnapshot>;
 
 struct SourcedKalshiEvent {
     KalshiEventSource source{KalshiEventSource::kPrivateWs};
@@ -419,18 +477,13 @@ struct OrderVenueRejected {
     VenueRejectReason reason{VenueRejectReason::kNone};
 };
 
-using OmsToShardLifecycleEvent =
-    std::variant<OrderWorking,
-                 OrderPartiallyFilled,
-                 OrderFilled,
-                 OrderCanceled,
-                 OrderUncertain,
-                 OrderVenueRejected>;
+using OmsToShardLifecycleEvent = std::variant<OrderWorking, OrderPartiallyFilled, OrderFilled,
+                                              OrderCanceled, OrderUncertain, OrderVenueRejected>;
 
 // Compatibility alias for the older draft naming.
 using ShardOrderEvent = OmsToShardLifecycleEvent;
 
-enum class OrderStatus : std::uint8_t{
+enum class OrderStatus : std::uint8_t {
     kUncertain,
     kPendingSubmit,
     kWorking,
@@ -442,21 +495,18 @@ enum class OrderStatus : std::uint8_t{
     kPendingModify,
 };
 
-
-
 } // namespace predex::core::oms::kalshi
 
-template <>
-struct std::hash<predex::core::oms::kalshi::ClientOrderId> {
-    std::size_t operator()(const predex::core::oms::kalshi::ClientOrderId& identity) const noexcept {
-        return std::hash<std::string>{}(identity.value);
+template <> struct std::hash<predex::core::oms::kalshi::ClientOrderId> {
+    std::size_t
+    operator()(const predex::core::oms::kalshi::ClientOrderId& identity) const noexcept {
+        return std::hash<std::string_view>{}(identity.view());
     }
 };
 
-template <>
-struct std::hash<predex::core::oms::kalshi::ExchangeOrderId> {
-    std::size_t operator()(
-        const predex::core::oms::kalshi::ExchangeOrderId& identity) const noexcept {
-        return std::hash<std::string>{}(identity.value);
+template <> struct std::hash<predex::core::oms::kalshi::ExchangeOrderId> {
+    std::size_t
+    operator()(const predex::core::oms::kalshi::ExchangeOrderId& identity) const noexcept {
+        return std::hash<std::string_view>{}(identity.view());
     }
 };

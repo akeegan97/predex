@@ -10,14 +10,14 @@
 #include "predex/shards/signal_types.hpp"
 
 namespace predex::core::shards::kalshi {
-    constexpr std::size_t kDefaultMaxOpenIntentsPerEvent = 1'000'000;
-    constexpr std::size_t kDefaultMaxOpenIntentsPerMarket = 1'000'000;
-    constexpr internal::QtyLots kDefaultMaxEventExposureLots =
-        std::numeric_limits<internal::QtyLots>::max() / 4;
-    constexpr internal::QtyLots kDefaultMaxMarketExposureLots =
-        std::numeric_limits<internal::QtyLots>::max() / 4;
-    constexpr std::int64_t kDefaultMaxNetPositionLotsPerMarket =
-        std::numeric_limits<std::int64_t>::max() / 4;
+constexpr std::size_t kDefaultMaxOpenIntentsPerEvent = 1'000'000;
+constexpr std::size_t kDefaultMaxOpenIntentsPerMarket = 1'000'000;
+constexpr internal::QtyLots kDefaultMaxEventExposureLots =
+    std::numeric_limits<internal::QtyLots>::max() / 4;
+constexpr internal::QtyLots kDefaultMaxMarketExposureLots =
+    std::numeric_limits<internal::QtyLots>::max() / 4;
+constexpr std::int64_t kDefaultMaxNetPositionLotsPerMarket =
+    std::numeric_limits<std::int64_t>::max() / 4;
 
 struct LocalRiskLimits {
     std::size_t max_open_intents_per_event{kDefaultMaxOpenIntentsPerEvent};
@@ -90,8 +90,7 @@ class LocalRiskManager {
                         .reason = RiskRejectReason::kMarketClosed,
                     };
                 }
-                if (limits_.min_seconds_to_close > 0 &&
-                    market_view->lifecycle.close_ts_s > 0 &&
+                if (limits_.min_seconds_to_close > 0 && market_view->lifecycle.close_ts_s > 0 &&
                     market_view->lifecycle.close_ts_s <= now_s + limits_.min_seconds_to_close) {
                     return RiskDecision{
                         .code = RiskDecisionCode::kRejected,
@@ -102,8 +101,7 @@ class LocalRiskManager {
         }
 
         if (limits_.max_net_position_lots_per_market < kDefaultMaxNetPositionLotsPerMarket) {
-            const auto pos_it =
-                state.net_position_lots_by_market.find(intent.context.market_id);
+            const auto pos_it = state.net_position_lots_by_market.find(intent.context.market_id);
             const std::int64_t current_net =
                 pos_it != state.net_position_lots_by_market.end() ? pos_it->second : 0;
             const std::int64_t delta =
@@ -155,4 +153,4 @@ class LocalRiskManager {
     LocalRiskLimits limits_{};
 };
 
-}  // namespace predex::core::shards::kalshi
+} // namespace predex::core::shards::kalshi

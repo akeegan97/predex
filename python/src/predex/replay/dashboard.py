@@ -276,8 +276,8 @@ def _event_explorer(st: Any, run_data: RunData, datasets: list[ReplayDataset], p
         st.info("No replay export found for this event yet.")
         st.code(
             "./scripts/predex-replay export-event-timeline "
-            "--config docs/generated_config.json --audit predex_audit.jsonl "
-            "--tape predex_tape.bin --event-id "
+            "--config docs/generated_config.json --audit logs/live/predex_audit.jsonl "
+            "--tape logs/live/predex_tape.bin --event-id "
             f"{selected_event_id} --parquet",
             language="bash",
         )
@@ -520,7 +520,7 @@ def main() -> None:
     root = Path(__file__).resolve().parents[4]
     default_replay_dir = (root / "logs" / "replay").as_posix()
     default_config = (root / "docs" / "generated_config.json").as_posix()
-    default_audit = (root / "predex_audit.jsonl").as_posix()
+    default_audit = (root / "logs" / "live" / "predex_audit.jsonl").as_posix()
 
     replay_dir = Path(st.sidebar.text_input("Replay Dir", value=default_replay_dir)).expanduser()
     config_path = Path(st.sidebar.text_input("Config Path", value=default_config)).expanduser()

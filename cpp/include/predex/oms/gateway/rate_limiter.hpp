@@ -49,8 +49,7 @@ struct RateLimiterTelemetry {
 class RateLimiter {
   public:
     explicit RateLimiter(RateLimiterQueues queues = {}, RateLimiterConfig config = {})
-        : queues_(queues),
-          config_(config),
+        : queues_(queues), config_(config),
           available_transaction_units_(config.initial_transaction_units),
           last_refill_tp_(std::chrono::steady_clock::now()) {}
 
@@ -84,9 +83,7 @@ class RateLimiter {
         return emit_admitted_request(std::move(request));
     }
 
-    [[nodiscard]] const RateLimiterTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    [[nodiscard]] const RateLimiterTelemetry& telemetry() const noexcept { return telemetry_; }
 
     [[nodiscard]] std::uint32_t available_transaction_units() const noexcept {
         return available_transaction_units_;
@@ -171,36 +168,34 @@ class RateLimiter {
         return !request.empty() && required_transaction_units(request) > 0;
     }
 
-    [[nodiscard]] static std::uint32_t required_transaction_units(
-        const DispatchRequest& request) {
+    [[nodiscard]] static std::uint32_t required_transaction_units(const DispatchRequest& request) {
         if (!request.budget_cost.zero()) {
             return request.budget_cost.transaction_units;
         }
         return static_cast<std::uint32_t>(request.item_count());
     }
 
-    [[nodiscard]] std::deque<DispatchRequest>& pending_for_class(
-        DispatchClass dispatch_class) {
+    [[nodiscard]] std::deque<DispatchRequest>& pending_for_class(DispatchClass dispatch_class) {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return pending_hot_;
-            case DispatchClass::kRecovery:
-                return pending_recovery_;
-            case DispatchClass::kReconcile:
-                return pending_reconcile_;
+        case DispatchClass::kHot:
+            return pending_hot_;
+        case DispatchClass::kRecovery:
+            return pending_recovery_;
+        case DispatchClass::kReconcile:
+            return pending_reconcile_;
         }
         return pending_hot_;
     }
 
-    [[nodiscard]] utils::SPSCQueue<DispatchRequest>* output_queue_for_class(
-        DispatchClass dispatch_class) noexcept {
+    [[nodiscard]] utils::SPSCQueue<DispatchRequest>*
+    output_queue_for_class(DispatchClass dispatch_class) noexcept {
         switch (dispatch_class) {
-            case DispatchClass::kHot:
-                return queues_.hot_output_queue;
-            case DispatchClass::kRecovery:
-                return queues_.recovery_output_queue;
-            case DispatchClass::kReconcile:
-                return queues_.reconcile_output_queue;
+        case DispatchClass::kHot:
+            return queues_.hot_output_queue;
+        case DispatchClass::kRecovery:
+            return queues_.recovery_output_queue;
+        case DispatchClass::kReconcile:
+            return queues_.reconcile_output_queue;
         }
         return nullptr;
     }

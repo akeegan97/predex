@@ -33,8 +33,7 @@ struct RestWorkerConfig {
 // worker-based transport implementation.
 class RestWorker {
   public:
-    explicit RestWorker(RestWorkerQueues queues,
-                        KalshiRestAdapter adapter,
+    explicit RestWorker(RestWorkerQueues queues, KalshiRestAdapter adapter,
                         RestWorkerConfig config = {})
         : queues_(queues), adapter_(std::move(adapter)), config_(std::move(config)) {}
 

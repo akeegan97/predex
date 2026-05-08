@@ -172,12 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tape-output",
-        default="predex_tape.bin",
+        default="logs/live/predex_tape.bin",
         help="Tape output path written into the config.",
     )
     parser.add_argument(
         "--audit-output",
-        default="predex_audit.jsonl",
+        default="logs/live/predex_audit.jsonl",
         help="Audit output path written into the config.",
     )
     parser.add_argument(

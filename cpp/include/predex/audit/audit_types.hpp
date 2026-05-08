@@ -90,7 +90,6 @@ struct AuditEvent {
 
     internal::QtyLots event_exposure_lots{0};
     internal::QtyLots market_exposure_lots{0};
-
 };
 
 } // namespace predex::core::audit

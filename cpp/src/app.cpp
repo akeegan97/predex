@@ -189,7 +189,7 @@ namespace predex {
             if (value.is_string()) {
                 try {
                     return static_cast<std::uint64_t>(std::stoull(value.get<std::string>()));
-                } catch (...) {
+                } catch (...) {// any parsing error results in nullopt 
                     return std::nullopt;
                 }
             }
@@ -387,7 +387,7 @@ namespace predex {
         std::vector<std::unique_ptr<Shard>> shards;
         std::jthread io_thread;
         std::jthread router_thread;
-        std::vector<std::jthread> shard_threads; // will house strategy & risk eventually on the same thread as shard 
+        std::vector<std::jthread> shard_threads; // One shard per thread, shard owning strategy & local risk via its pipeline. 
         std::jthread oms_thread;
         std::jthread oms_gateway_thread;
         std::jthread logger_thread;
@@ -506,37 +506,30 @@ namespace predex {
             }
         }
 
-        for (const auto& queue : shard_input_queues) {
-            shard_input_queue_ptrs.push_back(queue.get());
-        }
-        for (const auto& queue : shard_to_oms_intent_queues) {
-            shard_to_oms_intent_queue_ptrs.push_back(queue.get());
-        }
-        for (const auto& queue : oms_to_shard_decision_queues) {
-            oms_to_shard_decision_queue_ptrs.push_back(queue.get());
-        }
-        for (const auto& queue : oms_to_shard_lifecycle_queues) {
-            oms_to_shard_lifecycle_queue_ptrs.push_back(queue.get());
-        }
-        for (const auto& queue : shard_audit_queues) {
-            audit_input_queue_ptrs.push_back(queue.get());
-        }
+        auto to_ptrs = [](const auto& owned_vec, auto& ptr_vec){
+            ptr_vec.reserve(owned_vec.size());
+            for (const auto& item : owned_vec) {
+                ptr_vec.push_back(item.get());
+            }
+        };
+        
+        to_ptrs(shard_input_queues, shard_input_queue_ptrs);
+        to_ptrs(shard_to_oms_intent_queues, shard_to_oms_intent_queue_ptrs);
+        to_ptrs(oms_to_shard_decision_queues, oms_to_shard_decision_queue_ptrs);
+        to_ptrs(oms_to_shard_lifecycle_queues, oms_to_shard_lifecycle_queue_ptrs);
+        to_ptrs(shard_audit_queues, audit_input_queue_ptrs);
         audit_input_queue_ptrs.push_back(oms_audit_queue.get());
         audit_input_queue_ptrs.push_back(router_audit_queue.get());
 
         logger_input_queue_ptrs.push_back(router_to_logger_queue.get());
-        for (const auto& queue : shard_to_logger_queues) {
-            logger_input_queue_ptrs.push_back(queue.get());
-        }
+        to_ptrs(shard_to_logger_queues, logger_input_queue_ptrs);
 
         // Assemble the per-producer recycle fan-in for IOWriter. Order here does not matter —
         // IOWriter round-robins, but we list logger first since it is the highest-volume
         // producer (every tape-written frame).
         recycle_input_queue_ptrs.push_back(recycle_from_logger.get());
         recycle_input_queue_ptrs.push_back(recycle_from_router.get());
-        for (const auto& queue : recycle_from_shards) {
-            recycle_input_queue_ptrs.push_back(queue.get());
-        }
+        to_ptrs(recycle_from_shards, recycle_input_queue_ptrs);
 
         shard_dispatch =
             std::make_unique<core::routing::kalshi::ShardDispatch>(shard_input_queue_ptrs);
@@ -875,7 +868,6 @@ namespace predex {
     }
 
     [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest(bool is_startup) {
-        (void)is_startup;
         if (is_startup && oms != nullptr) {
             for (;;) {
                 const auto result = oms->pump(
@@ -961,16 +953,14 @@ namespace predex {
                 idle_iters = 0;
                 continue;
             }
-            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kIdle) {
-                ++idle_iters;
-                if (idle_iters <= config.pipeline.idle_policy.spin_iters_oms) {
-                    continue;
-                }
+            ++idle_iters;
+            if (idle_iters <= config.pipeline.idle_policy.spin_iters_oms) {
+                continue;
+            }
 
-                if (config.pipeline.idle_policy.yield_every > 0U &&
-                    (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
-                    std::this_thread::yield();
-                }
+            if (config.pipeline.idle_policy.yield_every > 0U &&
+                (idle_iters % config.pipeline.idle_policy.yield_every) == 0U) {
+                std::this_thread::yield();
             }
         }
         predex::core::oms::kalshi::OmsProcessCode tail_code{};
@@ -1041,7 +1031,7 @@ namespace predex {
             set_error("Attempted to run App that is not started");
             return;
         }
-        constexpr std::int64_t kHealthDumpIntervalMs = 30'000;
+        constexpr std::int64_t kHealthDumpIntervalMs = 30'000; // every 30 seconds for diagnostics while live trading 
         std::int64_t ms_since_last_dump = kHealthDumpIntervalMs; // dump immediately on start
         while(running.load(std::memory_order_acquire)){
             std::this_thread::sleep_for(std::chrono::milliseconds(kDefaultSleepMs));
@@ -1054,11 +1044,9 @@ namespace predex {
     }
 
     void App::Runtime::print_health_status() const noexcept {
-        const auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         char time_buf[32];
-        std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S UTC",
-                      std::gmtime(&now_t));
-
+        format_utc_timestamp(time_buf, sizeof(time_buf));
+        
         const bool halted = oms && oms->is_halted();
         const std::size_t live_orders = oms ? oms->live_order_count() : 0;
         const std::uint64_t oms_processed_shard_requests =
@@ -1087,53 +1075,23 @@ namespace predex {
             oms_gateway ? oms_gateway->session_pool().inflight_connection_count(
                               predex::core::oms::kalshi::gateway::DispatchClass::kHot)
                         : 0;
-        const double gateway_mean_latency_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_completion_latency_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+
+        auto mean_ms = [&](std::uint64_t total_ns)->double{
+            return gateway_telem.completed_requests == 0 
+            ? 0.0
+            : static_cast<double>(total_ns) / static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+        };
+        const double gateway_mean_latency_ms = mean_ms(gateway_telem.total_completion_latency_ns);
         const double gateway_last_latency_ms =
             static_cast<double>(gateway_telem.last_completion_latency_ns) / 1'000'000.0;
-        const double gateway_mean_queue_to_plan_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_queue_to_plan_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_ingress_to_sequence_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_ingress_to_sequence_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_sequence_to_plan_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_sequence_to_plan_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_plan_to_admit_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_plan_to_admit_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_admit_to_start_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_admit_to_start_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_start_to_wire_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_start_to_wire_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_wire_to_response_ms =
-            gateway_telem.completed_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_wire_to_response_ns) /
-                      static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
-        const double gateway_mean_cold_setup_ms =
-            gateway_telem.cold_connection_requests == 0
-                ? 0.0
-                : static_cast<double>(gateway_telem.total_cold_setup_ns) /
-                      static_cast<double>(gateway_telem.cold_connection_requests) / 1'000'000.0;
+        const double gateway_mean_queue_to_plan_ms = mean_ms(gateway_telem.total_queue_to_plan_ns);
+        const double gateway_mean_ingress_to_sequence_ms = mean_ms(gateway_telem.total_ingress_to_sequence_ns);
+        const double gateway_mean_sequence_to_plan_ms = mean_ms(gateway_telem.total_sequence_to_plan_ns);
+        const double gateway_mean_plan_to_admit_ms = mean_ms(gateway_telem.total_plan_to_admit_ns);
+        const double gateway_mean_admit_to_start_ms = mean_ms(gateway_telem.total_admit_to_start_ns);
+        const double gateway_mean_start_to_wire_ms = mean_ms(gateway_telem.total_start_to_wire_ns);
+        const double gateway_mean_wire_to_response_ms = mean_ms(gateway_telem.total_wire_to_response_ns);
+        const double gateway_mean_cold_setup_ms = mean_ms(gateway_telem.total_cold_setup_ns);
 
         std::size_t desynced_events = 0;
         for (const auto& event_store : event_stores) {

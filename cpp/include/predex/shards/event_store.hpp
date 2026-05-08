@@ -65,6 +65,7 @@ struct MarketLifecycleState {
     // when close_ts_s passes in wall-clock time; the `tradeable` flag on its own will
     // stay true past close_ts_s forever. Callers must route all "is this market
     // tradeable right now?" checks through this helper, not a direct .tradeable read.
+    // Switched now_s from wall-clock time to frame recv timestamp to avoid syscall 
     [[nodiscard]] bool is_tradeable_at(std::uint64_t now_s) const noexcept {
         return tradeable
             && (open_ts_s == 0 || now_s >= open_ts_s)

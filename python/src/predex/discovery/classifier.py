@@ -287,11 +287,10 @@ def classify_config_events(event: EventRecord) -> tuple[ClassifiedEvent, ...]:
         assert entity_key is not None
         grouped_markets.setdefault(entity_key, []).append(classified_market)
 
-    if any(len(group) < 2 for group in grouped_markets.values()):
-        return (_classify_event_without_numeric_split(event),)
-
     classified_events: list[ClassifiedEvent] = []
     for entity_key, grouped in sorted(grouped_markets.items()):
+        if len(grouped) < 2:
+            continue
         if not _markets_share_decision_horizon([classified.market for classified in grouped]):
             return (_classify_event_without_numeric_split(event),)
         ordered = _ordered_classification(
@@ -313,6 +312,9 @@ def classify_config_events(event: EventRecord) -> tuple[ClassifiedEvent, ...]:
                 synthetic_key=f"numeric:{entity_key}",
             )
         )
+
+    if not classified_events:
+        return (_classify_event_without_numeric_split(event),)
 
     return tuple(classified_events)
 

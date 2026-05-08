@@ -735,6 +735,47 @@ class ConfigTests(unittest.TestCase):
             },
         )
 
+    def test_config_builder_keeps_valid_numeric_subchain_and_drops_singleton_leftover(self) -> None:
+        event = EventRecord(
+            event_ticker="KXWNBASPREAD-26MAY09DALIND",
+            series_ticker="KXWNBASPREAD",
+            markets=[
+                MarketRecord(
+                    ticker="KXWNBASPREAD-26MAY09DALIND-DAL4",
+                    event_ticker="KXWNBASPREAD-26MAY09DALIND",
+                    strike_type="greater",
+                    floor_strike=3.5,
+                ),
+                MarketRecord(
+                    ticker="KXWNBASPREAD-26MAY09DALIND-IND6",
+                    event_ticker="KXWNBASPREAD-26MAY09DALIND",
+                    strike_type="greater",
+                    floor_strike=5.5,
+                ),
+                MarketRecord(
+                    ticker="KXWNBASPREAD-26MAY09DALIND-IND11",
+                    event_ticker="KXWNBASPREAD-26MAY09DALIND",
+                    strike_type="greater",
+                    floor_strike=10.5,
+                ),
+            ],
+        )
+
+        result = build_trader_config_result([event])
+
+        self.assertEqual(len(result.included_events), 1)
+        self.assertEqual(
+            result.report()["included_events"][0]["topology_kind"],
+            "monotonic_chain",
+        )
+        self.assertEqual(
+            result.config["kalshi"]["market_tickers"],
+            [
+                "KXWNBASPREAD-26MAY09DALIND-IND6",
+                "KXWNBASPREAD-26MAY09DALIND-IND11",
+            ],
+        )
+
     def test_config_builder_raises_when_filters_remove_everything(self) -> None:
         events = [
             EventRecord(

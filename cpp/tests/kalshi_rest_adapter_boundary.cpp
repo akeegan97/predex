@@ -47,7 +47,7 @@ SubmitOrderCmd make_submit_command(MarketId market_id, Side side, Outcome outcom
         .event_id = 1,
         .market_id = market_id,
     };
-    command.order.client_order_id = ClientOrderId{.value = std::move(client_order_id)};
+    static_cast<void>(command.order.client_order_id.assign_from(client_order_id));
     command.intent = NewOrderIntent{
         .context = command.intent.context,
         .exchange = ExchangeId::kKalshi,

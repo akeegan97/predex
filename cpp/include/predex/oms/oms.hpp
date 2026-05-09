@@ -100,18 +100,18 @@ class Oms {
     std::atomic<std::uint8_t> halt_mode_{0};
     bool hard_halt_cancel_triggered_{false};
 
-    [[nodiscard]] OmsProcessCode process_one_shard_request() noexcept;
+    [[nodiscard]] OmsProcessCode process_one_shard_request();
     [[nodiscard]] OmsProcessCode process_one_kalshi_event() noexcept;
 
-    [[nodiscard]] OmsProcessCode handle_shard_request(const ShardOmsRequest& request) noexcept;
+    [[nodiscard]] OmsProcessCode handle_shard_request(const ShardOmsRequest& request);
     [[nodiscard]] OmsProcessCode handle_new_order_intent(
         const NewOrderIntent& intent,
-        std::optional<GroupExecutionPolicy> group_execution_policy = std::nullopt) noexcept;
-    [[nodiscard]] OmsProcessCode handle_group_order_intent(const GroupOrderIntent& intent) noexcept;
+        std::optional<GroupExecutionPolicy> group_execution_policy = std::nullopt);
+    [[nodiscard]] OmsProcessCode handle_group_order_intent(const GroupOrderIntent& intent);
     [[nodiscard]] OmsProcessCode
-    handle_cancel_order_intent(const CancelOrderIntent& intent) noexcept;
+    handle_cancel_order_intent(const CancelOrderIntent& intent);
     [[nodiscard]] OmsProcessCode
-    handle_modify_order_intent(const ModifyOrderIntent& intent) noexcept;
+    handle_modify_order_intent(const ModifyOrderIntent& intent);
     [[nodiscard]] bool
     modify_preserves_immutable_fields(const OrderState& order_state,
                                       const NewOrderIntent& replacement) const noexcept;
@@ -128,7 +128,7 @@ class Oms {
     [[nodiscard]] OmsOrderRef make_order_ref();
     [[nodiscard]] ClientOrderId make_client_order_id(OmsRequestId oms_request_id) noexcept;
 
-    [[nodiscard]] bool emit_kalshi_command(const OmsToKalshiCommand& command) noexcept;
+    [[nodiscard]] bool emit_kalshi_command(const OmsToKalshiCommand& command);
     [[nodiscard]] bool emit_shard_decision(const OmsToShardDecision& decision,
                                            std::uint16_t shard_id) noexcept;
     [[nodiscard]] bool emit_shard_lifecycle(const OmsToShardLifecycleEvent& event,

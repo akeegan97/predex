@@ -40,7 +40,7 @@ bool IOWriter::on_wire_message(std::string_view payload) noexcept {
         std::memcpy(frame->payload.data(), payload.data(), payload.size());
         // enqueue handle for router to process
         if (!router_queue_.try_push(handle)) {
-            // if router queue is full, we return false, catastrophic backpressure we must fail.
+            // if router queue is full, we return false, catastrophic backpressure must fail.
             ++dropped_count_;
             // TODO would be to add retry/yield but for now we want to fail fast
             if (!frame_pool_.recycle(handle)) {

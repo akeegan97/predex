@@ -1,5 +1,6 @@
 #include "predex/oms/gateway/async_rest_connection.hpp"
 
+#include <cassert>
 #include <filesystem>
 #include <ostream>
 #include <string_view>
@@ -41,7 +42,7 @@ completion_timestamp_for(const transport::HttpResponse& response,
 
 void append_json_escaped(std::ostream& out, std::string_view value) {
     out.put('"');
-    for (const char ch : value) {
+    for (const char ch : value) { //NOLINT -- ch sufficient name for loop variable, readability not improved by longer name
         switch (ch) {
         case '\\':
             out << "\\\\";
@@ -97,14 +98,17 @@ const AsyncRestConnectionTelemetry& AsyncRestConnection::telemetry() const noexc
     return telemetry_;
 }
 
-ConnectionStartResult AsyncRestConnection::try_start(DispatchRequest request) noexcept {
-    if (!idle()) {
+bool AsyncRestConnection::can_start(const DispatchRequest& request) const noexcept {
+    return idle() && request_is_executable(request);
+}
+
+void AsyncRestConnection::start(DispatchRequest&& request) {
+    assert(idle());
+    assert(request_is_executable(request));
+
+    if (!idle() || !request_is_executable(request)) {
         ++telemetry_.failed_starts;
-        return ConnectionStartResult::kBusy;
-    }
-    if (!request_is_executable(request)) {
-        ++telemetry_.failed_starts;
-        return ConnectionStartResult::kInvalidRequest;
+        return;
     }
 
     inflight_request_ = std::move(request);
@@ -117,16 +121,15 @@ ConnectionStartResult AsyncRestConnection::try_start(DispatchRequest request) no
     pending_completion_.reset();
     ++telemetry_.started_requests;
 
-    if (!start_current_item_()) {
-        if (!pending_completion_.has_value()) {
-            reset_inflight_state_();
-            ++telemetry_.failed_starts;
-            return ConnectionStartResult::kConnectionUnavailable;
-        }
+    if (!start_current_item_() && !pending_completion_.has_value()) {
+        reset_inflight_state_();
+        ++telemetry_.failed_starts;
     }
-    return ConnectionStartResult::kStarted;
 }
 
+
+
+// NOLINTNEXTLINE -- function is long but breaking it up would reduce readability due to the interwoven logic and state updates
 ConnectionPollResult AsyncRestConnection::poll() noexcept {
     if (pending_completion_.has_value()) {
         DispatchCompletion completion = std::move(*pending_completion_);
@@ -279,7 +282,7 @@ void AsyncRestConnection::finalize_pending_completion_(DispatchRequestState term
     }
 }
 
-bool AsyncRestConnection::start_current_item_() noexcept {
+bool AsyncRestConnection::start_current_item_() {
     if (!inflight_request_.has_value()) {
         return false;
     }
@@ -307,7 +310,7 @@ bool AsyncRestConnection::start_current_item_() noexcept {
 }
 
 transport::PreparedCommandRequest
-AsyncRestConnection::prepare_item_(const DispatchItem& item) const noexcept {
+AsyncRestConnection::prepare_item_(const DispatchItem& item) const {
     return std::visit(
         [this](const auto& typed_command) -> transport::PreparedCommandRequest {
             using T = std::decay_t<decltype(typed_command)>;
@@ -341,7 +344,7 @@ AsyncRestConnection::prepare_batched_submit_request_() const noexcept {
 
 transport::CommandResult
 AsyncRestConnection::complete_item_(const DispatchItem& item,
-                                    const transport::HttpResponse& response) noexcept {
+                                    const transport::HttpResponse& response) {
     return std::visit(
         [&response, this](const auto& typed_command) -> transport::CommandResult {
             using T = std::decay_t<decltype(typed_command)>;
@@ -408,7 +411,7 @@ transport::CommandResult AsyncRestConnection::complete_batched_submit_request_(
     trace.error_message = response.error_message;
     return adapter_.complete_batched_submit_orders(commands, response, std::move(trace));
 }
-
+// NOLINTNEXTLINE -- function is long due to formatting a large JSON object
 void AsyncRestConnection::append_trace_row_(const DispatchCompletion& completion) noexcept {
     if (!trace_output_file_.is_open()) {
         return;

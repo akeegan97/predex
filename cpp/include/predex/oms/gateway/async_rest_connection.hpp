@@ -54,9 +54,10 @@ class AsyncRestConnection {
     [[nodiscard]] std::optional<DispatchRequestId> inflight_request_id() const noexcept;
     [[nodiscard]] const AsyncRestConnectionTelemetry& telemetry() const noexcept;
 
-    // Attempts to begin executing one already-planned dispatch request.
-    // The request must already be sequenced, batched, and admitted by Gateway.
-    [[nodiscard]] ConnectionStartResult try_start(DispatchRequest request) noexcept;
+    // Preflight check used by SessionPool before handing off ownership.
+    [[nodiscard]] bool can_start(const DispatchRequest& request) const noexcept;
+    // Consumes one already-planned dispatch request and begins execution.
+    void start(DispatchRequest&& request);
 
     // Non-blocking progress/completion check for the current request.
     // `kIdle` means nothing is in flight, `kInFlight` means still working,
@@ -87,13 +88,13 @@ class AsyncRestConnection {
     void reset_inflight_state_() noexcept;
     void finalize_pending_completion_(DispatchRequestState terminal_state,
                                       std::string error_message = {}) noexcept;
-    [[nodiscard]] bool start_current_item_() noexcept;
+    [[nodiscard]] bool start_current_item_();
     [[nodiscard]] transport::PreparedCommandRequest
-    prepare_item_(const DispatchItem& item) const noexcept;
+    prepare_item_(const DispatchItem& item) const;
     [[nodiscard]] transport::PreparedCommandRequest
     prepare_batched_submit_request_() const noexcept;
     [[nodiscard]] transport::CommandResult
-    complete_item_(const DispatchItem& item, const transport::HttpResponse& response) noexcept;
+    complete_item_(const DispatchItem& item, const transport::HttpResponse& response);
     [[nodiscard]] transport::CommandResult
     complete_batched_submit_request_(const transport::HttpResponse& response) noexcept;
     void append_trace_row_(const DispatchCompletion& completion) noexcept;

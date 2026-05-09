@@ -51,7 +51,7 @@ bool get_value(simdjson::ondemand::object& obj, std::string_view key,
     out = result.value_unsafe();
     return true;
 }
-
+constexpr std::uint64_t kMultiplier = 10;
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& out) noexcept {
     if (value.empty() || value.front() == '-' || value.front() == '+') {
@@ -91,11 +91,11 @@ bool parse_non_negative_dollars_to_ticks(std::string_view value, std::int64_t& o
         for (std::size_t index = 0; index < digits_to_take; ++index) {
             // NOLINTNEXTLINE(readability-magic-numbers)
             subcent_units =
-                subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+                subcent_units * kMultiplier + static_cast<std::uint64_t>(frac_part[index] - '0');
         }
         for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
             // NOLINTNEXTLINE(readability-magic-numbers)
-            subcent_units *= 10U;
+            subcent_units *= kMultiplier;
         }
         // NOLINTNEXTLINE(readability-magic-numbers)
         if (frac_part.size() > internal::kPriceDecimalPlaces &&

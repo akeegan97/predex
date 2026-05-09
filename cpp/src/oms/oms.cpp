@@ -60,13 +60,16 @@ struct TransportAuditSample {
 [[nodiscard]] std::optional<TransportAuditSample>
 transport_audit_sample_for(const KalshiEventSource source, const KalshiToOmsEvent& event,
                            internal::QtyLots previous_working_qty,
-                           std::optional<internal::PriceTicks> previous_working_price) noexcept {
+                           std::optional<internal::PriceTicks> previous_working_price) {
     if (source != KalshiEventSource::kRest) {
+        return std::nullopt;
+    }
+    if (event.valueless_by_exception()) [[unlikely]] {
         return std::nullopt;
     }
 
     return std::visit(
-        [&](const auto& typed_event) -> std::optional<TransportAuditSample> {
+        [&](const auto& typed_event) noexcept ->  std::optional<TransportAuditSample> {
             using T = std::decay_t<decltype(typed_event)>;
             if constexpr (std::is_same_v<T, VenueOrderAck>) {
                 return TransportAuditSample{
@@ -239,7 +242,7 @@ std::uint64_t Oms::emitted_lifecycle_count() const noexcept { return emitted_lif
 
 std::uint64_t Oms::rejected_decision_count() const noexcept { return rejected_decision_count_; }
 
-OmsProcessCode Oms::process_one_shard_request() noexcept {
+OmsProcessCode Oms::process_one_shard_request() {
     if (shard_request_queues_.empty()) {
         return OmsProcessCode::kIdle;
     }
@@ -273,7 +276,7 @@ OmsProcessCode Oms::process_one_kalshi_event() noexcept {
 
 OmsProcessCode
 Oms::handle_new_order_intent(const NewOrderIntent& intent,
-                             std::optional<GroupExecutionPolicy> group_execution_policy) noexcept {
+                             std::optional<GroupExecutionPolicy> group_execution_policy) {
     if (halt_mode_.load(std::memory_order_acquire) >= static_cast<std::uint8_t>(HaltMode::kSoft)) {
         const auto now_ns = monotonic_now_ns();
         emit_decision_audit(
@@ -345,7 +348,7 @@ Oms::handle_new_order_intent(const NewOrderIntent& intent,
     return OmsProcessCode::kProcessedShardRequest;
 }
 
-OmsProcessCode Oms::handle_group_order_intent(const GroupOrderIntent& intent) noexcept {
+OmsProcessCode Oms::handle_group_order_intent(const GroupOrderIntent& intent)  {
     for (std::size_t leg_index = 0; leg_index < intent.leg_count; ++leg_index) {
         const auto code = handle_new_order_intent(intent.legs[leg_index], intent.execution_policy);
         if (code != OmsProcessCode::kProcessedShardRequest && code != OmsProcessCode::kIdle) {
@@ -355,7 +358,7 @@ OmsProcessCode Oms::handle_group_order_intent(const GroupOrderIntent& intent) no
     return OmsProcessCode::kProcessedShardRequest;
 }
 
-OmsProcessCode Oms::handle_cancel_order_intent(const CancelOrderIntent& intent) noexcept {
+OmsProcessCode Oms::handle_cancel_order_intent(const CancelOrderIntent& intent) {
     const auto key = make_lookup_key(intent);
     if (!key.has_value()) {
         const auto now_ns = monotonic_now_ns();
@@ -404,7 +407,7 @@ OmsProcessCode Oms::handle_cancel_order_intent(const CancelOrderIntent& intent) 
     return OmsProcessCode::kProcessedShardRequest;
 }
 
-OmsProcessCode Oms::handle_modify_order_intent(const ModifyOrderIntent& intent) noexcept {
+OmsProcessCode Oms::handle_modify_order_intent(const ModifyOrderIntent& intent) {
     const auto key = make_lookup_key(intent);
     if (!key.has_value()) {
         const auto now_ns = monotonic_now_ns();
@@ -495,7 +498,7 @@ bool Oms::modify_preserves_immutable_fields(const OrderState& order_state,
            replacement.side == order_state.side && replacement.outcome == order_state.outcome &&
            replacement.exchange == order_state.exchange;
 }
-
+//NOLINTNEXTLINE -- Accepting complexity in this function for now, as it's mostly a big switch on event types. Can refactor if it grows further.
 OmsProcessCode Oms::handle_kalshi_event(const SourcedKalshiEvent& event) noexcept {
     const auto* pre_state = std::visit(
         [this](const auto& typed_event) -> const OrderState* {
@@ -766,7 +769,7 @@ ClientOrderId Oms::make_client_order_id(OmsRequestId oms_request_id) noexcept {
     return identity;
 }
 
-bool Oms::emit_kalshi_command(const OmsToKalshiCommand& command) noexcept {
+bool Oms::emit_kalshi_command(const OmsToKalshiCommand& command) {
     return transport_.try_send(command);
 }
 
@@ -909,7 +912,7 @@ void Oms::emit_lifecycle_audit(const ShardOrderCorrelation& corr,
     });
 }
 
-OmsProcessCode Oms::handle_shard_request(const ShardOmsRequest& request) noexcept {
+OmsProcessCode Oms::handle_shard_request(const ShardOmsRequest& request) {
     return std::visit(
         [this](const auto& typed_request) -> OmsProcessCode {
             using T = std::decay_t<decltype(typed_request)>;

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "predex/shards/applied_event_update.hpp"
-#include "predex/shards/signal_types.hpp"
+
 
 namespace predex::core::shards::kalshi::strategies {
 

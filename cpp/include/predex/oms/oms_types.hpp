@@ -123,7 +123,7 @@ enum class Outcome : std::uint8_t {
     kNo = 2,
 };
 
-enum class IntentRejectReason : std::uint16_t {
+enum class IntentRejectReason : std::uint8_t {
     kHardHalt = 0,
     kSoftHalt = 1,
     kGlobalRiskExceeded = 2,

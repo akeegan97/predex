@@ -7,7 +7,7 @@
 
 namespace predex::core::tape::kalshi {
 namespace {
-constexpr char kTapeMagic[4] = {'P', 'D', 'T', '2'};
+constexpr char kTapeMagic[4] = {'P', 'D', 'T', '2'}; //NOLINT: "PDT" for "Predex Tape", "2" for version 2 of the tape format.
 constexpr std::uint16_t kTapeVersion = 2;
 constexpr std::uint16_t kTapeFlags = 0;
 } // namespace

@@ -56,13 +56,15 @@ namespace {
     }
     return {};
 }
-
+constexpr std::size_t kRateLimitHttpCode = 429;
+constexpr std::size_t kVenueRangeDownHttpCodeStart = 500;
+constexpr std::size_t kVenueRangeDownHttpCodeEnd = 599;
 [[nodiscard]] VenueRejectReason
 venue_reject_reason_for_response(const HttpResponse& response) noexcept {
-    if (response.status_code == 429) {
+    if (response.status_code == kRateLimitHttpCode) {
         return VenueRejectReason::kRateLimit;
     }
-    if (response.status_code >= 500 && response.status_code < 600) {
+    if (response.status_code >= kVenueRangeDownHttpCodeStart && response.status_code <= kVenueRangeDownHttpCodeEnd) {
         return VenueRejectReason::kVenueDown;
     }
     return VenueRejectReason::kUnknown;
@@ -99,7 +101,7 @@ void append_json_escaped(std::string& out, std::string_view value) {
     const auto uch = static_cast<unsigned char>(car);
     return std::isalnum(uch) != 0 || car == '-' || car == '_' || car == '.' || car == '~';
 }
-
+constexpr std::size_t kMaxCents = 99;
 [[nodiscard]] std::optional<std::int64_t>
 internal_ticks_to_kalshi_price(internal::PriceTicks price_ticks) noexcept {
     if (price_ticks <= 0 || price_ticks >= internal::kMaxPriceTicks) {
@@ -110,7 +112,7 @@ internal_ticks_to_kalshi_price(internal::PriceTicks price_ticks) noexcept {
     }
 
     const auto cents = price_ticks / internal::kTicksPerCent;
-    if (cents < 1 || cents > 99) {
+    if (cents < 1 || cents > kMaxCents) {
         return std::nullopt;
     }
     return cents;
@@ -132,14 +134,14 @@ void append_url_encoded(std::string& out, std::string_view value) {
         out.push_back(kHex[uch & 0x0F]);
     }
 }
-
+constexpr std::size_t kReserveBodySizeStart = 256;
 void build_submit_body(const SubmitOrderCmd& command,
                        // NOLINTNEXTLINE
                        std::string_view action, std::string_view outcome_side,
                        std::string_view time_in_force, std::string_view price_field,
                        std::optional<std::int64_t> price_cents, std::string& body) {
     body.clear();
-    body.reserve(256 + command.market_ticker.size() + command.order.client_order_id.view().size());
+    body.reserve(kReserveBodySizeStart + command.market_ticker.size() + command.order.client_order_id.view().size());
     body.push_back('{');
     body.append("\"ticker\":");
     append_json_escaped(body, command.market_ticker);
@@ -207,7 +209,7 @@ void build_modify_body(const ModifyOrderCmd& command,
                        std::string_view price_field, std::optional<std::int64_t> price_cents,
                        std::string& body) {
     body.clear();
-    body.reserve(256 + command.corr.order.client_order_id.view().size() +
+    body.reserve(kReserveBodySizeStart + command.corr.order.client_order_id.view().size() +
                  command.updated_client_order_id.view().size());
     body.push_back('{');
     body.append("\"client_order_id\":");
@@ -243,14 +245,19 @@ void build_modify_body(const ModifyOrderCmd& command,
 [[nodiscard]] std::optional<internal::PriceTicks>
 parse_snapshot_price_ticks(const nlohmann::json& order_json, Outcome outcome) {
     internal::PriceTicks parsed_ticks = 0;
-    const auto* price_text =
-        outcome == Outcome::kYes ? order_json.contains("yes_price_dollars") &&
-                                           order_json["yes_price_dollars"].is_string()
-                                       ? &order_json["yes_price_dollars"]
-                                       : nullptr
-        : order_json.contains("no_price_dollars") && order_json["no_price_dollars"].is_string()
-            ? &order_json["no_price_dollars"]
-            : nullptr;
+    const nlohmann::json* price_text = nullptr;
+
+    if (outcome == Outcome::kYes) {
+        if (order_json.contains("yes_price_dollars") &&
+            order_json["yes_price_dollars"].is_string()) {
+            price_text = &order_json["yes_price_dollars"];
+        }
+    } else {
+        if (order_json.contains("no_price_dollars") &&
+            order_json["no_price_dollars"].is_string()) {
+            price_text = &order_json["no_price_dollars"];
+        }
+    }
     if (price_text == nullptr) {
         return std::nullopt;
     }
@@ -270,7 +277,7 @@ parse_snapshot_price_ticks(const nlohmann::json& order_json, Outcome outcome) {
                    [](unsigned char car) { return static_cast<char>(std::tolower(car)); });
     return status;
 }
-
+constexpr std::uint64_t kMultiplier = 10;
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                        internal::PriceTicks& out_ticks) {
     constexpr auto kDollarToTicksScale =
@@ -311,10 +318,10 @@ parse_snapshot_price_ticks(const nlohmann::json& order_json, Outcome outcome) {
     const std::size_t digits_to_take =
         std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
     for (std::size_t index = 0; index < digits_to_take; ++index) {
-        subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+        subcent_units = subcent_units * kMultiplier + static_cast<std::uint64_t>(frac_part[index] - '0');
     }
     for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
-        subcent_units *= 10U;
+        subcent_units *= kMultiplier;
     }
     if (frac_part.size() > internal::kPriceDecimalPlaces &&
         frac_part[internal::kPriceDecimalPlaces] >= '5') {
@@ -443,7 +450,7 @@ KalshiRestAdapter::prepare_submit_order(const SubmitOrderCmd& command) const {
             },
     };
 }
-
+constexpr std::size_t kBodyReserveSizePerOrder = 512;
 PreparedCommandRequest KalshiRestAdapter::prepare_batched_submit_orders(
     const std::vector<SubmitOrderCmd>& commands) const {
     if (commands.empty()) {
@@ -453,7 +460,7 @@ PreparedCommandRequest KalshiRestAdapter::prepare_batched_submit_orders(
     thread_local std::string body_scratch;
     thread_local std::string order_scratch;
     body_scratch.clear();
-    body_scratch.reserve(512 * commands.size());
+    body_scratch.reserve(kBodyReserveSizePerOrder * commands.size());
     body_scratch.append("{\"orders\":[");
     for (std::size_t index = 0; index < commands.size(); ++index) {
         std::string error_message;

@@ -145,7 +145,7 @@ OrderStore::apply_venue_event(const SourcedKalshiEvent& sourced_event) {
                 .cumulative_filled_qty_lots = snapshot->cumulative_filled_qty_lots,
                 .initial_limit_price_ticks = snapshot->working_limit_price_ticks,
                 .working_limit_price_ticks = snapshot->working_limit_price_ticks,
-                .status = snapshot->working_qty_lots > 0 ? (snapshot->cumulative_filled_qty_lots > 0
+                .status = snapshot->working_qty_lots > 0 ? (snapshot->cumulative_filled_qty_lots > 0 //NOLINT
                                                                 ? OrderStatus::kPartiallyFilled
                                                                 : OrderStatus::kWorking)
                                                          : OrderStatus::kFilled,
@@ -299,10 +299,13 @@ OrderStore::apply_venue_event(const SourcedKalshiEvent& sourced_event) {
                 state->cumulative_filled_qty_lots = event.cumulative_filled_qty_lots;
                 state->working_limit_price_ticks = event.working_limit_price_ticks;
                 state->last_update_ts_ns = event.recv_ts_ns;
-                state->status = event.working_qty_lots > 0 ? (event.cumulative_filled_qty_lots > 0
-                                                                  ? OrderStatus::kPartiallyFilled
-                                                                  : OrderStatus::kWorking)
-                                                           : OrderStatus::kFilled;
+                if (event.working_qty_lots == 0) {
+                    state->status = OrderStatus::kFilled;
+                } else if (event.cumulative_filled_qty_lots > 0) {
+                    state->status = OrderStatus::kPartiallyFilled;
+                } else {
+                    state->status = OrderStatus::kWorking;
+                }
                 result.remaining_open_qty_lots = state->working_qty_lots;
             }
         },

@@ -23,6 +23,7 @@ inline constexpr PriceTicks kPriceTicksPerDollar = 1000;
 inline constexpr PriceTicks kMaxPriceTicks = kPriceTicksPerDollar;
 inline constexpr PriceTicks kTicksPerCent = kPriceTicksPerDollar / 100;
 inline constexpr std::size_t kPriceDecimalPlaces = 3;
+inline constexpr std::uint64_t kMultiplier = 10;
 
 enum class ExchangeId : std::uint8_t {
     kUnknown = 0,
@@ -60,14 +61,15 @@ enum class Side : std::uint8_t {
     kSell = 4,
 };
 
-[[nodiscard]] inline constexpr QtyLots contracts_to_qty(std::int64_t contracts) noexcept {
+[[nodiscard]] constexpr QtyLots contracts_to_qty(std::int64_t contracts) noexcept {
     return static_cast<QtyLots>(contracts) * kQtyScale;
 }
 
-[[nodiscard]] inline constexpr double qty_to_contracts(QtyLots qty_lots) noexcept {
+[[nodiscard]] constexpr double qty_to_contracts(QtyLots qty_lots) noexcept {
     return static_cast<double>(qty_lots) / static_cast<double>(kQtyScale);
 }
 
+//NOLINTNEXTLINE : accepting complexity in parse_quantity_fp since it needs to handle various edge cases and input formats
 [[nodiscard]] inline bool parse_quantity_fp(std::string_view value, QtyLots& out_qty_lots,
                                             bool allow_negative = true) noexcept {
     if (value.empty()) {
@@ -115,10 +117,10 @@ enum class Side : std::uint8_t {
         if (digit_char < '0' || digit_char > '9') {
             return false;
         }
-        fractional = fractional * 10 + static_cast<std::int64_t>(digit_char - '0');
+        fractional = fractional * static_cast<std::int64_t>(kMultiplier) + static_cast<std::int64_t>(digit_char - '0');
     }
     if (frac_part.size() == 1U) {
-        fractional *= 10;
+        fractional *= static_cast<std::int64_t>(kMultiplier);
     }
 
     if (whole > (std::numeric_limits<QtyLots>::max() - fractional) / kQtyScale) {
@@ -155,18 +157,18 @@ enum class Side : std::uint8_t {
     }
     formatted.append(std::to_string(whole));
     formatted.push_back('.');
-    formatted.push_back(static_cast<char>('0' + (fractional / 10U)));
-    formatted.push_back(static_cast<char>('0' + (fractional % 10U)));
+    formatted.push_back(static_cast<char>('0' + (fractional / kMultiplier)));
+    formatted.push_back(static_cast<char>('0' + (fractional % kMultiplier)));
     return formatted;
 }
 
-[[nodiscard]] inline constexpr std::int64_t scale_ticks_by_qty_floor(PriceTicks ticks_per_contract,
+[[nodiscard]] constexpr std::int64_t scale_ticks_by_qty_floor(PriceTicks ticks_per_contract,
                                                                      QtyLots qty_lots) noexcept {
     return (static_cast<std::int64_t>(ticks_per_contract) * static_cast<std::int64_t>(qty_lots)) /
            static_cast<std::int64_t>(kQtyScale);
 }
 
-[[nodiscard]] inline constexpr std::int64_t scale_ticks_by_qty_ceil(PriceTicks ticks_per_contract,
+[[nodiscard]] constexpr std::int64_t scale_ticks_by_qty_ceil(PriceTicks ticks_per_contract,
                                                                     QtyLots qty_lots) noexcept {
     if (ticks_per_contract <= 0 || qty_lots <= 0) {
         return 0;

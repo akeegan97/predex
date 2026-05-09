@@ -7,7 +7,7 @@ FramePool::FramePool(std::size_t capacity) : capacity_(capacity) {
     assert(capacity <= std::numeric_limits<std::uint32_t>::max() &&
            "FramePool capacity exceeds maximum supported size due to uint32_t indexing");
     // initialize vectors once with reserve capacity and then use push_back to maintain size
-    // invariants with pool
+    // invariants with pool, will never push more than capacity elements; no risk of reallocation after this point
     free_slots_.reserve(capacity);
     generations_.reserve(capacity);
     in_use_.reserve(capacity);

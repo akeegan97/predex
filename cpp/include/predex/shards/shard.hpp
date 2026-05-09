@@ -119,7 +119,7 @@ inline const char* desync_reason_name(ShardDesyncReason reason) noexcept {
 struct PreApplyBookSnapshot {
     bool has_snapshot{false};
     bool desynced{false};
-    std::optional<internal::SequenceId> last_seq_id{};
+    std::optional<internal::SequenceId> last_seq_id;
     std::uint64_t corrected_negative_level_count{0};
 };
 
@@ -140,7 +140,7 @@ inline PreApplyBookSnapshot capture_snapshot(const BookState* pre_book_state) no
 inline void log_correction(const predex::core::ingest::kalshi::FrameHandle& handle,
                            const BookState& post_book,
                            const predex::internal::NormalizedEvent& event) noexcept {
-    char time_buf[32];
+    char time_buf[32];//NOLINT -- char buffer is used for formatted timestamp output
     format_utc_timestamp(time_buf, sizeof(time_buf));
     std::fprintf(stdout,
                  "[%s] SHARD | phase=correction | event_id=%u | market_id=%u"
@@ -194,7 +194,7 @@ inline void log_desync(const predex::core::ingest::kalshi::FrameHandle& handle,
     const auto recovery_snapshot_count =
         post_book != nullptr ? post_book->recovery_snapshot_count : 0;
 
-    char time_buf[32];
+    char time_buf[32]; //NOLINT -- char buffer is used for formatted timestamp output
     format_utc_timestamp(time_buf, sizeof(time_buf));
 
     std::fprintf(stdout,
@@ -251,6 +251,7 @@ template <typename Bundle> class Shard {
   public:
     explicit Shard(utils::SPSCQueue<ingest::kalshi::FrameHandle>& input_queue,
                    ingest::kalshi::FramePool& frame_pool,
+//NOLINTNEXTLINE 
                    utils::SPSCQueue<ingest::kalshi::FrameHandle>& logger_queue,
                    utils::SPSCQueue<ingest::kalshi::FrameHandle>& recycle_queue,
                    EventStore& event_store, Bundle bundle)

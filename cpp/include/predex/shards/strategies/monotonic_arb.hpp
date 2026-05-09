@@ -12,20 +12,20 @@
 #include "predex/shards/signal_types.hpp"
 
 namespace predex::core::shards::kalshi::strategies {
-inline constexpr double kPriceScale = static_cast<double>(internal::kPriceTicksPerDollar);
-inline constexpr double kCentScale = 100.0;
-inline constexpr internal::PriceTicks kTicksPerCent = internal::kTicksPerCent;
-inline constexpr double kTakerFeeRate = 0.07;
-inline constexpr double kMakerFeeRate = 0.0175;
-inline constexpr std::int64_t kMinEdgeTicks = 20;
-inline constexpr std::uint64_t kNanosecPerSec = 1'000'000'000ULL;
+constexpr double kPriceScale = static_cast<double>(internal::kPriceTicksPerDollar);
+constexpr double kCentScale = 100.0;
+constexpr internal::PriceTicks kTicksPerCent = internal::kTicksPerCent;
+constexpr double kTakerFeeRate = 0.07;
+constexpr double kMakerFeeRate = 0.0175;
+constexpr std::int64_t kMinEdgeTicks = 20;
+constexpr std::uint64_t kNanosecPerSec = 1'000'000'000ULL;
 
 struct MonotonicArbConfig {
-    inline constexpr static std::int64_t kMaxTopGapTicks = 20;
-    inline constexpr static std::int64_t kMaxEasierAggressionTicks = 30;
-    inline constexpr static std::int64_t kMaxHarderAggressionTicks = 30;
-    inline constexpr static std::uint16_t kMinNearTopLevels = 2;
-    inline constexpr static std::int64_t kTopDepthWindowTicks = 20;
+    constexpr static std::int64_t kMaxTopGapTicks = 20;
+    constexpr static std::int64_t kMaxEasierAggressionTicks = 30;
+    constexpr static std::int64_t kMaxHarderAggressionTicks = 30;
+    constexpr static std::uint16_t kMinNearTopLevels = 2;
+    constexpr static std::int64_t kTopDepthWindowTicks = 20;
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
     bool bounded_harder_aggression_enabled{true};
@@ -251,11 +251,11 @@ class MonotonicArbStrategy {
             }
 
             if (!first_price.has_value()) {
-                first_price = *level.price_ticks;
+                first_price = level.price_ticks;
                 continue;
             }
 
-            second_price = *level.price_ticks;
+            second_price = level.price_ticks;
             break;
         }
 

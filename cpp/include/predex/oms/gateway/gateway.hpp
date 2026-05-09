@@ -42,11 +42,11 @@ struct GatewayQueues {
 };
 
 struct GatewayConfig {
-    inline constexpr static std::size_t kDefaultHotQueueCapacity = 1024;
-    inline constexpr static std::size_t kDefaultRecoveryQueueCapacity = 256;
-    inline constexpr static std::size_t kDefaultReconcileQueueCapacity = 256;
-    inline constexpr static std::size_t kDefaultPostWriteRecoveryAttempts = 3;
-    inline constexpr static std::uint64_t kDefaultPostWriteRecoveryBackoffMs = 25;
+    constexpr static std::size_t kDefaultHotQueueCapacity = 1024;
+    constexpr static std::size_t kDefaultRecoveryQueueCapacity = 256;
+    constexpr static std::size_t kDefaultReconcileQueueCapacity = 256;
+    constexpr static std::size_t kDefaultPostWriteRecoveryAttempts = 3;
+    constexpr static std::uint64_t kDefaultPostWriteRecoveryBackoffMs = 25;
     std::size_t hot_queue_capacity{kDefaultHotQueueCapacity};
     std::size_t recovery_queue_capacity{kDefaultRecoveryQueueCapacity};
     std::size_t reconcile_queue_capacity{kDefaultReconcileQueueCapacity};
@@ -211,9 +211,10 @@ class Gateway {
             try_take_admitted_request(DispatchClass::kRecovery, request) ||
             try_take_admitted_request(DispatchClass::kReconcile, request)) {
             ++telemetry_.rate_limited_requests;
+            const auto request_item_count = request.item_count(); // for telemetry only, since submit takes ownership and could move request 
             switch (session_pool_.submit(request)) {
             case SessionPoolSubmitResult::kAccepted:
-                telemetry_.sequenced_items += request.item_count();
+                telemetry_.sequenced_items += request_item_count;
                 ++telemetry_.submitted_to_session_pool;
                 return true;
             case SessionPoolSubmitResult::kNoIdleConnection:
@@ -409,9 +410,9 @@ class Gateway {
     }
 
     [[nodiscard]] static const OmsOrderRef*
-    order_ref_for_event(const KalshiToOmsEvent& event) noexcept {
+    order_ref_for_event(const KalshiToOmsEvent& event) {
         return std::visit(
-            [](const auto& typed_event) noexcept -> const OmsOrderRef* {
+            [](const auto& typed_event) -> const OmsOrderRef* {
                 return &typed_event.order;
             },
             event);

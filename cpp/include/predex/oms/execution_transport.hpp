@@ -29,7 +29,7 @@ class ExecutionTransport {
     explicit ExecutionTransport(ExecutionTransportQueues queues = {})
         : queues_(std::move(queues)) {}
 
-    [[nodiscard]] bool try_send(const OmsToKalshiCommand& command) noexcept {
+    [[nodiscard]] bool try_send(const OmsToKalshiCommand& command) {
         if (queues_.command_queues.empty()) {
             return false;
         }
@@ -99,10 +99,10 @@ class ExecutionTransport {
                 .count());
     }
 
-    static void stamp_transport_enqueue_ts(OmsToKalshiCommand& command) noexcept {
+    static void stamp_transport_enqueue_ts(OmsToKalshiCommand& command) {
         const auto enqueue_ts_ns = now_ns();
         std::visit(
-            [&](auto& typed_command) noexcept {
+            [&](auto& typed_command) {
                 typed_command.transport_enqueue_ts_ns = enqueue_ts_ns;
             },
             command);

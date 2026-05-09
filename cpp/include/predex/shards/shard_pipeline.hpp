@@ -236,10 +236,14 @@ template <typename LocalRisk, typename... Strategies> class DefaultShardPipeline
 
     struct PendingOpportunityKeyHash {
         [[nodiscard]] std::size_t operator()(const PendingOpportunityKey& key) const noexcept {
+            // Hashes the full normalized pending-opportunity identity.
+            // The arrays in PendingOpportunityKey are expected to be zero/default-filled -- as is the case in build_pending_opportunity_key
+            // beyond leg_count, so hashing the full storage is stable and keeps equality/hash
+            // behavior aligned for fixed-capacity keys.
             std::size_t seed = 0;
             auto combine = [&seed](const auto& value) {
-                seed ^= std::hash<std::decay_t<decltype(value)>>{}(value) + 0x9e3779b9U +
-                        (seed << 6U) + (seed >> 2U);
+                seed ^= std::hash<std::decay_t<decltype(value)>>{}(value) + 0x9e3779b9U + //NOLINT -- hash combine magic number
+                        (seed << 6U) + (seed >> 2U); //NOLINT -- hash combine bit shifts
             };
             combine(key.event_id);
             combine(key.leg_count);
@@ -354,8 +358,8 @@ template <typename LocalRisk, typename... Strategies> class DefaultShardPipeline
             return false;
         }
         group_signals_buffer_[group_signal_count_++] = group_signal;
-        const SubmissionLeg* leg1 = group_signal.leg_count > 0 ? &group_signal.legs[0] : nullptr;
-        const SubmissionLeg* leg2 = group_signal.leg_count > 1 ? &group_signal.legs[1] : nullptr;
+        const SubmissionLeg* leg1 = group_signal.leg_count > 0 ? group_signal.legs.data() : nullptr;
+        const SubmissionLeg* leg2 = group_signal.leg_count > 1 ? group_signal.legs.data() + 1 : nullptr;
         emit_audit(predex::core::audit::AuditEvent{
             .kind = predex::core::audit::AuditKind::kGroupSignal,
             .ts_ns = group_signal.signal_ts_ns,
@@ -764,7 +768,7 @@ template <typename LocalRisk, typename... Strategies> class DefaultShardPipeline
 
         return true;
     }
-
+//NOLINTNEXTLINE -- accepting complexity of this function 
     [[nodiscard]] bool process_one_lifecycle_event() noexcept {
         if (lifecycle_queue_ == nullptr) {
             return false;
@@ -792,7 +796,7 @@ template <typename LocalRisk, typename... Strategies> class DefaultShardPipeline
                 using T = std::decay_t<decltype(typed_event)>;
                 if constexpr (std::is_same_v<T, oms::OrderPartiallyFilled>) {
                     reduce_open_qty(*tracked, typed_event.filled_qty_lots);
-                    const std::int64_t fill_delta =
+                    const auto fill_delta =
                         static_cast<std::int64_t>(typed_event.filled_qty_lots);
                     if (tracked->side == internal::Side::kBuy ||
                         tracked->side == internal::Side::kBid) {
@@ -805,7 +809,7 @@ template <typename LocalRisk, typename... Strategies> class DefaultShardPipeline
                     }
                 } else if constexpr (std::is_same_v<T, oms::OrderFilled>) {
                     reduce_open_qty(*tracked, typed_event.filled_qty_lots);
-                    const std::int64_t fill_delta =
+                    const auto fill_delta =
                         static_cast<std::int64_t>(typed_event.filled_qty_lots);
                     if (tracked->side == internal::Side::kBuy ||
                         tracked->side == internal::Side::kBid) {

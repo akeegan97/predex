@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -45,9 +44,9 @@ class OrderSequencer {
         DispatchItem item{
             .dispatch_item_id = envelope.dispatch_item_id,
             .lineage_id = envelope.lineage_id,
-            .lineage_key = std::move(envelope.lineage_key),
-            .group_key = std::move(envelope.group_key),
-            .batch_group = std::move(envelope.batch_group),
+            .lineage_key = envelope.lineage_key,
+            .group_key = envelope.group_key,
+            .batch_group = envelope.batch_group,
             .operation = envelope.operation,
             .dispatch_class = envelope.dispatch_class,
             .state = DispatchItemState::kPending,
@@ -56,20 +55,24 @@ class OrderSequencer {
             .command = std::move(envelope.command),
         };
 
-        if (lineage_blocked_.contains(item.lineage_id)) {
-            pending_by_lineage_[item.lineage_id].push_back(PendingSequencedItem{
+        const auto lineage_id = item.lineage_id;
+
+        if (lineage_blocked_.contains(lineage_id)) {
+            pending_by_lineage_[lineage_id].push_back(PendingSequencedItem{
                 .dispatch_class = dispatch_class,
                 .item = std::move(item),
             });
+
             ++telemetry_.blocked_items;
             return true;
         }
 
         if (!emit_ready_item(dispatch_class, item)) {
-            pending_by_lineage_[item.lineage_id].push_front(PendingSequencedItem{
+            pending_by_lineage_[lineage_id].push_front(PendingSequencedItem{
                 .dispatch_class = dispatch_class,
                 .item = std::move(item),
             });
+
             ++telemetry_.output_backpressure;
             return false;
         }
@@ -122,7 +125,7 @@ class OrderSequencer {
     std::unordered_map<LineageId, std::deque<PendingSequencedItem>> pending_by_lineage_;
     OrderSequencerTelemetry telemetry_{};
 
-    [[nodiscard]] bool try_take_envelope(DispatchClass& dispatch_class,
+    [[nodiscard]] bool try_take_envelope(DispatchClass& dispatch_class, //NOLINT -- could be const but keeping non-const since it's closely tied to the queues_ member
                                          CommandEnvelope& out_envelope) {
         if (queues_.hot_input_queue != nullptr && queues_.hot_input_queue->try_pop(out_envelope)) {
             dispatch_class = DispatchClass::kHot;
@@ -151,7 +154,7 @@ class OrderSequencer {
     }
 
     [[nodiscard]] utils::SPSCQueue<DispatchItem>*
-    output_queue_for_class(DispatchClass dispatch_class) noexcept {
+    output_queue_for_class(DispatchClass dispatch_class) noexcept { //NOLINT -- could be const but keeping non-const since it's closely tied to the queues_ member
         switch (dispatch_class) {
         case DispatchClass::kHot:
             return queues_.hot_output_queue;

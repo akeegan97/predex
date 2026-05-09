@@ -57,6 +57,7 @@ class SessionPool {
 
     // Attempts to assign one admitted dispatch request onto an idle connection
     // in the corresponding scheduling class.
+
     [[nodiscard]] SessionPoolSubmitResult submit(DispatchRequest& request) noexcept {
         if (request.empty()) {
             ++telemetry_.rejected_invalid_requests;
@@ -71,20 +72,14 @@ class SessionPool {
             return SessionPoolSubmitResult::kNoIdleConnection;
         }
 
-        switch (connection->try_start(std::move(request))) {
-        case ConnectionStartResult::kStarted:
-            ++telemetry_.accepted_requests;
-            return SessionPoolSubmitResult::kAccepted;
-        case ConnectionStartResult::kBusy:
+        if (!connection->can_start(request)) {
             ++telemetry_.rejected_no_idle_connection;
             return SessionPoolSubmitResult::kNoIdleConnection;
-        case ConnectionStartResult::kInvalidRequest:
-            ++telemetry_.rejected_invalid_requests;
-            return SessionPoolSubmitResult::kInvalidRequest;
-        case ConnectionStartResult::kConnectionUnavailable:
-            return SessionPoolSubmitResult::kPoolUnavailable;
         }
-        return SessionPoolSubmitResult::kPoolUnavailable;
+
+        connection->start(std::move(request));
+        ++telemetry_.accepted_requests;
+        return SessionPoolSubmitResult::kAccepted;
     }
 
     // Polls all owned connections and buffers any completions that are ready.

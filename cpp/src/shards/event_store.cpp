@@ -291,19 +291,19 @@ bool is_tradeable(internal::MarketLifecycleStatus status) noexcept {
 EventMarketView* find_market_view_mut(EventDerivedState& state,
                                       internal::MarketId market_id) noexcept {
     if (auto* chain = std::get_if<MonotonicChainState>(&state)) {
-        auto it = chain->market_index_by_id.find(market_id);
-        if (it != chain->market_index_by_id.end()) {
-            return &chain->markets[it->second].market;
+        auto itr = chain->market_index_by_id.find(market_id);
+        if (itr != chain->market_index_by_id.end()) {
+            return &chain->markets[itr->second].market;
         }
     } else if (auto* exclusive = std::get_if<MutuallyExclusiveState>(&state)) {
-        auto it = exclusive->market_index_by_id.find(market_id);
-        if (it != exclusive->market_index_by_id.end()) {
-            return &exclusive->markets[it->second];
+        auto itr = exclusive->market_index_by_id.find(market_id);
+        if (itr != exclusive->market_index_by_id.end()) {
+            return &exclusive->markets[itr->second];
         }
     } else if (auto* group = std::get_if<UnorderedGroupState>(&state)) {
-        auto it = group->market_index_by_id.find(market_id);
-        if (it != group->market_index_by_id.end()) {
-            return &group->markets[it->second];
+        auto itr = group->market_index_by_id.find(market_id);
+        if (itr != group->market_index_by_id.end()) {
+            return &group->markets[itr->second];
         }
     } else if (auto* single = std::get_if<SingleMarketState>(&state)) {
         if (single->market.has_value() && single->market->market_id == market_id) {
@@ -361,7 +361,7 @@ bool EventStore::initialize(const std::vector<EventDefinition>& definitions) {
     }
     return true;
 }
-
+//NOLINTNEXTLINE(readability-function-cognitive-complexity) -- this function is necessarily complex due to the combinatorial nature of event types and apply results
 EventApplyResult Event::apply_market_update(const internal::NormalizedEvent& event) {
     if (event.meta.event_id == 0 || event.meta.event_id != event_id) {
         return EventApplyResult{.code = EventApplyCode::kRejected};
@@ -393,7 +393,6 @@ EventApplyResult Event::apply_market_update(const internal::NormalizedEvent& eve
     case BookApplyRejectReason::kUnsupportedEventType:
         // ignore unsupported event types like heartbeat/status
         return EventApplyResult{.code = EventApplyCode::kRejected};
-    // NOLINTNEXTLINE
     case BookApplyRejectReason::kUnexpectedSnapshotAfterInit:
         desynced = true;
         return EventApplyResult{
@@ -531,19 +530,19 @@ std::size_t EventStore::desynced_event_count() const noexcept {
 
 const EventMarketView* Event::find_market_view(internal::MarketId market_id) const noexcept {
     if (const auto* chain = std::get_if<MonotonicChainState>(&derived_state)) {
-        const auto it = chain->market_index_by_id.find(market_id);
-        if (it != chain->market_index_by_id.end()) {
-            return &chain->markets[it->second].market;
+        const auto itr = chain->market_index_by_id.find(market_id);
+        if (itr != chain->market_index_by_id.end()) {
+            return &chain->markets[itr->second].market;
         }
     } else if (const auto* exclusive = std::get_if<MutuallyExclusiveState>(&derived_state)) {
-        const auto it = exclusive->market_index_by_id.find(market_id);
-        if (it != exclusive->market_index_by_id.end()) {
-            return &exclusive->markets[it->second];
+        const auto itr = exclusive->market_index_by_id.find(market_id);
+        if (itr != exclusive->market_index_by_id.end()) {
+            return &exclusive->markets[itr->second];
         }
     } else if (const auto* unordered = std::get_if<UnorderedGroupState>(&derived_state)) {
-        const auto it = unordered->market_index_by_id.find(market_id);
-        if (it != unordered->market_index_by_id.end()) {
-            return &unordered->markets[it->second];
+        const auto itr = unordered->market_index_by_id.find(market_id);
+        if (itr != unordered->market_index_by_id.end()) {
+            return &unordered->markets[itr->second];
         }
     } else if (const auto* single = std::get_if<SingleMarketState>(&derived_state)) {
         if (single->market.has_value() && single->market->market_id == market_id) {

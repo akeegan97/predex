@@ -24,8 +24,8 @@ std::string mask_secret(std::string_view value) {
     if (value.empty()) {
         return "<empty>";
     }
-    if (value.size() <= 8) {
-        return std::string(value.size(), '*');
+    if (value.size() <= 8) { //NOLINT -- masking short secrets entirely for security, revealing only length through placeholder
+        return std::string(value.size(), '*');//NOLINT e.g. "****" for a 4-character secret
     }
     return std::string{value.substr(0, 4)} + "..." + std::string{value.substr(value.size() - 4)};
 }

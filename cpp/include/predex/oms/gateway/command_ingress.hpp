@@ -1,11 +1,8 @@
 #pragma once
-
-#include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <type_traits>
 #include <utility>
-#include <vector>
+
 
 #include "predex/oms/gateway/gateway_types.hpp"
 #include "predex/utils/spsc_queue.hpp"
@@ -80,7 +77,7 @@ class CommandIngress {
     LineageId next_lineage_id_{1};
 
     [[nodiscard]] static internal::TimestampNs
-    ingress_timestamp_for(const OmsToKalshiCommand& command) noexcept {
+    ingress_timestamp_for(const OmsToKalshiCommand& command) {
         return std::visit(
             [](const auto& typed_command) noexcept -> internal::TimestampNs {
                 using T = std::decay_t<decltype(typed_command)>;
@@ -125,7 +122,7 @@ class CommandIngress {
     }
 
     [[nodiscard]] utils::SPSCQueue<CommandEnvelope>*
-    queue_for_class(DispatchClass dispatch_class) noexcept {
+    queue_for_class(DispatchClass dispatch_class) noexcept { //NOLINT -- could be const but keeping non-const since it's closely tied to the queues_ member
         switch (dispatch_class) {
         case DispatchClass::kHot:
             return queues_.session_class_queues.hot_queue;

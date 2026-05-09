@@ -91,7 +91,7 @@ class BatchPlanner {
     std::deque<DispatchRequest> ready_recovery_;
     std::deque<DispatchRequest> ready_reconcile_;
 
-    [[nodiscard]] bool try_take_item(DispatchItem& out_item) {
+    [[nodiscard]] bool try_take_item(DispatchItem& out_item) { //NOLINT -- could be const but keeping non-const since it's closely tied to the queues_ member
         if (queues_.hot_input_queue != nullptr && queues_.hot_input_queue->try_pop(out_item)) {
             return true;
         }
@@ -148,6 +148,10 @@ class BatchPlanner {
     }
 
     [[nodiscard]] bool buffer_group_item(DispatchItem item) {
+        if (!item.batch_group.has_value()) {
+            ++telemetry_.invalid_group_items;
+            return emit_or_buffer(make_singleton_request(std::move(item)));
+        }
         const auto& batch_group = *item.batch_group;
         if (!batch_group.valid() ||
             batch_group.group_key.expected_leg_count > config_.max_group_legs) {
@@ -257,7 +261,7 @@ class BatchPlanner {
     }
 
     [[nodiscard]] utils::SPSCQueue<DispatchRequest>*
-    output_queue_for_class(DispatchClass dispatch_class) noexcept {
+    output_queue_for_class(DispatchClass dispatch_class) noexcept { //NOLINT -- could be const but keeping non-const since it's closely tied to the queues_ member
         switch (dispatch_class) {
         case DispatchClass::kHot:
             return queues_.hot_output_queue;

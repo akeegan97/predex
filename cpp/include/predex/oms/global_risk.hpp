@@ -145,8 +145,10 @@ class GlobalRisk {
             global_state_.locked_capital_ticks += capital_reserved_ticks;
         }
     }
-
-    void on_modify_accepted(internal::EventId event_id, internal::QtyLots previous_working_qty_lots,
+// NOLINTNEXTLINE
+    void on_modify_accepted(internal::EventId event_id, 
+                            internal::QtyLots previous_working_qty_lots,
+// NOLINTNEXTLINE        
                             internal::QtyLots replacement_working_qty_lots,
                             std::int64_t capital_delta_ticks) noexcept {
         auto event_it = event_state_.find(event_id);

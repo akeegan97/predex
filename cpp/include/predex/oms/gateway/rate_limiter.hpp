@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <utility>
@@ -21,8 +20,10 @@ struct RateLimiterQueues {
 };
 
 struct RateLimiterConfig {
-    std::uint32_t initial_transaction_units{100};
-    std::uint32_t refill_transaction_units{100};
+    constexpr static std::uint32_t kDefaultInitialTransactionUnits = 100;
+    constexpr static std::uint32_t kDefaultRefillTransactionUnits = 100;
+    std::uint32_t initial_transaction_units{kDefaultInitialTransactionUnits};
+    std::uint32_t refill_transaction_units{kDefaultRefillTransactionUnits};
     std::chrono::nanoseconds refill_interval{std::chrono::seconds{1}};
 };
 
@@ -94,7 +95,7 @@ class RateLimiter {
     RateLimiterConfig config_{};
     RateLimiterTelemetry telemetry_{};
     std::uint32_t available_transaction_units_{0};
-    std::chrono::steady_clock::time_point last_refill_tp_{};
+    std::chrono::steady_clock::time_point last_refill_tp_;
     std::deque<DispatchRequest> pending_hot_;
     std::deque<DispatchRequest> pending_recovery_;
     std::deque<DispatchRequest> pending_reconcile_;
@@ -149,7 +150,7 @@ class RateLimiter {
         return true;
     }
 
-    [[nodiscard]] bool try_take_request(DispatchRequest& out_request) {
+    [[nodiscard]] bool try_take_request(DispatchRequest& out_request) const { 
         if (queues_.hot_input_queue != nullptr && queues_.hot_input_queue->try_pop(out_request)) {
             return true;
         }
@@ -188,7 +189,7 @@ class RateLimiter {
     }
 
     [[nodiscard]] utils::SPSCQueue<DispatchRequest>*
-    output_queue_for_class(DispatchClass dispatch_class) noexcept {
+    output_queue_for_class(DispatchClass dispatch_class) const noexcept { 
         switch (dispatch_class) {
         case DispatchClass::kHot:
             return queues_.hot_output_queue;

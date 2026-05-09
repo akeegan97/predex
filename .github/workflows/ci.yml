@@ -141,7 +141,7 @@ jobs:
             echo "No C++ implementation files found for clang-tidy."
             exit 0
           fi
-          clang-tidy -p build/ci --warnings-as-errors='*' "${cpp_files[@]}"
+          clang-tidy --config-file=.clang-tidy -p build/ci --warnings-as-errors='*' "${cpp_files[@]}"
 
       - name: Test (ctest)
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}

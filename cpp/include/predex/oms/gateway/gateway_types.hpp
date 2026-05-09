@@ -200,7 +200,7 @@ struct SessionPoolCompletion {
 }
 
 [[nodiscard]] inline DispatchOperation
-operation_for_command(const OmsToKalshiCommand& command) noexcept {
+operation_for_command(const OmsToKalshiCommand& command) {
     return std::visit(
         [](const auto& typed_command) noexcept {
             using T = std::decay_t<decltype(typed_command)>;

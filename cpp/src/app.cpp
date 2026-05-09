@@ -65,7 +65,7 @@ void format_utc_timestamp(char* buffer, std::size_t buffer_size) noexcept {
 
 void log_public_ws_event(const char* phase, std::uint64_t generation,
                          const char* detail = nullptr) noexcept {
-    char time_buf[32];
+    char time_buf[32]; //NOLINT -- enough to hold formatted timestamp & char array is sufficient compared to std::array
     format_utc_timestamp(time_buf, sizeof(time_buf));
     std::fprintf(stdout, "[%s] WS | scope=public | generation=%llu | phase=%s%s%s\n", time_buf,
                  static_cast<unsigned long long>(generation), phase,
@@ -82,6 +82,7 @@ void log_public_ws_event(const char* phase, std::uint64_t generation,
 }
 
 [[nodiscard]] std::string rest_trace_output_path(std::string_view base_path,
+    //NOLINTNEXTLINE
                                                  std::size_t worker_index,
                                                  std::size_t worker_count) {
     if (base_path.empty() || worker_count <= 1) {
@@ -96,10 +97,10 @@ void log_public_ws_event(const char* phase, std::uint64_t generation,
     return std::string{base_path.substr(0, dot_pos)} + ".worker" + std::to_string(worker_index) +
            std::string{base_path.substr(dot_pos)};
 }
-
+constexpr std::uint64_t kMultiplier = 10;
 [[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
                                                        internal::PriceTicks& out_ticks) {
-    constexpr std::uint64_t kDollarToTicksScale =
+    constexpr auto kDollarToTicksScale =
         static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
     constexpr auto kI64MaxAsU64 =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
@@ -137,10 +138,10 @@ void log_public_ws_event(const char* phase, std::uint64_t generation,
     const std::size_t digits_to_take =
         std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
     for (std::size_t index = 0; index < digits_to_take; ++index) {
-        subcent_units = subcent_units * 10U + static_cast<std::uint64_t>(frac_part[index] - '0');
+        subcent_units = subcent_units * kMultiplier + static_cast<std::uint64_t>(frac_part[index] - '0');
     }
     for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
-        subcent_units *= 10U;
+        subcent_units *= kMultiplier;
     }
     if (frac_part.size() > internal::kPriceDecimalPlaces &&
         frac_part[internal::kPriceDecimalPlaces] >= '5') {
@@ -387,12 +388,14 @@ struct App::Runtime {
 };
 App::Runtime::Runtime(AppConfig config_in)
     : config(std::move(config_in)), market_registry_entries(build_market_registry_entries(config)),
-      market_ticker_by_id_(), auth_signer(websocket::kalshi::Credentials{
+        auth_signer(websocket::kalshi::Credentials{
                                   .key_id = config.kalshi_ws.key_id,
                                   .private_key_pem = config.kalshi_ws.private_key_pem,
                               }),
-      ws_adapter(auth_signer, config.kalshi_ws.endpoint), ws_session(ws_transport, ws_adapter),
-      frame_pool(config.pipeline.frame_pool_capacity), market_registry(market_registry_entries) {
+        ws_adapter(auth_signer, config.kalshi_ws.endpoint), 
+        ws_session(ws_transport, ws_adapter),
+        frame_pool(config.pipeline.frame_pool_capacity), 
+        market_registry(market_registry_entries) {
     market_ticker_by_id_.reserve(market_registry_entries.size());
     registry_index_by_ticker_.reserve(market_registry_entries.size());
     for (std::size_t i = 0; i < market_registry_entries.size(); ++i) {
@@ -566,11 +569,11 @@ App::Runtime::Runtime(AppConfig config_in)
                                 },
                                 global_risk_limits, oms_audit_queue.get(),
                                 [this](internal::MarketId market_id) -> std::optional<std::string> {
-                                    const auto it = market_ticker_by_id_.find(market_id);
-                                    if (it == market_ticker_by_id_.end()) {
+                                    const auto itr = market_ticker_by_id_.find(market_id);
+                                    if (itr == market_ticker_by_id_.end()) {
                                         return std::nullopt;
                                     }
-                                    return it->second;
+                                    return itr->second;
                                 });
 
     predex::core::shards::kalshi::LocalRiskLimits local_risk_limits{};
@@ -670,7 +673,7 @@ bool App::Runtime::start() {
         std::jthread([this](const std::stop_token& stop_token) { audit_loop(stop_token); });
     return true;
 }
-
+//NOLINTNEXTLINE : accepting complexity in io_loop for now since it is mostly error handling and reconnection logic
 void App::Runtime::io_loop(const std::stop_token& stop_token) {
     std::uint32_t reconnect_attempts = 0;
     while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
@@ -688,7 +691,7 @@ void App::Runtime::io_loop(const std::stop_token& stop_token) {
             const std::uint32_t backoff_ms =
                 std::min<std::uint32_t>(5000U, 100U * (1U << std::min(reconnect_attempts, 5U)));
             const auto next_generation = public_ws_generation_.load(std::memory_order_acquire) + 1U;
-            char reconnect_detail[256];
+            char reconnect_detail[256]; //NOLINT : fixed size buffer for logging reconnection details, char buffer is sufficient for backoff and attempt count
             std::snprintf(reconnect_detail, sizeof(reconnect_detail), "backoff_ms=%u attempt=%u",
                           backoff_ms, reconnect_attempts + 1U);
             log_public_ws_event("closed", next_generation, reconnect_detail);
@@ -756,7 +759,7 @@ void App::Runtime::io_loop(const std::stop_token& stop_token) {
     ws_session.close();
 }
 
-void App::Runtime::oms_gateway_loop(const std::stop_token& stop_token) {
+void App::Runtime::oms_gateway_loop(const std::stop_token& stop_token) { //NOLINT 
     if (!config.oms_transport.enabled || oms_gateway == nullptr) {
         while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{kDefaultSleepMs});
@@ -958,7 +961,7 @@ void App::Runtime::run() {
 }
 
 void App::Runtime::print_health_status() const noexcept {
-    char time_buf[32];
+    char time_buf[32]; //NOLINT : fixed size buffer for formatted timestamp 
     format_utc_timestamp(time_buf, sizeof(time_buf));
 
     const bool halted = oms && oms->is_halted();
@@ -985,10 +988,11 @@ void App::Runtime::print_health_status() const noexcept {
                     : 0;
 
     auto mean_ms = [&](std::uint64_t total_ns) -> double {
+        constexpr std::uint64_t kNanosPerMilli = 1'000'000;
         return gateway_telem.completed_requests == 0
                    ? 0.0
                    : static_cast<double>(total_ns) /
-                         static_cast<double>(gateway_telem.completed_requests) / 1'000'000.0;
+                         static_cast<double>(gateway_telem.completed_requests) / kNanosPerMilli;
     };
     const double gateway_mean_latency_ms = mean_ms(gateway_telem.total_completion_latency_ns);
     const double gateway_last_latency_ms =

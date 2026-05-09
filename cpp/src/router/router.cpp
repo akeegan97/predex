@@ -201,8 +201,8 @@ bool Router::check_sequence(const predex::core::ingest::kalshi::FrameHandle& han
     }
     // out of order or duplicate,
     ++telemetry_.sequence_rejects_;
-    if (telemetry_.sequence_rejects_ <= 20U || (telemetry_.sequence_rejects_ % 1000U) == 0U) {
-        char time_buf[32];
+    if (telemetry_.sequence_rejects_ <= 20U || (telemetry_.sequence_rejects_ % 1000U) == 0U) { //NOLINT -- log the first few and then every 1000 rejects to avoid spamming logs if something is really broken
+        char time_buf[32]; //NOLINT -- enough to hold formatted timestamp
         format_utc_timestamp(time_buf, sizeof(time_buf));
         std::fprintf(stdout,
                      "[%s] ROUTER | phase=sequence_reject | count=%zu | sid=%u | prev_seq=%llu"

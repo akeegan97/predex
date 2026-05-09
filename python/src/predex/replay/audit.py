@@ -15,17 +15,23 @@ class AuditEvent:
     group_id: int
     local_intent_id: int
     oms_request_id: int
+    transport_http_status: int
+    transport_retry_count: int
     tick_recv_ns: int
     signal_ts_ns: int
     submission_enqueued_ns: int
     oms_decision_ts_ns: int
     transport_submit_ts_ns: int
+    transport_response_recv_ns: int
     first_fill_recv_ns: int
     terminal_recv_ns: int
     tick_to_signal_ns: int
     signal_to_submission_ns: int
     submission_to_decision_ns: int
     decision_to_transport_ns: int
+    tick_to_transport_submit_ns: int
+    transport_submit_to_response_ns: int
+    tick_to_transport_response_ns: int
     transport_to_first_fill_ns: int
     tick_to_first_fill_ns: int
     tick_to_terminal_ns: int
@@ -58,17 +64,25 @@ class AuditEvent:
             group_id=int(payload.get("group_id", 0)),
             local_intent_id=int(payload.get("local_intent_id", 0)),
             oms_request_id=int(payload.get("oms_request_id", 0)),
+            transport_http_status=int(payload.get("transport_http_status", 0)),
+            transport_retry_count=int(payload.get("transport_retry_count", 0)),
             tick_recv_ns=int(payload.get("tick_recv_ns", 0)),
             signal_ts_ns=int(payload.get("signal_ts_ns", 0)),
             submission_enqueued_ns=int(payload.get("submission_enqueued_ns", 0)),
             oms_decision_ts_ns=int(payload.get("oms_decision_ts_ns", 0)),
             transport_submit_ts_ns=int(payload.get("transport_submit_ts_ns", 0)),
+            transport_response_recv_ns=int(payload.get("transport_response_recv_ns", 0)),
             first_fill_recv_ns=int(payload.get("first_fill_recv_ns", 0)),
             terminal_recv_ns=int(payload.get("terminal_recv_ns", 0)),
             tick_to_signal_ns=int(payload.get("tick_to_signal_ns", 0)),
             signal_to_submission_ns=int(payload.get("signal_to_submission_ns", 0)),
             submission_to_decision_ns=int(payload.get("submission_to_decision_ns", 0)),
             decision_to_transport_ns=int(payload.get("decision_to_transport_ns", 0)),
+            tick_to_transport_submit_ns=int(payload.get("tick_to_transport_submit_ns", 0)),
+            transport_submit_to_response_ns=int(
+                payload.get("transport_submit_to_response_ns", 0)
+            ),
+            tick_to_transport_response_ns=int(payload.get("tick_to_transport_response_ns", 0)),
             transport_to_first_fill_ns=int(payload.get("transport_to_first_fill_ns", 0)),
             tick_to_first_fill_ns=int(payload.get("tick_to_first_fill_ns", 0)),
             tick_to_terminal_ns=int(payload.get("tick_to_terminal_ns", 0)),

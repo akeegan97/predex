@@ -1,0 +1,192 @@
+{
+  "kalshi": {
+    "endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+    "channels": [
+      "trade",
+      "orderbook_delta"
+    ],
+    "lifecycle_channels": [
+      "market_lifecycle_v2"
+    ],
+    "market_tickers": [
+      "KXMLBTOTAL-26APR251610WSHCWS-7",
+      "KXMLBTOTAL-26APR251610WSHCWS-8",
+      "KXMLBTOTAL-26APR251610WSHCWS-14",
+      "KXMLBTOTAL-26APR251605MIASF-6",
+      "KXMLBTOTAL-26APR251605MIASF-7",
+      "KXMLBTOTAL-26APR251605MIASF-10",
+      "KXMLBTOTAL-26APR251605MIASF-12",
+      "KXNBATEAMTOTAL-26APR25OKCPHX-PHX93",
+      "KXNBATEAMTOTAL-26APR25OKCPHX-PHX111",
+      "KXNBATEAMTOTAL-26APR25OKCPHX-OKC112",
+      "KXNBA2HSPREAD-26APR25OKCPHX-OKC4",
+      "KXNHLTOTAL-26APR25CAROTT-3",
+      "KXBTCD-26APR2517-T77499.99"
+    ],
+    "credentials": {
+      "key_id_env": "KALSHI_KEY_ID",
+      "private_key_pem_env": "KALSHI_PRIVATE_KEY_PEM"
+    }
+  },
+  "market_routes": [
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251610WSHCWS-7",
+      "market_id": 1511926367,
+      "event_id": 1613168668,
+      "affinity_key": 25490,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 6500000,
+      "close_time_s": 1777407000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251610WSHCWS-8",
+      "market_id": 1463404425,
+      "event_id": 1613168668,
+      "affinity_key": 25490,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 7500000,
+      "close_time_s": 1777407000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251610WSHCWS-14",
+      "market_id": 1700313446,
+      "event_id": 1613168668,
+      "affinity_key": 25490,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 13500000,
+      "close_time_s": 1777407000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251605MIASF-6",
+      "market_id": 1472101438,
+      "event_id": 2591796097,
+      "affinity_key": 57222,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 5500000,
+      "close_time_s": 1777406700,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251605MIASF-7",
+      "market_id": 140328503,
+      "event_id": 2591796097,
+      "affinity_key": 57222,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 6500000,
+      "close_time_s": 1777406700,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251605MIASF-10",
+      "market_id": 1473616828,
+      "event_id": 2591796097,
+      "affinity_key": 57222,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 9500000,
+      "close_time_s": 1777406700,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXMLBTOTAL-26APR251605MIASF-12",
+      "market_id": 2758730312,
+      "event_id": 2591796097,
+      "affinity_key": 57222,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 11500000,
+      "close_time_s": 1777406700,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXNBATEAMTOTAL-26APR25OKCPHX-PHX93",
+      "market_id": 3774115179,
+      "event_id": 2717573777,
+      "affinity_key": 1445,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 93500000,
+      "close_time_s": 1778355000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXNBATEAMTOTAL-26APR25OKCPHX-PHX111",
+      "market_id": 1191701650,
+      "event_id": 2717573777,
+      "affinity_key": 1445,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 111500000,
+      "close_time_s": 1778355000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXNBATEAMTOTAL-26APR25OKCPHX-OKC112",
+      "market_id": 3291211030,
+      "event_id": 2717573777,
+      "affinity_key": 1445,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 112500000,
+      "close_time_s": 1778355000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXNBA2HSPREAD-26APR25OKCPHX-OKC4",
+      "market_id": 2635329201,
+      "event_id": 1262657919,
+      "affinity_key": 21050,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 4500000,
+      "close_time_s": 1778355000,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXNHLTOTAL-26APR25CAROTT-3",
+      "market_id": 4082435473,
+      "event_id": 4012889152,
+      "affinity_key": 6664,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 3500000,
+      "close_time_s": 1778353200,
+      "tradeable": true
+    },
+    {
+      "market_ticker": "KXBTCD-26APR2517-T77499.99",
+      "market_id": 2574856998,
+      "event_id": 1608439697,
+      "affinity_key": 39774,
+      "topology_kind": "monotonic_chain",
+      "strike_key": 77499990000,
+      "close_time_s": 1777150800,
+      "tradeable": true
+    }
+  ],
+  "pipeline": {
+    "frame_pool_capacity": 8192,
+    "shard_count": 4,
+    "io_to_router_capacity": 4096,
+    "router_to_logger_capacity": 4096,
+    "shard_input_capacity": 8192,
+    "shard_to_logger_capacity": 8192
+  },
+  "tape": {
+    "output_path": "predex_tape_subset.bin"
+  },
+  "audit": {
+    "output_path": "predex_audit_subset.jsonl"
+  },
+  "oms_transport": {
+    "enabled": true,
+    "rest_endpoint": "https://api.elections.kalshi.com",
+    "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+    "private_ws_channels": [
+      "user_orders"
+    ],
+    "max_session_loss_ticks": 200,
+    "available_capital_ticks": 5000
+  },
+  "local_risk": {
+    "max_net_position_lots_per_market": 20,
+    "min_seconds_to_close": 300,
+    "trading_enabled": true
+  }
+}

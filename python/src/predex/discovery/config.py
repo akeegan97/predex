@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .affinity import stable_affinity_key, stable_event_id, stable_market_id
-from .classifier import classify_event
+from .classifier import classify_config_events, classify_event
 from .models import ClassifiedEvent, EventRecord, TopologyKind
 
 
@@ -13,10 +14,10 @@ from .models import ClassifiedEvent, EventRecord, TopologyKind
 class PipelineSettings:
     shard_count: int = 4
     frame_pool_capacity: int = 8192
-    io_to_router_capacity: int = 4096
-    router_to_logger_capacity: int = 4096
-    shard_input_capacity: int = 1024
-    shard_to_logger_capacity: int = 1024
+    io_to_router_capacity: int = 8192
+    router_to_logger_capacity: int = 8192
+    shard_input_capacity: int = 8192
+    shard_to_logger_capacity: int = 8192
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -45,14 +46,54 @@ class CredentialSettings:
 class DiscoverySettings:
     endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
     channels: tuple[str, ...] = ("trade", "orderbook_delta")
+    lifecycle_channels: tuple[str, ...] = ("market_lifecycle_v2",)
     credentials: CredentialSettings = field(default_factory=CredentialSettings)
 
     def to_kalshi_dict(self, market_tickers: list[str]) -> dict[str, Any]:
         return {
             "endpoint": self.endpoint,
             "channels": list(self.channels),
+            "lifecycle_channels": list(self.lifecycle_channels),
             "market_tickers": market_tickers,
             "credentials": self.credentials.to_dict(),
+        }
+
+
+@dataclass(slots=True)
+class OmsTransportSettings:
+    enabled: bool = False
+    rest_endpoint: str = "https://api.elections.kalshi.com"
+    private_ws_endpoint: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    private_ws_channels: tuple[str, ...] = ("user_orders",)
+    max_session_loss_ticks: int = 5000
+    available_capital_ticks: int = 10000
+    rest_worker_count: int = 8
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "rest_endpoint": self.rest_endpoint,
+            "private_ws_endpoint": self.private_ws_endpoint,
+            "private_ws_channels": list(self.private_ws_channels),
+            "max_session_loss_ticks": self.max_session_loss_ticks,
+            "available_capital_ticks": self.available_capital_ticks,
+            "rest_worker_count": self.rest_worker_count,
+        }
+
+
+@dataclass(slots=True)
+class LocalRiskSettings:
+    # Maximum absolute net filled position (long or short) per market. 0 = disabled.
+    max_net_position_lots_per_market: int = 200
+    # Reject intents for markets closing within this many seconds. 0 = disabled.
+    min_seconds_to_close: int = 300
+    trading_enabled: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_net_position_lots_per_market": self.max_net_position_lots_per_market,
+            "min_seconds_to_close": self.min_seconds_to_close,
+            "trading_enabled": self.trading_enabled,
         }
 
 
@@ -116,6 +157,19 @@ class TraderConfigBuildResult:
         }
 
 
+def _parse_iso_to_unix_seconds(time_str: str) -> int:
+    if not time_str:
+        return 0
+    try:
+        normalized = time_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (ValueError, OSError):
+        return 0
+
+
 def _normalize_topology_set(
     values: Iterable[TopologyKind | str] | None,
 ) -> set[TopologyKind] | None:
@@ -147,13 +201,21 @@ def _validate_classified_event(classified_event: ClassifiedEvent) -> None:
             )
 
 
+def _stable_config_event_id(classified_event: ClassifiedEvent) -> int:
+    if not classified_event.synthetic_key:
+        return stable_event_id(classified_event.event.event_ticker)
+    return stable_event_id(f"{classified_event.event.event_ticker}::{classified_event.synthetic_key}")
+
+
 def build_trader_config_result(
     events: list[EventRecord],
     *,
     discovery: DiscoverySettings | None = None,
     pipeline: PipelineSettings | None = None,
-    tape_output_path: str = "predex_tape.bin",
-    audit_output_path: str = "predex_audit.jsonl",
+    oms_transport: OmsTransportSettings | None = None,
+    local_risk: LocalRiskSettings | None = None,
+    tape_output_path: str = "logs/live/predex_tape.bin",
+    audit_output_path: str = "logs/live/predex_audit.jsonl",
     include_topologies: Iterable[TopologyKind | str] | None = None,
     exclude_topologies: Iterable[TopologyKind | str] | None = None,
     market_limit: int | None = None,
@@ -165,6 +227,8 @@ def build_trader_config_result(
 
     discovery = discovery or DiscoverySettings()
     pipeline = pipeline or PipelineSettings()
+    oms_transport = oms_transport or OmsTransportSettings()
+    local_risk = local_risk or LocalRiskSettings()
     included_filter = _normalize_topology_set(include_topologies)
     excluded_filter = _normalize_topology_set(exclude_topologies) or set()
 
@@ -185,94 +249,101 @@ def build_trader_config_result(
             continue
         seen_event_tickers.add(event.event_ticker)
 
-        classified_event = classify_event(event)
-        _validate_classified_event(classified_event)
+        for classified_event in classify_config_events(event):
+            _validate_classified_event(classified_event)
 
-        topology = classified_event.topology_kind
-        if included_filter is not None and topology not in included_filter:
-            skipped_events.append(
-                SkippedEventConfig(
-                    event_ticker=event.event_ticker,
-                    series_ticker=event.series_ticker,
+            topology = classified_event.topology_kind
+            if included_filter is not None and topology not in included_filter:
+                skipped_events.append(
+                    SkippedEventConfig(
+                        event_ticker=event.event_ticker,
+                        series_ticker=event.series_ticker,
+                        topology_kind=topology,
+                        market_count=len(classified_event.markets),
+                        reason=f"excluded by include_topologies filter: {topology.value}",
+                    )
+                )
+                continue
+            if topology in excluded_filter:
+                skipped_events.append(
+                    SkippedEventConfig(
+                        event_ticker=event.event_ticker,
+                        series_ticker=event.series_ticker,
+                        topology_kind=topology,
+                        market_count=len(classified_event.markets),
+                        reason=f"excluded by exclude_topologies filter: {topology.value}",
+                    )
+                )
+                continue
+
+            if market_limit is not None and included_market_count + len(classified_event.markets) > market_limit:
+                skipped_events.append(
+                    SkippedEventConfig(
+                        event_ticker=event.event_ticker,
+                        series_ticker=event.series_ticker,
+                        topology_kind=topology,
+                        market_count=len(classified_event.markets),
+                        reason=f"excluded by market_limit: adding {len(classified_event.markets)} markets would exceed limit {market_limit}",
+                    )
+                )
+                continue
+
+            event_id = _stable_config_event_id(classified_event)
+            affinity_key = stable_affinity_key(classified_event.event.event_ticker)
+            existing_event_ticker = seen_event_ids.get(event_id)
+            synthetic_name = (
+                classified_event.event.event_ticker
+                if not classified_event.synthetic_key
+                else f"{classified_event.event.event_ticker}::{classified_event.synthetic_key}"
+            )
+            if existing_event_ticker is not None and existing_event_ticker != synthetic_name:
+                raise ValueError(
+                    f"event_id collision between {existing_event_ticker} and {synthetic_name}"
+                )
+            seen_event_ids[event_id] = synthetic_name
+
+            included_market_tickers: list[str] = []
+            for classified_market in classified_event.markets:
+                market = classified_market.market
+                market_id = stable_market_id(market.ticker)
+                existing_market_ticker = seen_market_ids.get(market_id)
+                if existing_market_ticker is not None and existing_market_ticker != market.ticker:
+                    raise ValueError(f"market_id collision between {existing_market_ticker} and {market.ticker}")
+                seen_market_ids[market_id] = market.ticker
+
+                if market.ticker in seen_market_tickers:
+                    raise ValueError(f"duplicate market ticker across included events: {market.ticker}")
+                seen_market_tickers.add(market.ticker)
+
+                market_tickers.append(market.ticker)
+                included_market_tickers.append(market.ticker)
+                routes.append(
+                    {
+                        "market_ticker": market.ticker,
+                        "market_id": market_id,
+                        "event_id": event_id,
+                        "affinity_key": affinity_key,
+                        "topology_kind": topology.value,
+                        "strike_key": classified_market.strike_key,
+                        "close_time_s": _parse_iso_to_unix_seconds(market.primary_time_reference()),
+                        "tradeable": market.status == "active",
+                    }
+                )
+
+            included_market_count += len(classified_event.markets)
+            topology_counts[topology.value] += 1
+            included_events.append(
+                GeneratedEventConfig(
+                    event_ticker=classified_event.event.event_ticker,
+                    series_ticker=classified_event.event.series_ticker,
                     topology_kind=topology,
                     market_count=len(classified_event.markets),
-                    reason=f"excluded by include_topologies filter: {topology.value}",
+                    market_tickers=tuple(included_market_tickers),
+                    event_id=event_id,
+                    affinity_key=affinity_key,
+                    reason=classified_event.reason,
                 )
             )
-            continue
-        if topology in excluded_filter:
-            skipped_events.append(
-                SkippedEventConfig(
-                    event_ticker=event.event_ticker,
-                    series_ticker=event.series_ticker,
-                    topology_kind=topology,
-                    market_count=len(classified_event.markets),
-                    reason=f"excluded by exclude_topologies filter: {topology.value}",
-                )
-            )
-            continue
-
-        if market_limit is not None and included_market_count + len(classified_event.markets) > market_limit:
-            skipped_events.append(
-                SkippedEventConfig(
-                    event_ticker=event.event_ticker,
-                    series_ticker=event.series_ticker,
-                    topology_kind=topology,
-                    market_count=len(classified_event.markets),
-                    reason=f"excluded by market_limit: adding {len(classified_event.markets)} markets would exceed limit {market_limit}",
-                )
-            )
-            continue
-
-        event_id = stable_event_id(classified_event.event.event_ticker)
-        affinity_key = stable_affinity_key(classified_event.event.event_ticker)
-        existing_event_ticker = seen_event_ids.get(event_id)
-        if existing_event_ticker is not None and existing_event_ticker != classified_event.event.event_ticker:
-            raise ValueError(
-                f"event_id collision between {existing_event_ticker} and {classified_event.event.event_ticker}"
-            )
-        seen_event_ids[event_id] = classified_event.event.event_ticker
-
-        included_market_tickers: list[str] = []
-        for classified_market in classified_event.markets:
-            market = classified_market.market
-            market_id = stable_market_id(market.ticker)
-            existing_market_ticker = seen_market_ids.get(market_id)
-            if existing_market_ticker is not None and existing_market_ticker != market.ticker:
-                raise ValueError(f"market_id collision between {existing_market_ticker} and {market.ticker}")
-            seen_market_ids[market_id] = market.ticker
-
-            if market.ticker in seen_market_tickers:
-                raise ValueError(f"duplicate market ticker across included events: {market.ticker}")
-            seen_market_tickers.add(market.ticker)
-
-            market_tickers.append(market.ticker)
-            included_market_tickers.append(market.ticker)
-            routes.append(
-                {
-                    "market_ticker": market.ticker,
-                    "market_id": market_id,
-                    "event_id": event_id,
-                    "affinity_key": affinity_key,
-                    "topology_kind": topology.value,
-                    "strike_key": classified_market.strike_key,
-                }
-            )
-
-        included_market_count += len(classified_event.markets)
-        topology_counts[topology.value] += 1
-        included_events.append(
-            GeneratedEventConfig(
-                event_ticker=classified_event.event.event_ticker,
-                series_ticker=classified_event.event.series_ticker,
-                topology_kind=topology,
-                market_count=len(classified_event.markets),
-                market_tickers=tuple(included_market_tickers),
-                event_id=event_id,
-                affinity_key=affinity_key,
-                reason=classified_event.reason,
-            )
-        )
 
     if not routes:
         raise ValueError("no events remained after classification and topology filtering")
@@ -283,6 +354,8 @@ def build_trader_config_result(
         "pipeline": pipeline.to_dict(),
         "tape": {"output_path": tape_output_path},
         "audit": {"output_path": audit_output_path},
+        "oms_transport": oms_transport.to_dict(),
+        "local_risk": local_risk.to_dict(),
     }
     return TraderConfigBuildResult(
         config=config,
@@ -297,8 +370,10 @@ def build_trader_config(
     *,
     discovery: DiscoverySettings | None = None,
     pipeline: PipelineSettings | None = None,
-    tape_output_path: str = "predex_tape.bin",
-    audit_output_path: str = "predex_audit.jsonl",
+    oms_transport: OmsTransportSettings | None = None,
+    local_risk: LocalRiskSettings | None = None,
+    tape_output_path: str = "logs/live/predex_tape.bin",
+    audit_output_path: str = "logs/live/predex_audit.jsonl",
     include_topologies: Iterable[TopologyKind | str] | None = None,
     exclude_topologies: Iterable[TopologyKind | str] | None = None,
     market_limit: int | None = None,
@@ -307,6 +382,8 @@ def build_trader_config(
         events,
         discovery=discovery,
         pipeline=pipeline,
+        oms_transport=oms_transport,
+        local_risk=local_risk,
         tape_output_path=tape_output_path,
         audit_output_path=audit_output_path,
         include_topologies=include_topologies,

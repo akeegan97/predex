@@ -8,8 +8,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-_TICKS_SCALE = Decimal("10000")
-_MAX_PRICE_TICKS = 10000
+_TICKS_SCALE = Decimal("1000")
+_MAX_PRICE_TICKS = 1000
+_TAPE_MAGIC = b"PDT2"
+_TAPE_VERSION = 2
+_QTY_SCALE = Decimal("100")
 
 
 def _parse_decimal_to_ticks(value: Any) -> int:
@@ -25,7 +28,7 @@ def _parse_decimal_to_lots(value: Any) -> int:
         decimal_value = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"invalid quantity value: {value!r}") from exc
-    return int(decimal_value.to_integral_value(rounding=ROUND_HALF_UP))
+    return int((decimal_value * _QTY_SCALE).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def _reciprocal_price(price_ticks: int) -> int:
@@ -35,6 +38,7 @@ def _reciprocal_price(price_ticks: int) -> int:
 @dataclass(frozen=True, slots=True)
 class TapePayload:
     record_index: int
+    recv_ts_ns: int | None
     payload: bytes
     message: dict[str, Any]
 
@@ -42,6 +46,7 @@ class TapePayload:
 @dataclass(frozen=True, slots=True)
 class MarketEvent:
     record_index: int
+    recv_ts_ns: int | None
     raw_type: str
     market_ticker: str
     sequence_id: int | None
@@ -56,23 +61,56 @@ class MarketEvent:
 
 def iter_tape_payloads(path: str | Path) -> Iterator[TapePayload]:
     with Path(path).open("rb") as handle:
+        first_header = handle.read(4)
+        if len(first_header) == 0:
+            return
+        if len(first_header) != 4:
+            raise ValueError("tape ended mid-file header")
+
         record_index = 0
+        if first_header == _TAPE_MAGIC:
+            version_header = handle.read(4)
+            if len(version_header) != 4:
+                raise ValueError("tape ended mid-version header")
+            version, _flags = struct.unpack("<HH", version_header)
+            if version != _TAPE_VERSION:
+                raise ValueError(f"unsupported tape version: {version}")
+
+            while True:
+                record_header = handle.read(12)
+                if len(record_header) == 0:
+                    return
+                if len(record_header) != 12:
+                    raise ValueError("tape ended mid-record header")
+                recv_ts_ns, payload_len = struct.unpack("<QI", record_header)
+                payload = handle.read(payload_len)
+                if len(payload) != payload_len:
+                    raise ValueError("tape ended mid-record payload")
+                yield TapePayload(
+                    record_index=record_index,
+                    recv_ts_ns=recv_ts_ns,
+                    payload=payload,
+                    message=json.loads(payload),
+                )
+                record_index += 1
+
         while True:
-            header = handle.read(4)
-            if len(header) == 0:
-                return
-            if len(header) != 4:
-                raise ValueError("tape ended mid-record header")
-            (payload_len,) = struct.unpack("<I", header)
+            (payload_len,) = struct.unpack("<I", first_header)
             payload = handle.read(payload_len)
             if len(payload) != payload_len:
                 raise ValueError("tape ended mid-record payload")
             yield TapePayload(
                 record_index=record_index,
+                recv_ts_ns=None,
                 payload=payload,
                 message=json.loads(payload),
             )
             record_index += 1
+            first_header = handle.read(4)
+            if len(first_header) == 0:
+                return
+            if len(first_header) != 4:
+                raise ValueError("tape ended mid-record header")
 
 
 def _parse_snapshot(msg: dict[str, Any], payload: TapePayload) -> MarketEvent:
@@ -86,6 +124,7 @@ def _parse_snapshot(msg: dict[str, Any], payload: TapePayload) -> MarketEvent:
     )
     return MarketEvent(
         record_index=payload.record_index,
+        recv_ts_ns=payload.recv_ts_ns,
         raw_type="orderbook_snapshot",
         market_ticker=str(msg.get("market_ticker", "")),
         sequence_id=int(payload.message["seq"]),
@@ -119,6 +158,7 @@ def _parse_delta(msg: dict[str, Any], payload: TapePayload) -> MarketEvent:
     )
     return MarketEvent(
         record_index=payload.record_index,
+        recv_ts_ns=payload.recv_ts_ns,
         raw_type="orderbook_delta",
         market_ticker=str(msg.get("market_ticker", "")),
         sequence_id=int(payload.message["seq"]),
@@ -137,6 +177,7 @@ def _parse_trade(msg: dict[str, Any], payload: TapePayload) -> MarketEvent:
     qty_lots = _parse_decimal_to_lots(msg.get("count_fp", msg.get("count", 0)))
     return MarketEvent(
         record_index=payload.record_index,
+        recv_ts_ns=payload.recv_ts_ns,
         raw_type="trade",
         market_ticker=str(msg.get("market_ticker", "")),
         sequence_id=int(payload.message["seq"]),

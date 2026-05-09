@@ -35,12 +35,24 @@ class IWsTransport {
     virtual RecvResult recv_text(std::chrono::milliseconds timeout) = 0;
     virtual void close() = 0;
     [[nodiscard]] virtual std::string_view last_error() const { return {}; }
+
+    // steady_clock time_since_epoch in ns for the most recent ping frame the
+    // transport has observed. Zero means no ping seen since connect. Used by
+    // liveness watchdogs — Kalshi pings every ~10s, so a long-stale value
+    // indicates a silently-dead connection (half-open TCP, peer crash, etc.)
+    // that won't otherwise surface because we never send on the OMS channel.
+    [[nodiscard]] virtual std::uint64_t last_ping_recv_ns() const { return 0; }
 };
 
 class BoostBeastWsTransport final : public IWsTransport {
   public:
     BoostBeastWsTransport();
     ~BoostBeastWsTransport() override;
+    BoostBeastWsTransport(BoostBeastWsTransport&&) noexcept;
+    BoostBeastWsTransport& operator=(BoostBeastWsTransport&&) noexcept;
+
+    BoostBeastWsTransport(const BoostBeastWsTransport&) = delete;
+    BoostBeastWsTransport& operator=(const BoostBeastWsTransport&) = delete;
 
     bool connect(const TransportConfig& config) override;
     bool send_text(std::string_view payload) override;
@@ -48,6 +60,7 @@ class BoostBeastWsTransport final : public IWsTransport {
     void close() override;
 
     [[nodiscard]] std::string_view last_error() const override;
+    [[nodiscard]] std::uint64_t last_ping_recv_ns() const override;
 
   private:
     struct Impl;

@@ -16,6 +16,8 @@ enum class AuditKind : std::uint8_t {
     kOmsLifecycle = 7,
     kShardReconcile = 8,
     kPipelineProbe = 9,
+    kShardDesync = 10,
+    kRouterShardBackpressure = 11,
 };
 
 struct AuditEvent {
@@ -27,6 +29,10 @@ struct AuditEvent {
     std::uint64_t group_id{0};
     std::uint64_t local_intent_id{0};
     std::uint64_t oms_request_id{0};
+    std::uint64_t frame_seq{0};
+    std::uint32_t frame_sid{0};
+    std::uint16_t transport_http_status{0};
+    std::uint16_t transport_retry_count{0};
     /*
     Latency tracking fields
     */
@@ -35,6 +41,7 @@ struct AuditEvent {
     internal::TimestampNs submission_enqueued_ns{0};
     internal::TimestampNs oms_decision_ts_ns{0};
     internal::TimestampNs transport_submit_ts_ns{0};
+    internal::TimestampNs transport_response_recv_ns{0};
     internal::TimestampNs first_fill_recv_ns{0};
     internal::TimestampNs terminal_recv_ns{0};
     /*
@@ -44,6 +51,9 @@ struct AuditEvent {
     std::int64_t signal_to_submission_ns{0};
     std::int64_t submission_to_decision_ns{0};
     std::int64_t decision_to_transport_ns{0};
+    std::int64_t tick_to_transport_submit_ns{0};
+    std::int64_t transport_submit_to_response_ns{0};
+    std::int64_t tick_to_transport_response_ns{0};
     std::int64_t transport_to_first_fill_ns{0};
     std::int64_t tick_to_first_fill_ns{0};
     std::int64_t tick_to_terminal_ns{0};
@@ -51,13 +61,22 @@ struct AuditEvent {
     internal::ExchangeId exchange{internal::ExchangeId::kUnknown};
     internal::EventId event_id{0};
     internal::MarketId market_id{0};
+    internal::MarketId aux_market_id{0};
     internal::Side side{internal::Side::kUnknown};
+    internal::Side aux_side{internal::Side::kUnknown};
 
     std::uint16_t leg_index{0};
     std::uint16_t leg_count{0};
+    std::uint16_t reference_depth_levels{0};
+    std::uint16_t aux_reference_depth_levels{0};
 
     internal::QtyLots qty_lots{0};
     internal::QtyLots aux_qty_lots{0};
+    internal::QtyLots reference_depth_qty_lots{0};
+    internal::QtyLots aux_reference_depth_qty_lots{0};
+    internal::QtyLots paired_frontier_qty_lots{0};
+    internal::PriceTicks reference_price_ticks{0};
+    internal::PriceTicks aux_reference_price_ticks{0};
     internal::PriceTicks price_ticks{0};
     internal::PriceTicks aux_price_ticks{0};
 
@@ -71,7 +90,6 @@ struct AuditEvent {
 
     internal::QtyLots event_exposure_lots{0};
     internal::QtyLots market_exposure_lots{0};
-
 };
 
 } // namespace predex::core::audit

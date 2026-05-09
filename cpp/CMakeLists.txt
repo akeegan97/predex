@@ -20,6 +20,10 @@ add_library(
   src/websocket/session.cpp
   src/websocket/kalshi/auth_signer.cpp
   src/websocket/kalshi/ws_adapter.cpp
+  src/oms/gateway/async_rest_connection.cpp
+  src/oms/transport/persistent_http_session.cpp
+  src/oms/transport/kalshi_rest_adapter.cpp
+  src/oms/transport/kalshi_private_ws_adapter.cpp
 )
 
 add_library(predex::websocket ALIAS predex_websocket)
@@ -39,6 +43,7 @@ add_library(
   src/audit/audit_logger.cpp
   src/ingest/frame_pool.cpp
   src/ingest/io_writer.cpp
+  src/oms/order_store.cpp
   src/oms/oms.cpp
   src/router/market_registry.cpp
   src/router/shard_dispatch.cpp
@@ -56,6 +61,7 @@ target_include_directories(predex_core_pipeline PUBLIC include)
 target_link_libraries(
   predex_core_pipeline
   PUBLIC simdjson::simdjson
+         nlohmann_json::nlohmann_json
 )
 
 add_library(
@@ -76,12 +82,25 @@ target_link_libraries(
 
 add_executable(
   trader_app
+  apps/common/config.cpp
   apps/trader/main.cpp
 )
 
 target_link_libraries(
   trader_app
   PRIVATE predex::app
+          nlohmann_json::nlohmann_json
+)
+
+add_executable(
+  replay_app
+  apps/common/config.cpp
+  apps/replay/main.cpp
+)
+
+target_link_libraries(
+  replay_app
+  PRIVATE predex::core_pipeline
           nlohmann_json::nlohmann_json
 )
 
@@ -99,5 +118,20 @@ if(BUILD_TESTING)
   add_test(
     NAME KalshiParserRegressionTest.ReciprocatesExplicitNoDeltaPrice
     COMMAND parser_regression_test
+  )
+
+  add_executable(
+    kalshi_rest_adapter_boundary_test
+    tests/kalshi_rest_adapter_boundary.cpp
+  )
+
+  target_link_libraries(
+    kalshi_rest_adapter_boundary_test
+    PRIVATE predex::websocket
+  )
+
+  add_test(
+    NAME KalshiRestAdapterBoundaryTest.RejectsNonCentInternalTicks
+    COMMAND kalshi_rest_adapter_boundary_test
   )
 endif()

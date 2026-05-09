@@ -29,6 +29,7 @@ struct Signal {
     internal::MarketId market_id{0};
     SignalKind kind{SignalKind::kUnknown};
     internal::Side side{internal::Side::kUnknown};
+    predex::core::oms::kalshi::Outcome outcome{predex::core::oms::kalshi::Outcome::kUnknown};
     internal::QtyLots target_qty_lots{0};
     std::optional<internal::PriceTicks> reference_price_ticks;
     internal::TimestampNs signal_ts_ns{0};
@@ -39,6 +40,7 @@ struct Signal {
 struct SubmissionLeg {
     internal::MarketId market_id{0};
     internal::Side side{internal::Side::kUnknown};
+    predex::core::oms::kalshi::Outcome outcome{predex::core::oms::kalshi::Outcome::kUnknown};
     internal::QtyLots qty_lots{0};
     std::optional<internal::PriceTicks> limit_price_ticks;
     predex::core::oms::kalshi::OmsTimeInForce time_in_force{
@@ -54,6 +56,13 @@ struct GroupSignal {
         predex::core::oms::kalshi::GroupExecutionPolicy::kAbortRemainingOnReject};
     std::array<SubmissionLeg, predex::core::oms::kalshi::kMaxGroupOrderLegs> legs{};
     std::size_t leg_count{0};
+    std::optional<internal::PriceTicks> reference_price_ticks;
+    std::optional<internal::PriceTicks> aux_reference_price_ticks;
+    std::uint16_t reference_depth_levels{0};
+    std::uint16_t aux_reference_depth_levels{0};
+    internal::QtyLots reference_depth_qty_lots{0};
+    internal::QtyLots aux_reference_depth_qty_lots{0};
+    internal::QtyLots paired_frontier_qty_lots{0};
     internal::TimestampNs signal_ts_ns{0};
     std::int64_t edge_ticks{0};
     std::int64_t score{0};
@@ -75,6 +84,12 @@ enum class RiskRejectReason : std::uint8_t {
     kStrategyDisabled = 4,
     kInvalidSignal = 5,
     kInvalidIntent = 6,
+    kNetPositionLimit = 7,
+    kMarketCloseSoon = 8,
+    kMarketClosed = 9,
+    kEventDesynced = 10,
+    kMarketDesynced = 11,
+    kDuplicateSignal = 12,
 };
 
 struct RiskDecision {
@@ -83,4 +98,4 @@ struct RiskDecision {
     std::optional<OmsOrderIntent> accepted_intent;
 };
 
-}  // namespace predex::core::shards::kalshi
+} // namespace predex::core::shards::kalshi

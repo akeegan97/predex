@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -132,6 +135,12 @@ std::optional<EndpointParts> parse_ws_endpoint(std::string_view endpoint, std::s
     return out;
 }
 
+[[nodiscard]] std::uint64_t steady_now_ns() noexcept {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+}
+
 } // namespace
 
 struct BoostBeastWsTransport::Impl {
@@ -145,6 +154,10 @@ struct BoostBeastWsTransport::Impl {
     bool connected{false};
     std::string last_error;
     EndpointParts endpoint{};
+    // Updated inside Beast's control_callback on ping receipt. Written and read on the
+    // same (read) thread today, but kept atomic so the getter is safe to surface to other
+    // threads without a new synchronization contract. Zero = no ping observed yet.
+    std::atomic<std::uint64_t> last_ping_recv_ns{0};
 
     Impl() : ws_stream(std::make_unique<WsStream>(io_context, ssl_context)) {}
 
@@ -152,6 +165,7 @@ struct BoostBeastWsTransport::Impl {
         ws_stream = std::make_unique<WsStream>(io_context, ssl_context);
         read_buffer.consume(read_buffer.size());
         connected = false;
+        last_ping_recv_ns.store(0, std::memory_order_relaxed);
     }
 };
 
@@ -166,6 +180,8 @@ BoostBeastWsTransport::BoostBeastWsTransport() : impl_(std::make_unique<Impl>())
 }
 
 BoostBeastWsTransport::~BoostBeastWsTransport() = default;
+BoostBeastWsTransport::BoostBeastWsTransport(BoostBeastWsTransport&&) noexcept = default;
+BoostBeastWsTransport& BoostBeastWsTransport::operator=(BoostBeastWsTransport&&) noexcept = default;
 
 bool BoostBeastWsTransport::connect(const TransportConfig& config) {
     close();
@@ -219,6 +235,17 @@ bool BoostBeastWsTransport::connect(const TransportConfig& config) {
             }
         }));
 
+    // Liveness observation: Beast auto-ponges internally, so the app never sees control
+    // frames via recv_text. This callback fires *in addition* to the auto-pong, giving us
+    // a proof-of-liveness signal for silent-peer-death detection. Invoked on the read
+    // thread, so no cross-thread synchronization is needed beyond the atomic itself.
+    impl_->ws_stream->control_callback(
+        [impl_ptr = impl_.get()](websocket::frame_type kind, beast::string_view /*payload*/) {
+            if (kind == websocket::frame_type::ping) {
+                impl_ptr->last_ping_recv_ns.store(steady_now_ns(), std::memory_order_relaxed);
+            }
+        });
+
     std::string handshake_host = impl_->endpoint.host;
     if (!is_default_port(impl_->endpoint.scheme, impl_->endpoint.port)) {
         handshake_host += ":" + impl_->endpoint.port;
@@ -230,6 +257,11 @@ bool BoostBeastWsTransport::connect(const TransportConfig& config) {
     }
 
     impl_->ws_stream->text(true);
+    // Seed the liveness clock at connect. Without this, the watchdog would check against
+    // zero on the first iterations before the first ping arrives (Kalshi pings every
+    // ~10s), which combined with the grace period in the caller gives well-defined
+    // behavior during handshake.
+    impl_->last_ping_recv_ns.store(steady_now_ns(), std::memory_order_relaxed);
     impl_->connected = true;
     return true;
 }
@@ -290,7 +322,7 @@ void BoostBeastWsTransport::close() {
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket cancel error: " + error_code.message();
     }
-    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     (void)cancelled_operations;
 
     error_code.clear();
@@ -298,18 +330,22 @@ void BoostBeastWsTransport::close() {
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket shutdown error: " + error_code.message();
     }
-    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     (void)shutdown_result;
     error_code.clear();
-    const auto close_result =   socket.close(error_code);
+    const auto close_result = socket.close(error_code);
     if (error_code && error_code != net::error::not_connected) {
         impl_->last_error = "Websocket close error: " + error_code.message();
     }
-    //NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     (void)close_result;
-     impl_->connected = false;
+    impl_->connected = false;
 }
 
 std::string_view BoostBeastWsTransport::last_error() const { return impl_->last_error; }
+
+std::uint64_t BoostBeastWsTransport::last_ping_recv_ns() const {
+    return impl_->last_ping_recv_ns.load(std::memory_order_relaxed);
+}
 
 } // namespace predex::websocket

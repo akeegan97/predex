@@ -19,10 +19,26 @@ namespace predex::core::shards::kalshi {
 // Each Event owns the raw per-market BookStore plus a derived topology-specific view.
 inline constexpr std::size_t kMaxDepth = 5;
 
-enum class EventApplyCode: std::uint8_t{
-    kApplied = 1,
-    kRejected = 2,
-    kParseFail=3
+enum class EventApplyCode : std::uint8_t { kApplied = 1, kRejected = 2, kParseFail = 3 };
+
+enum class ShardDesyncReason : std::uint8_t {
+    kNone = 0,
+    kUnexpectedSnapshotAfterInit = 1,
+    kDeltaWhileDesynced = 2,
+    kTradeInvalidOrDesynced = 3,
+    kDeltaSequence = 4,
+    kInvalidSide = 5,
+    kNegativeQuantity = 6,
+    kInvalidSeq = 7,
+    kPendingDeltaOverflow = 8,
+    kReplayPendingDeltaFailure = 9,
+    kInvalidSnapshotData = 10,
+    kTopologyRecomputeFailure = 11,
+};
+
+struct EventApplyResult {
+    EventApplyCode code{EventApplyCode::kRejected};
+    ShardDesyncReason desync_reason{ShardDesyncReason::kNone};
 };
 
 struct SideDepthLevel {
@@ -30,10 +46,25 @@ struct SideDepthLevel {
     std::optional<internal::QtyLots> qty_lots;
 };
 
-template <std::size_t Depth>
-struct DepthView {
+template <std::size_t Depth> struct DepthView {
     std::array<SideDepthLevel, Depth> bids{};
     std::array<SideDepthLevel, Depth> asks{};
+};
+
+struct MarketLifecycleState {
+    std::uint64_t open_ts_s{0};
+    std::uint64_t close_ts_s{0};
+    bool tradeable{false};
+
+    // Kalshi emits no WS event at the natural active → closed transition that happens
+    // when close_ts_s passes in wall-clock time; the `tradeable` flag on its own will
+    // stay true past close_ts_s forever. Callers must route all "is this market
+    // tradeable right now?" checks through this helper, not a direct .tradeable read.
+    // Switched now_s from wall-clock time to frame recv timestamp to avoid syscall
+    [[nodiscard]] bool is_tradeable_at(std::uint64_t now_s) const noexcept {
+        return tradeable && (open_ts_s == 0 || now_s >= open_ts_s) &&
+               (close_ts_s == 0 || now_s < close_ts_s);
+    }
 };
 
 struct EventMarketView {
@@ -42,6 +73,7 @@ struct EventMarketView {
     bool desynced{false};
     DepthView<kMaxDepth> depth{};
     std::optional<internal::TradeData> last_trade;
+    MarketLifecycleState lifecycle{};
 };
 
 struct ChainEntry {
@@ -52,6 +84,8 @@ struct ChainEntry {
 struct EventMarketDefinition {
     internal::MarketId market_id{0};
     std::int64_t strike_key{0};
+    std::uint64_t close_time_s{0};
+    bool tradeable{false};
 };
 
 struct EventDefinition {
@@ -62,7 +96,7 @@ struct EventDefinition {
 };
 
 struct MonotonicChainState {
-    std::vector<ChainEntry> markets;  // ordered by strike_key, easiest -> hardest
+    std::vector<ChainEntry> markets; // ordered by strike_key, easiest -> hardest
     std::unordered_map<internal::MarketId, std::size_t> market_index_by_id;
     bool complete{false};
     bool desynced{false};
@@ -113,13 +147,8 @@ struct SingleMarketState {
     internal::TimestampNs last_update_ns{0};
 };
 
-
-
-using EventDerivedState = std::variant<std::monostate,
-                                       MonotonicChainState,
-                                       MutuallyExclusiveState,
-                                       UnorderedGroupState,
-                                       SingleMarketState>;
+using EventDerivedState = std::variant<std::monostate, MonotonicChainState, MutuallyExclusiveState,
+                                       UnorderedGroupState, SingleMarketState>;
 
 struct Event {
     internal::EventId event_id{0};
@@ -130,7 +159,10 @@ struct Event {
     bool desynced{false};
     internal::TimestampNs last_update_ns{0};
 
-    EventApplyCode apply_market_update(const internal::NormalizedEvent& event);
+    EventApplyResult apply_market_update(const internal::NormalizedEvent& event);
+
+    [[nodiscard]] const EventMarketView*
+    find_market_view(internal::MarketId market_id) const noexcept;
 };
 
 class EventStore {
@@ -156,8 +188,16 @@ class EventStore {
     [[nodiscard]] std::size_t size() const noexcept { return events_.size(); }
     [[nodiscard]] bool empty() const noexcept { return events_.empty(); }
 
+    // Resets all BookState entries so that the next snapshot from a reconnected
+    // session is treated as the first snapshot. Call from the shard thread only.
+    void reset_all_books() noexcept;
+
+    // Approximate count of events whose derived state is currently desynced.
+    // Safe to read from any thread as a best-effort monitoring value.
+    [[nodiscard]] std::size_t desynced_event_count() const noexcept;
+
   private:
     std::unordered_map<internal::EventId, Event> events_;
 };
 
-}  // namespace predex::core::shards::kalshi
+} // namespace predex::core::shards::kalshi

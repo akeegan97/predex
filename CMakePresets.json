@@ -44,6 +44,18 @@
       }
     },
     {
+      "name": "perf",
+      "displayName": "Perf (Clang Release O3 + native tuning)",
+      "inherits": "base-clang",
+      "binaryDir": "${fileDir}/build/perf",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "${fileDir}/.vcpkg_installed/x64-linux",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native -mtune=native -fomit-frame-pointer",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native -mtune=native -fomit-frame-pointer"
+      }
+    },
+    {
       "name": "base-vcpkg",
       "hidden": true,
       "cacheVariables": {
@@ -66,6 +78,11 @@
       "name": "ci-vcpkg",
       "displayName": "CI (Clang RelWithDebInfo + vcpkg)",
       "inherits": ["ci", "base-vcpkg"]
+    },
+    {
+      "name": "perf-vcpkg",
+      "displayName": "Perf (Clang Release O3 + native tuning + vcpkg)",
+      "inherits": ["perf", "base-vcpkg"]
     }
   ],
   "buildPresets": [
@@ -92,6 +109,14 @@
     {
       "name": "build-ci-vcpkg",
       "configurePreset": "ci-vcpkg"
+    },
+    {
+      "name": "build-perf",
+      "configurePreset": "perf"
+    },
+    {
+      "name": "build-perf-vcpkg",
+      "configurePreset": "perf-vcpkg"
     }
   ],
   "testPresets": [
@@ -119,6 +144,13 @@
     {
       "name": "test-ci-vcpkg",
       "configurePreset": "ci-vcpkg",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "test-perf-vcpkg",
+      "configurePreset": "perf-vcpkg",
       "output": {
         "outputOnFailure": true
       }

@@ -1,72 +1,97 @@
 #include "predex/ingest/io_writer.hpp"
 #include "predex/ingest/frame_pool.hpp"
-#include <cstring>
 #include <chrono>
-namespace predex::core::ingest::kalshi{
+#include <cstring>
+namespace predex::core::ingest::kalshi {
 
-  IOWriter::IOWriter(predex::core::ingest::kalshi::FramePool& frame_pool, 
+IOWriter::IOWriter(
+    predex::core::ingest::kalshi::FramePool& frame_pool,
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& router_queue,
-                     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue) noexcept
-    : frame_pool_(frame_pool), router_queue_(router_queue), recycle_queue_(recycle_queue) {}
+    predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& router_queue,
+    std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*>
+        recycle_queues) noexcept
+    : frame_pool_(frame_pool), router_queue_(router_queue),
+      recycle_queues_(std::move(recycle_queues)) {}
 
-    bool IOWriter::on_wire_message(std::string_view payload) noexcept{
-        ++received_count_;
-        if(payload.size() > predex::core::ingest::kalshi::kMaxFrameBytes){
-            ++oversized_count_;
-            return false; // drop frame if payload is too large to fit in a frame, could extend this to have a separate queue for oversized frames if we want to keep them for analysis
-        }
-        //try and acquire handle from pool 
-        predex::core::ingest::kalshi::FrameHandle handle{};
-        if(!frame_pool_.try_acquire(handle)){
-            //try and drain recycle pool to free up handles
-            drain_recycled(max_batch_size_);
-            if(!frame_pool_.try_acquire(handle)){
-                ++dropped_count_;
-                return false; // drop frame if we can't acquire a handle even after draining recycled frames,
-            }
-        }
-        //copy payload into frame
-        if(auto* frame = frame_pool_.writable_frame(handle)){
-            frame->recv_ts_ns_ = monotonic_now_ns();
-            frame->len_ = static_cast<std::uint32_t>(payload.size());
-            frame->flags_ = 0; // can set flags based on message type or other
-            std::memcpy(frame->payload.data(), payload.data(), payload.size());
-            //enqueue handle for router to process
-            if(!router_queue_.try_push(handle)){
-                // if router queue is full, we return false, catastrophic backpressure we must fail.
-                ++dropped_count_;
-                // TODO would be to add retry/yield but for now we want to fail fast
-                if(!frame_pool_.recycle(handle)){
-                    ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to invalid handle or double recycle, log this for analysis
-                }
-                return false;
-            }
-            return true;
-        }
-        if(!frame_pool_.recycle(handle)){
-            ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to invalid handle or double recycle, log this for analysis
-        }
-        dropped_count_++;
-        return false;
-        
+bool IOWriter::on_wire_message(std::string_view payload) noexcept {
+    ++received_count_;
+    if (payload.size() > predex::core::ingest::kalshi::kMaxFrameBytes) {
+        ++oversized_count_;
+        return false; // drop frame if payload is too large to fit in a frame, could extend this to
+                      // have a separate queue for oversized frames if we want to keep them for
+                      // analysis
     }
-
-    std::size_t IOWriter::drain_recycled(std::size_t max_batch_size) noexcept{
-        std::size_t recycled_count = 0;
-        predex::core::ingest::kalshi::FrameHandle handle{};
-        while(recycled_count < max_batch_size && recycle_queue_.try_pop(handle)){
-            if(frame_pool_.recycle(handle)){
-                ++recycled_count;
-            } else {
-                ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to invalid handle or double recycle, log this for analysis
-            }
+    // try and acquire handle from pool
+    predex::core::ingest::kalshi::FrameHandle handle{};
+    if (!frame_pool_.try_acquire(handle)) {
+        // try and drain recycle pool to free up handles
+        drain_recycled(max_batch_size_);
+        if (!frame_pool_.try_acquire(handle)) {
+            ++dropped_count_;
+            return false; // drop frame if we can't acquire a handle even after draining recycled
+                          // frames,
         }
-        return recycled_count;
     }
-    std::uint64_t IOWriter::monotonic_now_ns() noexcept{
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()
-        ).count();
+    // copy payload into frame
+    if (auto* frame = frame_pool_.writable_frame(handle)) {
+        frame->recv_ts_ns_ = monotonic_now_ns();
+        frame->len_ = static_cast<std::uint32_t>(payload.size());
+        frame->flags_ = 0; // can set flags based on message type or other
+        std::memcpy(frame->payload.data(), payload.data(), payload.size());
+        // enqueue handle for router to process
+        if (!router_queue_.try_push(handle)) {
+            // if router queue is full, we return false, catastrophic backpressure must fail.
+            ++dropped_count_;
+            // TODO would be to add retry/yield but for now we want to fail fast
+            if (!frame_pool_.recycle(handle)) {
+                ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to
+                                         // invalid handle or double recycle, log this for analysis
+            }
+            return false;
+        }
+        return true;
     }
+    if (!frame_pool_.recycle(handle)) {
+        ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to invalid
+                                 // handle or double recycle, log this for analysis
+    }
+    dropped_count_++;
+    return false;
 }
+
+std::size_t IOWriter::drain_recycled(std::size_t max_batch_size) noexcept {
+    std::size_t recycled_count = 0;
+    if (recycle_queues_.empty()) {
+        return 0;
+    }
+    // Round-robin across the per-producer SPSC queues. Each visit pops at most one handle
+    // so a hot producer can't starve the others when the budget is tight.
+    std::size_t consecutive_empty = 0;
+    while (recycled_count < max_batch_size && consecutive_empty < recycle_queues_.size()) {
+        auto* queue = recycle_queues_[next_recycle_queue_];
+        next_recycle_queue_ = (next_recycle_queue_ + 1) % recycle_queues_.size();
+        if (queue == nullptr) {
+            ++consecutive_empty;
+            continue;
+        }
+        predex::core::ingest::kalshi::FrameHandle handle{};
+        if (!queue->try_pop(handle)) {
+            ++consecutive_empty;
+            continue;
+        }
+        consecutive_empty = 0;
+        if (frame_pool_.recycle(handle)) {
+            ++recycled_count;
+        } else {
+            ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to
+                                     // invalid handle or double recycle, log this for analysis
+        }
+    }
+    return recycled_count;
+}
+std::uint64_t IOWriter::monotonic_now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+} // namespace predex::core::ingest::kalshi

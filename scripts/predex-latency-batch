@@ -14,8 +14,8 @@ fi
 RUNS="${RUNS:-3}"
 DURATION_SECONDS="${DURATION_SECONDS:-600}"
 CONFIG_PATH="${CONFIG_PATH:-docs/generated_config.json}"
-AUDIT_PATH="${AUDIT_PATH:-predex_audit.jsonl}"
-OUTPUT_PREFIX="${OUTPUT_PREFIX:-docs/replay/latency_tick_to_signal_spin}"
+AUDIT_PATH="${AUDIT_PATH:-logs/live/predex_audit.jsonl}"
+OUTPUT_PREFIX="${OUTPUT_PREFIX:-logs/replay/latency_tick_to_signal_spin}"
 SPAN="${SPAN:-tick_to_signal_ns}"
 BACKEND="${BACKEND:-matplotlib}"
 

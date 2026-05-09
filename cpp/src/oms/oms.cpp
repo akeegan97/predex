@@ -1,552 +1,932 @@
 #include "predex/oms/oms.hpp"
-#include "predex/oms/oms_types.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <limits>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <cstring>
 
-namespace predex::core::oms::kalshi{
-    namespace {
-        [[nodiscard]] std::int64_t latency_delta_ns(
-            internal::TimestampNs end_ts_ns,
-            internal::TimestampNs start_ts_ns) {
-            if (end_ts_ns <= start_ts_ns) {
-                return 0;
-            }
-            const auto raw_delta = end_ts_ns - start_ts_ns;
-            constexpr auto max_i64 =
-                static_cast<internal::TimestampNs>(std::numeric_limits<std::int64_t>::max());
-            if (raw_delta > max_i64) {
-                return std::numeric_limits<std::int64_t>::max();
-            }
-            return static_cast<std::int64_t>(raw_delta);
-        }
+namespace predex::core::oms::kalshi {
+namespace {
 
-        [[nodiscard]] internal::TimestampNs monotonic_now_ns() {
-            return static_cast<internal::TimestampNs>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count());
-        }
+[[nodiscard]] internal::TimestampNs monotonic_now_ns() noexcept {
+    return static_cast<internal::TimestampNs>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 
-        // Interim in-process latency staging maps keyed by OMS request id.
-        //NOLINTNEXTLINE
-        static std::unordered_map<OmsRequestId, internal::TimestampNs> decision_ts_by_request_id{};
-        //NOLINTNEXTLINE
-        static std::unordered_map<OmsRequestId, internal::TimestampNs> transport_submit_ts_by_request_id{};
-        //NOLINTNEXTLINE
-        static std::unordered_map<OmsRequestId, internal::TimestampNs> first_fill_ts_by_request_id{};
-
-
-
-        [[nodiscard]] OmsRequestId extract_oms_request_id(const IntentDecision& decision) {
-            if (const auto* accepted = std::get_if<AcceptedIntent>(&decision.data)) {
-                return accepted->oms_request_id;
-            }
-            if (const auto* modified = std::get_if<ModifiedIntent>(&decision.data)) {
-                return modified->oms_request_id;
-            }
-            return 0;
-        }
-
-        [[nodiscard]] std::uint8_t extract_reject_reason(const IntentDecision& decision) {
-            if (const auto* rejected = std::get_if<RejectedIntent>(&decision.data)) {
-                return static_cast<std::uint8_t>(rejected->reason);
-            }
-            if (const auto* modified = std::get_if<ModifiedIntent>(&decision.data)) {
-                return static_cast<std::uint8_t>(modified->reason);
-            }
-            return 0;
-        }
+[[nodiscard]] std::int64_t latency_delta_ns(internal::TimestampNs end_ts_ns,
+                                            internal::TimestampNs start_ts_ns) noexcept {
+    if (end_ts_ns <= start_ts_ns || start_ts_ns == 0) {
+        return 0;
     }
-    
-    Oms::Oms(std::vector<SubmissionQueue*> shard_intent_queues,
-                 std::vector<DecisionQueue*> shard_decision_queues,
-                 std::vector<LifecycleQueue*> shard_lifecycle_queues,
-                 OmsTransportQueues transport_queues,
-                 GlobalRiskManager global_risk,
-                 AuditQueue* audit_queue)
-                 //NOLINTNEXTLINE
-        : global_risk_(std::move(global_risk)),
-          shard_intent_queues_(std::move(shard_intent_queues)),
-          shard_decision_queues_(std::move(shard_decision_queues)),
-          shard_lifecycle_queues_(std::move(shard_lifecycle_queues)),
-          //NOLINTNEXTLINE
-          transport_queues_(std::move(transport_queues)),
-          audit_queue_(audit_queue) {}
-    
-    //NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] OmsPumpResult Oms::pump(std::size_t max_transport_updates, std::size_t max_shard_intents) noexcept{
-        OmsPumpResult result{};
+    const auto raw_delta = end_ts_ns - start_ts_ns;
+    constexpr auto max_i64 =
+        static_cast<internal::TimestampNs>(std::numeric_limits<std::int64_t>::max());
+    if (raw_delta > max_i64) {
+        return std::numeric_limits<std::int64_t>::max();
+    }
+    return static_cast<std::int64_t>(raw_delta);
+}
 
-        for(std::size_t i=0; i<max_transport_updates; i++){
-            const OmsProcessCode code = process_one_transport_update();
-            if(code == OmsProcessCode::kIdle){
-                break;
+enum class DecisionAuditCode : std::uint8_t {
+    kAccepted = 1,
+    kRejected = 2,
+    kModified = 3,
+};
+
+enum class LifecycleAuditCode : std::uint8_t {
+    kWorking = 1,
+    kPartiallyFilled = 2,
+    kFilled = 3,
+    kCanceled = 4,
+    kUncertain = 5,
+    kVenueRejected = 6,
+};
+
+struct TransportAuditSample {
+    internal::TimestampNs submit_ts_ns{0};
+    internal::TimestampNs response_ts_ns{0};
+    std::uint8_t decision_code{0};
+    std::uint16_t transport_http_status{0};
+    std::uint16_t transport_retry_count{0};
+    internal::QtyLots qty_lots{0};
+    internal::PriceTicks price_ticks{0};
+};
+
+[[nodiscard]] std::optional<TransportAuditSample>
+transport_audit_sample_for(const KalshiEventSource source, const KalshiToOmsEvent& event,
+                           internal::QtyLots previous_working_qty,
+                           std::optional<internal::PriceTicks> previous_working_price) {
+    if (source != KalshiEventSource::kRest) {
+        return std::nullopt;
+    }
+    if (event.valueless_by_exception()) [[unlikely]] {
+        return std::nullopt;
+    }
+
+    return std::visit(
+        [&](const auto& typed_event) noexcept ->  std::optional<TransportAuditSample> {
+            using T = std::decay_t<decltype(typed_event)>;
+            if constexpr (std::is_same_v<T, VenueOrderAck>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
+                    .qty_lots = typed_event.accepted_qty_lots,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            } else if constexpr (std::is_same_v<T, VenueOrderReject>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
+                    .qty_lots = previous_working_qty,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            } else if constexpr (std::is_same_v<T, VenueCancelAck> ||
+                                 std::is_same_v<T, VenueCancelReject>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(std::is_same_v<T, VenueCancelReject>
+                                                                   ? DecisionAuditCode::kRejected
+                                                                   : DecisionAuditCode::kModified),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
+                    .qty_lots = previous_working_qty,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
+            } else if constexpr (std::is_same_v<T, VenueModifyAck>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
+                    .qty_lots = typed_event.working_qty_lots,
+                    .price_ticks = typed_event.working_price_ticks.value_or(
+                        previous_working_price.value_or(0)),
+                };
+            } else if constexpr (std::is_same_v<T, VenueModifyReject>) {
+                return TransportAuditSample{
+                    .submit_ts_ns = typed_event.transport_submit_ts_ns,
+                    .response_ts_ns = typed_event.recv_ts_ns,
+                    .decision_code = static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                    .transport_http_status = typed_event.http_status_code,
+                    .transport_retry_count = typed_event.retry_count,
+                    .qty_lots = previous_working_qty,
+                    .price_ticks = previous_working_price.value_or(0),
+                };
             }
-            result.code = code;
-            if(code == OmsProcessCode::kProcessedTransportUpdate){
-                ++result.processed_transport_updates;
-                continue;
-            }
-            return result;
+            return std::nullopt;
+        },
+        event);
+}
+
+} // namespace
+
+Oms::Oms(std::vector<ShardRequestQueue*> shard_request_queues,
+         std::vector<ShardDecisionQueue*> shard_decision_queues,
+         std::vector<ShardLifecycleQueue*> shard_lifecycle_queues,
+         ExecutionTransportQueues transport_queues, GlobalRiskLimits global_risk_limits,
+         utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
+         std::function<std::optional<std::string>(internal::MarketId)> market_ticker_resolver)
+         
+    : global_risk_((global_risk_limits)),
+      transport_(std::move(transport_queues)), audit_queue_(audit_queue),
+      market_ticker_resolver_(std::move(market_ticker_resolver)),
+      shard_request_queues_(std::move(shard_request_queues)),
+      shard_decision_queues_(std::move(shard_decision_queues)),
+      shard_lifecycle_queues_(std::move(shard_lifecycle_queues)),
+      client_order_session_nonce_(monotonic_now_ns()) {}
+//NOLINTNEXTLINE
+OmsPumpResult Oms::pump(std::size_t max_kalshi_events, std::size_t max_shard_requests) noexcept {
+    OmsPumpResult result{};
+
+    for (std::size_t i = 0; i < max_kalshi_events; ++i) {
+        const auto code = process_one_kalshi_event();
+        if (code == OmsProcessCode::kIdle) {
+            break;
         }
-
-        for(std::size_t i=0; i<max_shard_intents; i++){
-            const OmsProcessCode code = process_one_shard_intent();
-            if(code == OmsProcessCode::kIdle){
-                if(result.processed_transport_updates > 0){
-                    result.code = OmsProcessCode::kProcessedTransportUpdate;
-                }
-                break;
-            }
-            result.code = code;
-            if(code == OmsProcessCode::kProcessedIntent){
-                ++result.processed_intents;
-                continue;
-            }
-            return result;
-        }
-
-        if(result.processed_intents > 0 && result.code == OmsProcessCode::kIdle){
-            result.code = OmsProcessCode::kProcessedIntent;
-        } else if(result.processed_transport_updates > 0 && result.code == OmsProcessCode::kIdle){
-            result.code = OmsProcessCode::kProcessedTransportUpdate;
+        result.code = code;
+        if (code == OmsProcessCode::kProcessedKalshiEvent) {
+            ++result.processed_kalshi_events;
+            continue;
         }
         return result;
     }
-    [[nodiscard]] const GlobalRiskState& Oms::global_risk_state() const noexcept{
-        return global_risk_state_;
-    }
-    [[nodiscard]] std::size_t Oms::live_order_count() const noexcept{
-        return orders_by_request_id_.size();
-    }
-    [[nodiscard]] std::uint64_t Oms::processed_intent_count() const noexcept{
-        return processed_intent_count_;
-    }
-    [[nodiscard]] std::uint64_t Oms::processed_transport_update_count() const noexcept{
-        return processed_transport_update_count_;
-    }
-    [[nodiscard]] std::uint64_t Oms::rejected_intent_count() const noexcept{
-        return rejected_intent_count_;
+
+    for (std::size_t i = 0; i < max_shard_requests; ++i) {
+        const auto code = process_one_shard_request();
+        if (code == OmsProcessCode::kIdle) {
+            break;
+        }
+        result.code = code;
+        if (code == OmsProcessCode::kProcessedShardRequest) {
+            ++result.processed_shard_requests;
+            continue;
+        }
+        return result;
     }
 
-
-    [[nodiscard]] OmsProcessCode Oms::process_one_transport_update() noexcept{
-        if(transport_queues_.inbound_update_queue == nullptr){
-            return OmsProcessCode::kIdle;
-        }
-        OrderLifecycleEvent event{};
-        if(!transport_queues_.inbound_update_queue->try_pop(event)){
-            return OmsProcessCode::kIdle;
-        }
-        OrderState* const tracked_order = find_order_state(event);
-        if (tracked_order == nullptr) {
-            return OmsProcessCode::kError;
-        }
-        const OmsRequestId resolved_request_id = tracked_order->oms_request_id;
-        const internal::TimestampNs decision_ts_ns =
-            decision_ts_by_request_id.contains(resolved_request_id)
-                ? decision_ts_by_request_id[resolved_request_id]
-                : 0;
-        const internal::TimestampNs transport_ts_ns =
-            transport_submit_ts_by_request_id.contains(resolved_request_id)
-                ? transport_submit_ts_by_request_id[resolved_request_id]
-                : 0;
-
-        if (std::holds_alternative<OrderFill>(event.data) &&
-            !first_fill_ts_by_request_id.contains(resolved_request_id)) {
-            first_fill_ts_by_request_id[resolved_request_id] = event.recv_ts_ns;
-        }
-
-        emit_audit(predex::core::audit::AuditEvent{
-            .kind = predex::core::audit::AuditKind::kOmsLifecycle,
-            .ts_ns = event.recv_ts_ns,
-            .shard_id = event.origin.shard_id,
-            .signal_id = event.origin.signal_id,
-            .group_id = event.origin.group_id,
-            .local_intent_id = event.origin.local_intent_id,
-            .oms_request_id = resolved_request_id,
-            .tick_recv_ns = tracked_order->origin.tick_recv_ns,
-            .signal_ts_ns = tracked_order->origin.signal_ts_ns,
-            .submission_enqueued_ns = tracked_order->origin.submission_enqueued_ns,
-            .oms_decision_ts_ns = decision_ts_ns,
-            .transport_submit_ts_ns = transport_ts_ns,
-            .first_fill_recv_ns =
-                first_fill_ts_by_request_id.contains(resolved_request_id)
-                    ? first_fill_ts_by_request_id[resolved_request_id]
-                    : 0,
-            .terminal_recv_ns =
-                (event.kind == OrderLifecycleEventKind::kReject ||
-                 event.kind == OrderLifecycleEventKind::kCanceled ||
-                 event.kind == OrderLifecycleEventKind::kFill)
-                    ? event.recv_ts_ns
-                    : 0,
-            .decision_to_transport_ns = latency_delta_ns(transport_ts_ns, decision_ts_ns),
-            .transport_to_first_fill_ns =
-                first_fill_ts_by_request_id.contains(resolved_request_id)
-                    ? latency_delta_ns(first_fill_ts_by_request_id[resolved_request_id], transport_ts_ns)
-                    : 0,
-            .tick_to_first_fill_ns =
-                first_fill_ts_by_request_id.contains(resolved_request_id)
-                    ? latency_delta_ns(first_fill_ts_by_request_id[resolved_request_id],
-                                       tracked_order->origin.tick_recv_ns)
-                    : 0,
-            .tick_to_terminal_ns =
-                (event.kind == OrderLifecycleEventKind::kReject ||
-                 event.kind == OrderLifecycleEventKind::kCanceled ||
-                 event.kind == OrderLifecycleEventKind::kFill)
-                    ? latency_delta_ns(event.recv_ts_ns, tracked_order->origin.tick_recv_ns)
-                    : 0,
-            .exchange = internal::ExchangeId::kKalshi,
-            .event_id = event.origin.event_id,
-            .market_id = event.origin.market_id,
-            .side = internal::Side::kUnknown,
-            .leg_index = event.origin.leg_index,
-            .leg_count = event.origin.leg_count,
-            .qty_lots = 0,
-            .price_ticks = 0,
-            .decision_code = 0,
-            .reject_reason = 0,
-            .lifecycle_kind = static_cast<std::uint8_t>(event.kind),
-            .order_status = static_cast<std::uint8_t>(event.status),
-        });
-        if(!apply_transport_update(event)){
-            return OmsProcessCode::kError;
-        }
-
-        if (event.kind == OrderLifecycleEventKind::kReject ||
-            event.kind == OrderLifecycleEventKind::kCanceled ||
-            event.kind == OrderLifecycleEventKind::kFill) {
-            decision_ts_by_request_id.erase(resolved_request_id);
-            transport_submit_ts_by_request_id.erase(resolved_request_id);
-            first_fill_ts_by_request_id.erase(resolved_request_id);
-        }
-
-        if(!emit_lifecycle_event(event)){
-            return OmsProcessCode::kShardBackpressure;
-        }
-        ++processed_transport_update_count_;
-        return OmsProcessCode::kProcessedTransportUpdate;
+    if (result.processed_shard_requests > 0 && result.code == OmsProcessCode::kIdle) {
+        result.code = OmsProcessCode::kProcessedShardRequest;
+    } else if (result.processed_kalshi_events > 0 && result.code == OmsProcessCode::kIdle) {
+        result.code = OmsProcessCode::kProcessedKalshiEvent;
     }
+    return result;
+}
 
-    [[nodiscard]] OmsProcessCode Oms::process_one_shard_intent() noexcept {
-        if (shard_intent_queues_.empty()) {
-            return OmsProcessCode::kIdle;
-        }
+OmsRequestId Oms::seed_reconciled_order(OrderState state) noexcept {
+    if (state.order.oms_request_id == 0) {
+        state.order.oms_request_id = next_oms_request_id_++;
+    } else {
+        next_oms_request_id_ = std::max(next_oms_request_id_, state.order.oms_request_id + 1);
+    }
+    if (state.order.client_order_id.empty()) {
+        state.order.client_order_id = make_client_order_id(state.order.oms_request_id);
+    }
+    order_store_.adopt_reconciled_order(state);
 
-        for (std::size_t scanned = 0; scanned < shard_intent_queues_.size(); ++scanned) {
-            const std::size_t shard_index =
-                (next_shard_index_ + scanned) % shard_intent_queues_.size();
-            SubmissionQueue* const queue = shard_intent_queues_[shard_index];
-            if (queue == nullptr) {
-                continue;
-            }
+    NewOrderIntent synthetic_intent{
+        .context = state.context,
+        .exchange = state.exchange,
+        .side = state.side,
+        .outcome = state.outcome,
+        .qty_lots = state.working_qty_lots,
+        .limit_price_ticks = state.working_limit_price_ticks,
+        .time_in_force = state.time_in_force,
+        .liquidity_intent = state.liquidity_intent,
+        .order_type_intent = state.order_type_intent,
+        .intent_ts_ns = state.intent_ts_ns,
+    };
+    global_risk_.on_new_order_accepted(synthetic_intent, 0);
+    return state.order.oms_request_id;
+}
 
-            OmsSubmission submission{};
-            if (!queue->try_pop(submission)) {
-                continue;
-            }
+void Oms::request_soft_halt() noexcept {
+    halt_mode_.store(static_cast<std::uint8_t>(HaltMode::kSoft), std::memory_order_release);
+}
 
-            next_shard_index_ = (shard_index + 1) % shard_intent_queues_.size();
-            //NOLINTNEXTLINE
-            const OmsProcessCode code = process_submission(std::move(submission));
-            if (code == OmsProcessCode::kProcessedIntent) {
-                ++processed_intent_count_;
-            }
-            return code;
-        }
+void Oms::request_hard_halt() noexcept {
+    halt_mode_.store(static_cast<std::uint8_t>(HaltMode::kHard), std::memory_order_release);
+}
 
+bool Oms::is_halted() const noexcept {
+    return halt_mode_.load(std::memory_order_acquire) != static_cast<std::uint8_t>(HaltMode::kNone);
+}
+
+std::size_t Oms::live_order_count() const noexcept { return order_store_.live_order_count(); }
+
+std::uint64_t Oms::processed_shard_request_count() const noexcept {
+    return processed_shard_request_count_;
+}
+
+std::uint64_t Oms::processed_kalshi_event_count() const noexcept {
+    return processed_kalshi_event_count_;
+}
+
+std::uint64_t Oms::emitted_decision_count() const noexcept { return emitted_decision_count_; }
+
+std::uint64_t Oms::emitted_transport_count() const noexcept { return emitted_transport_count_; }
+
+std::uint64_t Oms::emitted_lifecycle_count() const noexcept { return emitted_lifecycle_count_; }
+
+std::uint64_t Oms::rejected_decision_count() const noexcept { return rejected_decision_count_; }
+
+OmsProcessCode Oms::process_one_shard_request() {
+    if (shard_request_queues_.empty()) {
         return OmsProcessCode::kIdle;
     }
 
-    [[nodiscard]] OmsProcessCode Oms::process_submission(OmsSubmission submission) noexcept {
-        if (auto* intent = std::get_if<OrderIntent>(&submission)) {
-            //NOLINTNEXTLINE
-            return process_intent(std::move(*intent));
+    const std::size_t queue_count = shard_request_queues_.size();
+    for (std::size_t offset = 0; offset < queue_count; ++offset) {
+        const std::size_t index = (next_shard_index_ + offset) % queue_count;
+        auto* queue = shard_request_queues_[index];
+        if (queue == nullptr) {
+            continue;
         }
-
-        auto* group = std::get_if<GroupOrderIntent>(&submission);
-        if (group == nullptr || group->leg_count == 0 ||
-            group->leg_count > group->legs.size()) {
-            return OmsProcessCode::kError;
+        ShardOmsRequest request{};
+        if (!queue->try_pop(request)) {
+            continue;
         }
+        next_shard_index_ = (index + 1U) % queue_count;
+        ++processed_shard_request_count_;
+        return handle_shard_request(request);
+    }
+    return OmsProcessCode::kIdle;
+}
 
-        for (std::size_t leg_index = 0; leg_index < group->leg_count; ++leg_index) {
-            OrderIntent leg = group->legs[leg_index];
-            leg.origin.group_id = group->group_id;
-            leg.origin.leg_index = static_cast<std::uint16_t>(leg_index);
-            leg.origin.leg_count = static_cast<std::uint16_t>(group->leg_count);
+OmsProcessCode Oms::process_one_kalshi_event() noexcept {
+    SourcedKalshiEvent event{};
+    if (!transport_.try_pop_event(event)) {
+        return OmsProcessCode::kIdle;
+    }
+    ++processed_kalshi_event_count_;
+    return handle_kalshi_event(event);
+}
 
-            const std::uint64_t rejected_before = rejected_intent_count_;
-            //NOLINTNEXTLINE
-            const OmsProcessCode code = process_intent(std::move(leg));
-            if (code != OmsProcessCode::kProcessedIntent) {
-                return code;
-            }
-            if (group->execution_policy ==
-                    GroupExecutionPolicy::kAbortRemainingOnReject &&
-                rejected_intent_count_ > rejected_before) {
-                break;
-            }
-        }
-
-        return OmsProcessCode::kProcessedIntent;
+OmsProcessCode
+Oms::handle_new_order_intent(const NewOrderIntent& intent,
+                             std::optional<GroupExecutionPolicy> group_execution_policy) {
+    if (halt_mode_.load(std::memory_order_acquire) >= static_cast<std::uint8_t>(HaltMode::kSoft)) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(
+            intent.context, 0, now_ns, static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+            static_cast<std::uint8_t>(IntentRejectReason::kSoftHalt), intent.qty_lots);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = IntentRejectReason::kSoftHalt,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
     }
 
-    [[nodiscard]] OmsProcessCode Oms::process_intent(OrderIntent intent) noexcept{
-        const OmsRequestId oms_request_id = next_oms_request_id_++;
-        const ClientOrderId client_order_id = make_client_order_id(oms_request_id);
-        const internal::TimestampNs signal_ts_ns =
-            intent.origin.signal_ts_ns != 0 ? intent.origin.signal_ts_ns : intent.intent_ts_ns;
-        const internal::TimestampNs submission_ts_ns =
-            intent.origin.submission_enqueued_ns != 0
-                ? intent.origin.submission_enqueued_ns
-                : signal_ts_ns;
-        const internal::TimestampNs tick_recv_ts_ns =
-            intent.origin.tick_recv_ns != 0 ? intent.origin.tick_recv_ns : signal_ts_ns;
-        const internal::TimestampNs decision_ts_ns = monotonic_now_ns();
-        const std::int64_t submission_to_decision_ns =
-            latency_delta_ns(decision_ts_ns, submission_ts_ns);
+    const auto risk_decision = global_risk_.evaluate_new_order(intent);
+    if (const auto* rejected = std::get_if<RiskRejected>(&risk_decision)) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(intent.context, 0, now_ns,
+                            static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                            static_cast<std::uint8_t>(rejected->reason), intent.qty_lots);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = rejected->reason,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
+    }
 
-        IntentDecision decision =
-            global_risk_.evaluate(intent, global_risk_state_, oms_request_id, client_order_id,
-                                  decision_ts_ns);
+    const auto now_ns = monotonic_now_ns();
+    const auto order = make_order_ref();
+    const ShardOrderCorrelation corr{
+        .context = intent.context,
+        .order = order,
+    };
 
-        if (decision.code == IntentDecisionCode::kAccepted) {
-            const auto* accepted_intent = std::get_if<AcceptedIntent>(&decision.data);
-            if (accepted_intent == nullptr) {
-                return OmsProcessCode::kError;
-            }
+    order_store_.insert_pending_submit(BeginSubmitTransition{
+        .corr = corr,
+        .intent = intent,
+        .oms_decision_ts_ns = now_ns,
+    });
+    global_risk_.on_new_order_accepted(
+        intent, std::get<RiskApproved>(risk_decision).capital_reserved_ticks);
+    emit_decision_audit(intent.context, order.oms_request_id, now_ns,
+                        static_cast<std::uint8_t>(DecisionAuditCode::kAccepted),
+                        static_cast<std::uint8_t>(IntentRejectReason::kNone), intent.qty_lots);
 
-            const SubmitOrderCmd submit_cmd{
-                .oms_request_id = accepted_intent->oms_request_id,
-                .intent = accepted_intent->intent,
-                .client_order_id = accepted_intent->client_order_id,
-            };
+    if (!emit_shard_decision(OmsToShardDecision{IntentAccepted{.corr = corr}},
+                             intent.context.shard_id)) {
+        return OmsProcessCode::kShardBackpressure;
+    }
 
-            if (transport_queues_.submit_queue == nullptr ||
-                !transport_queues_.submit_queue->try_push(submit_cmd)) {
-                decision = make_transport_reject(intent, decision_ts_ns);
-            } else {
-                const internal::TimestampNs transport_submit_ts_ns = monotonic_now_ns();
-                decision_ts_by_request_id[accepted_intent->oms_request_id] = decision_ts_ns;
-                transport_submit_ts_by_request_id[accepted_intent->oms_request_id] =
-                    transport_submit_ts_ns;
-                emit_audit(predex::core::audit::AuditEvent{
-                    .kind = predex::core::audit::AuditKind::kOmsTransport,
-                    .ts_ns = transport_submit_ts_ns,
-                    .shard_id = accepted_intent->intent.origin.shard_id,
-                    .signal_id = accepted_intent->intent.origin.signal_id,
-                    .group_id = accepted_intent->intent.origin.group_id,
-                    .local_intent_id = accepted_intent->intent.origin.local_intent_id,
-                    .oms_request_id = accepted_intent->oms_request_id,
-                    .tick_recv_ns = tick_recv_ts_ns,
-                    .signal_ts_ns = signal_ts_ns,
-                    .submission_enqueued_ns = submission_ts_ns,
-                    .oms_decision_ts_ns = decision_ts_ns,
-                    .transport_submit_ts_ns = transport_submit_ts_ns,
-                    .submission_to_decision_ns =
-                        latency_delta_ns(decision_ts_ns, submission_ts_ns),
-                    .decision_to_transport_ns =
-                        latency_delta_ns(transport_submit_ts_ns, decision_ts_ns),
-                    .exchange = accepted_intent->intent.exchange,
-                    .event_id = accepted_intent->intent.origin.event_id,
-                    .market_id = accepted_intent->intent.origin.market_id,
-                    .side = accepted_intent->intent.side,
-                    .leg_index = accepted_intent->intent.origin.leg_index,
-                    .leg_count = accepted_intent->intent.origin.leg_count,
-                    .qty_lots = accepted_intent->intent.qty_lots,
-                    .price_ticks = accepted_intent->intent.limit_price_ticks.value_or(0),
-                });
-                predex::core::oms::kalshi::GlobalRiskManager::on_intent_accepted(*accepted_intent, global_risk_state_);
-                insert_live_order(*accepted_intent, decision_ts_ns);
+    const std::string market_ticker =
+        market_ticker_resolver_ != nullptr
+            ? market_ticker_resolver_(intent.context.market_id).value_or(std::string{})
+            : std::string{};
+    if (!emit_kalshi_command(OmsToKalshiCommand{SubmitOrderCmd{
+            .order = order,
+            .intent = intent,
+            .market_ticker = market_ticker,
+            .group_execution_policy = group_execution_policy,
+        }})) {
+        return OmsProcessCode::kVenueBackpressure;
+    }
+    order_store_.mark_submitted(MarkSubmittedTransition{
+        .order = order,
+        .venue_submit_ts_ns = now_ns,
+    });
+    return OmsProcessCode::kProcessedShardRequest;
+}
+
+OmsProcessCode Oms::handle_group_order_intent(const GroupOrderIntent& intent)  {
+    for (std::size_t leg_index = 0; leg_index < intent.leg_count; ++leg_index) {
+        const auto code = handle_new_order_intent(intent.legs[leg_index], intent.execution_policy);
+        if (code != OmsProcessCode::kProcessedShardRequest && code != OmsProcessCode::kIdle) {
+            return code;
+        }
+    }
+    return OmsProcessCode::kProcessedShardRequest;
+}
+
+OmsProcessCode Oms::handle_cancel_order_intent(const CancelOrderIntent& intent) {
+    const auto key = make_lookup_key(intent);
+    if (!key.has_value()) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(intent.context, 0, now_ns,
+                            static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                            static_cast<std::uint8_t>(IntentRejectReason::kInvalidParams), 0);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = IntentRejectReason::kInvalidParams,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
+    }
+    auto* state = order_store_.find(*key);
+    if (state == nullptr) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(intent.context, 0, now_ns,
+                            static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                            static_cast<std::uint8_t>(IntentRejectReason::kInvalidParams), 0);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = IntentRejectReason::kInvalidParams,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
+    }
+
+    const ShardOrderCorrelation corr{
+        .context = state->context,
+        .order = state->order,
+    };
+    if (!order_store_.mark_pending_cancel(BeginCancelTransition{
+            .corr = corr,
+            .ts_ns = monotonic_now_ns(),
+        })) {
+        return OmsProcessCode::kError;
+    }
+    if (!emit_kalshi_command(OmsToKalshiCommand{CancelOrderCmd{
+            .corr = corr,
+            .cmd_ts_ns = monotonic_now_ns(),
+        }})) {
+        return OmsProcessCode::kVenueBackpressure;
+    }
+    return OmsProcessCode::kProcessedShardRequest;
+}
+
+OmsProcessCode Oms::handle_modify_order_intent(const ModifyOrderIntent& intent) {
+    const auto key = make_lookup_key(intent);
+    if (!key.has_value()) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(intent.context, 0, now_ns,
+                            static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                            static_cast<std::uint8_t>(IntentRejectReason::kInvalidParams),
+                            intent.replacement.qty_lots);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = IntentRejectReason::kInvalidParams,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
+    }
+    auto* state = order_store_.find(*key);
+    if (state == nullptr || !modify_preserves_immutable_fields(*state, intent.replacement)) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(intent.context, 0, now_ns,
+                            static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                            static_cast<std::uint8_t>(IntentRejectReason::kInvalidParams),
+                            intent.replacement.qty_lots);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = IntentRejectReason::kInvalidParams,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
+    }
+
+    const auto risk_decision =
+        global_risk_.evaluate_modify(intent.replacement, state->working_qty_lots,
+                                     state->working_limit_price_ticks, state->context.event_id);
+    if (const auto* rejected = std::get_if<RiskRejected>(&risk_decision)) {
+        const auto now_ns = monotonic_now_ns();
+        emit_decision_audit(intent.context, state->order.oms_request_id, now_ns,
+                            static_cast<std::uint8_t>(DecisionAuditCode::kRejected),
+                            static_cast<std::uint8_t>(rejected->reason),
+                            intent.replacement.qty_lots);
+        return emit_shard_decision(OmsToShardDecision{IntentRejected{
+                                       .context = intent.context,
+                                       .reason = rejected->reason,
+                                   }},
+                                   intent.context.shard_id)
+                   ? OmsProcessCode::kProcessedShardRequest
+                   : OmsProcessCode::kShardBackpressure;
+    }
+
+    const ShardOrderCorrelation corr{
+        .context = state->context,
+        .order = state->order,
+    };
+    if (!order_store_.mark_pending_modify(BeginModifyTransition{
+            .corr = corr,
+            .replacement = intent.replacement,
+            .ts_ns = monotonic_now_ns(),
+        })) {
+        return OmsProcessCode::kError;
+    }
+    emit_decision_audit(corr.context, corr.order.oms_request_id, monotonic_now_ns(),
+                        static_cast<std::uint8_t>(DecisionAuditCode::kModified),
+                        static_cast<std::uint8_t>(IntentRejectReason::kNone),
+                        intent.replacement.qty_lots);
+    if (!emit_shard_decision(OmsToShardDecision{IntentModified{
+                                 .corr = corr,
+                                 .replacement = intent.replacement,
+                             }},
+                             state->context.shard_id)) {
+        return OmsProcessCode::kShardBackpressure;
+    }
+
+    if (!emit_kalshi_command(OmsToKalshiCommand{ModifyOrderCmd{
+            .corr = corr,
+            .updated_client_order_id = make_client_order_id(corr.order.oms_request_id),
+            .replacement = intent.replacement,
+            .cmd_ts_ns = monotonic_now_ns(),
+        }})) {
+        return OmsProcessCode::kVenueBackpressure;
+    }
+    return OmsProcessCode::kProcessedShardRequest;
+}
+
+bool Oms::modify_preserves_immutable_fields(const OrderState& order_state,
+                                            const NewOrderIntent& replacement) const noexcept {
+    return replacement.context.event_id == order_state.context.event_id &&
+           replacement.context.market_id == order_state.context.market_id &&
+           replacement.side == order_state.side && replacement.outcome == order_state.outcome &&
+           replacement.exchange == order_state.exchange;
+}
+//NOLINTNEXTLINE -- Accepting complexity in this function for now, as it's mostly a big switch on event types. Can refactor if it grows further.
+OmsProcessCode Oms::handle_kalshi_event(const SourcedKalshiEvent& event) noexcept {
+    const auto* pre_state = std::visit(
+        [this](const auto& typed_event) -> const OrderState* {
+            return order_store_.find(typed_event.order);
+        },
+        event.event);
+    const internal::EventId event_id = pre_state != nullptr ? pre_state->context.event_id : 0;
+    const internal::QtyLots previous_working_qty =
+        pre_state != nullptr ? pre_state->working_qty_lots : 0;
+    const auto previous_working_price = pre_state != nullptr
+                                            ? pre_state->working_limit_price_ticks
+                                            : std::optional<internal::PriceTicks>{};
+    const std::optional<ShardOrderCorrelation> pre_corr =
+        pre_state != nullptr ? std::optional<ShardOrderCorrelation>{ShardOrderCorrelation{
+                                   .context = pre_state->context,
+                                   .order = pre_state->order,
+                               }}
+                             : std::nullopt;
+
+    const auto apply_result = order_store_.apply_venue_event(event);
+    if (!apply_result.ok) {
+        return OmsProcessCode::kError;
+    }
+
+    if (apply_result.fill_qty_lots > 0) {
+        const std::int64_t released_ticks =
+            previous_working_price.has_value()
+                ? internal::scale_ticks_by_qty_ceil(*previous_working_price,
+                                                    apply_result.fill_qty_lots)
+                : 0;
+        global_risk_.on_fill(event_id, apply_result.fill_qty_lots, released_ticks);
+    }
+    if (apply_result.became_terminal) {
+        const std::int64_t released_ticks =
+            previous_working_price.has_value()
+                ? internal::scale_ticks_by_qty_ceil(*previous_working_price,
+                                                    apply_result.remaining_open_qty_lots)
+                : 0;
+        global_risk_.on_order_terminal(event_id, apply_result.remaining_open_qty_lots,
+                                       released_ticks);
+    }
+
+    if (pre_state != nullptr && std::holds_alternative<VenueModifyAck>(event.event)) {
+        const auto* post_state = order_store_.find(pre_state->order);
+        if (post_state != nullptr) {
+            global_risk_.on_modify_accepted(event_id, previous_working_qty,
+                                            post_state->working_qty_lots, 0);
+        }
+    }
+
+    if (auto corr = pre_corr.has_value() ? pre_corr
+                                         : resolve_correlation(std::visit(
+                                               [](const auto& typed_event) -> const OmsOrderRef& {
+                                                   return typed_event.order;
+                                               },
+                                               event.event));
+        corr.has_value()) {
+        if (pre_state != nullptr) {
+            if (const auto transport_sample = transport_audit_sample_for(
+                    event.source, event.event, previous_working_qty, previous_working_price);
+                transport_sample.has_value()) {
+                emit_transport_audit(
+                    *corr, pre_state->oms_decision_ts_ns,
+                    transport_sample->submit_ts_ns != 0 ? transport_sample->submit_ts_ns
+                                                        : pre_state->venue_submit_ts_ns,
+                    transport_sample->response_ts_ns, transport_sample->decision_code,
+                    transport_sample->transport_http_status,
+                    transport_sample->transport_retry_count, transport_sample->qty_lots,
+                    transport_sample->price_ticks);
             }
         }
-
-        const IntentOrigin audit_origin = extract_origin(decision);
-        emit_audit(predex::core::audit::AuditEvent{
-            .kind = predex::core::audit::AuditKind::kOmsDecision,
-            .ts_ns = decision.decision_ts_ns,
-            .shard_id = audit_origin.shard_id,
-            .signal_id = audit_origin.signal_id,
-            .group_id = audit_origin.group_id,
-            .local_intent_id = audit_origin.local_intent_id,
-            .oms_request_id = extract_oms_request_id(decision),
-            .tick_recv_ns = tick_recv_ts_ns,
-            .signal_ts_ns = signal_ts_ns,
-            .submission_enqueued_ns = submission_ts_ns,
-            .oms_decision_ts_ns = decision.decision_ts_ns,
-            .submission_to_decision_ns = submission_to_decision_ns,
-            .exchange = intent.exchange,
-            .event_id = audit_origin.event_id,
-            .market_id = audit_origin.market_id,
-            .side = intent.side,
-            .leg_index = audit_origin.leg_index,
-            .leg_count = audit_origin.leg_count,
-            .qty_lots = intent.qty_lots,
-            .price_ticks = intent.limit_price_ticks.value_or(0),
-            .decision_code = static_cast<std::uint8_t>(decision.code),
-            .reject_reason = extract_reject_reason(decision),
-        });
-
-        if (!emit_intent_decision(decision)) {
+        OmsToShardLifecycleEvent lifecycle{};
+        bool emit = true;
+        std::visit(
+            [&](const auto& typed_event) {
+                using T = std::decay_t<decltype(typed_event)>;
+                if constexpr (std::is_same_v<T, VenueOrderAck>) {
+                    lifecycle = OrderWorking{
+                        .corr = *corr,
+                        .working_qty_lots = typed_event.accepted_qty_lots,
+                        .working_price_ticks = previous_working_price.value_or(0),
+                    };
+                } else if constexpr (std::is_same_v<T, VenueOrderPartialFill>) {
+                    lifecycle = OrderPartiallyFilled{
+                        .corr = *corr,
+                        .filled_qty_lots = typed_event.fill_qty_lots,
+                        .remaining_qty_lots = apply_result.remaining_open_qty_lots,
+                        .fill_price_ticks = typed_event.fill_price_ticks,
+                    };
+                } else if constexpr (std::is_same_v<T, VenueOrderFill>) {
+                    lifecycle = OrderFilled{
+                        .corr = *corr,
+                        .filled_qty_lots = typed_event.fill_qty_lots,
+                        .fill_price_ticks = typed_event.fill_price_ticks,
+                    };
+                } else if constexpr (std::is_same_v<T, VenueOrderCanceled>) {
+                    lifecycle = OrderCanceled{.corr = *corr};
+                } else if constexpr (std::is_same_v<T, VenueOrderUncertain>) {
+                    lifecycle = OrderUncertain{.corr = *corr};
+                } else if constexpr (std::is_same_v<T, VenueOrderReject> ||
+                                     std::is_same_v<T, VenueCancelReject> ||
+                                     std::is_same_v<T, VenueModifyReject>) {
+                    lifecycle = OrderVenueRejected{
+                        .corr = *corr,
+                        .reason = typed_event.reason,
+                    };
+                } else if constexpr (std::is_same_v<T, VenueModifyAck>) {
+                    lifecycle = OrderWorking{
+                        .corr = *corr,
+                        .working_qty_lots = typed_event.working_qty_lots,
+                        .working_price_ticks = typed_event.working_price_ticks.value_or(0),
+                    };
+                } else {
+                    emit = false;
+                }
+            },
+            event.event);
+        if (emit && !emit_shard_lifecycle(lifecycle, corr->context.shard_id)) {
             return OmsProcessCode::kShardBackpressure;
         }
-
-        if (decision.code == IntentDecisionCode::kRejected) {
-            ++rejected_intent_count_;
+        if (emit) {
+            const auto* post_state = order_store_.find(corr->order);
+            const auto status =
+                post_state != nullptr ? static_cast<std::uint8_t>(post_state->status) : 0;
+            const auto first_fill_ts = post_state != nullptr ? post_state->first_fill_ts_ns : 0;
+            const auto terminal_ts = post_state != nullptr ? post_state->terminal_ts_ns : 0;
+            std::visit(
+                [&](const auto& typed_lifecycle) {
+                    using T = std::decay_t<decltype(typed_lifecycle)>;
+                    if constexpr (std::is_same_v<T, OrderWorking>) {
+                        emit_lifecycle_audit(
+                            typed_lifecycle.corr, monotonic_now_ns(),
+                            static_cast<std::uint8_t>(LifecycleAuditCode::kWorking), status,
+                            static_cast<std::uint8_t>(VenueRejectReason::kNone),
+                            typed_lifecycle.working_qty_lots, typed_lifecycle.working_price_ticks,
+                            first_fill_ts, terminal_ts);
+                    } else if constexpr (std::is_same_v<T, OrderPartiallyFilled>) {
+                        emit_lifecycle_audit(
+                            typed_lifecycle.corr, monotonic_now_ns(),
+                            static_cast<std::uint8_t>(LifecycleAuditCode::kPartiallyFilled), status,
+                            static_cast<std::uint8_t>(VenueRejectReason::kNone),
+                            typed_lifecycle.remaining_qty_lots, typed_lifecycle.fill_price_ticks,
+                            first_fill_ts, terminal_ts);
+                    } else if constexpr (std::is_same_v<T, OrderFilled>) {
+                        emit_lifecycle_audit(
+                            typed_lifecycle.corr, monotonic_now_ns(),
+                            static_cast<std::uint8_t>(LifecycleAuditCode::kFilled), status,
+                            static_cast<std::uint8_t>(VenueRejectReason::kNone),
+                            typed_lifecycle.filled_qty_lots, typed_lifecycle.fill_price_ticks,
+                            first_fill_ts, terminal_ts);
+                    } else if constexpr (std::is_same_v<T, OrderCanceled>) {
+                        emit_lifecycle_audit(
+                            typed_lifecycle.corr, monotonic_now_ns(),
+                            static_cast<std::uint8_t>(LifecycleAuditCode::kCanceled), status,
+                            static_cast<std::uint8_t>(VenueRejectReason::kNone), 0, 0,
+                            first_fill_ts, terminal_ts);
+                    } else if constexpr (std::is_same_v<T, OrderUncertain>) {
+                        emit_lifecycle_audit(
+                            typed_lifecycle.corr, monotonic_now_ns(),
+                            static_cast<std::uint8_t>(LifecycleAuditCode::kUncertain), status,
+                            static_cast<std::uint8_t>(VenueRejectReason::kNone), 0, 0,
+                            first_fill_ts, terminal_ts);
+                    } else {
+                        emit_lifecycle_audit(
+                            typed_lifecycle.corr, monotonic_now_ns(),
+                            static_cast<std::uint8_t>(LifecycleAuditCode::kVenueRejected), status,
+                            static_cast<std::uint8_t>(typed_lifecycle.reason), 0, 0, first_fill_ts,
+                            terminal_ts);
+                    }
+                },
+                lifecycle);
         }
-
-        return OmsProcessCode::kProcessedIntent;
-    }
-   //NOLINTNEXTLINE
-    [[nodiscard]] IntentDecision Oms::make_transport_reject(
-        const OrderIntent& intent,
-        internal::TimestampNs decision_ts_ns) const{
-            return IntentDecision{
-            .code = IntentDecisionCode::kRejected,
-            .data = RejectedIntent{
-                .intent = intent,
-                .reason = IntentRejectReason::kVenueUnavailable,
-            },
-            .decision_ts_ns = decision_ts_ns,
-        };
-    }
-
-    [[nodiscard]] bool Oms::emit_intent_decision(const IntentDecision& decision) noexcept{
-        const auto shard_index = shard_index_for_origin(extract_origin(decision));
-        if(!shard_index.has_value()){
-            return false;
-        }
-        DecisionQueue* const queue = shard_decision_queues_[*shard_index];
-        return queue != nullptr && queue->try_push(decision);
-    }
-
-    [[nodiscard]] bool Oms::emit_lifecycle_event(const OrderLifecycleEvent& event) noexcept{
-        const auto shard_index = shard_index_for_origin(event.origin);
-        if(!shard_index.has_value()){
-            return false;
-        }
-        LifecycleQueue* const queue = shard_lifecycle_queues_[*shard_index];
-        return queue != nullptr && queue->try_push(event);
-    }
-
-    void Oms::emit_audit(const predex::core::audit::AuditEvent& event) noexcept {
-        if (audit_queue_ == nullptr) {
-            return;
-        }
-        static_cast<void>(audit_queue_->try_push(event));
-    }
-
-    [[nodiscard]] IntentOrigin Oms::extract_origin(const IntentDecision& decision) {
-        if (const auto* accepted = std::get_if<AcceptedIntent>(&decision.data)) {
-            return accepted->intent.origin;
-        }
-        if (const auto* rejected = std::get_if<RejectedIntent>(&decision.data)) {
-            return rejected->intent.origin;
-        }
-        if (const auto* modified = std::get_if<ModifiedIntent>(&decision.data)) {
-            return modified->modified_intent.origin;
-        }
-        return {};
     }
 
-    [[nodiscard]] std::optional<std::size_t> Oms::shard_index_for_origin(
-        const IntentOrigin& origin) const noexcept {
-        if (origin.shard_id >= shard_decision_queues_.size() ||
-            origin.shard_id >= shard_lifecycle_queues_.size()) {
-            return std::nullopt;
-        }
-        return static_cast<std::size_t>(origin.shard_id);
-    }
-
-    [[nodiscard]] ClientOrderId Oms::make_client_order_id(OmsRequestId oms_request_id){
-        return "predex-" + std::to_string(oms_request_id) + "-" +
-            std::to_string(next_client_order_seq_++);
-    }
-
-    void Oms::insert_live_order(const AcceptedIntent& accepted_intent,
-                           internal::TimestampNs decision_ts_ns) {
-        OrderState order_state{
-            .origin = accepted_intent.intent.origin,
-            .oms_request_id = accepted_intent.oms_request_id,
-            .status = OmsOrderStatus::kPendingSubmit,
-            .client_order_id = accepted_intent.client_order_id,
-            .exchange_order_id = std::nullopt,
-            .original_qty_lots = accepted_intent.intent.qty_lots,
-            .live_qty_lots = accepted_intent.intent.qty_lots,
-            .cum_fill_qty_lots = 0,
-            .live_limit_price_ticks = accepted_intent.intent.limit_price_ticks,
-            .last_update_ts_ns = decision_ts_ns,
-            .oms_decision_ts_ns = decision_ts_ns,
-            .transport_submit_ts_ns = decision_ts_ns,
-            .first_fill_recv_ns = 0,
-            .terminal_recv_ns = 0,
-        };
-        request_by_client_order_id_[order_state.client_order_id] = order_state.oms_request_id;
-        orders_by_request_id_[order_state.oms_request_id] = std::move(order_state);
-    }
-
-    [[nodiscard]] bool Oms::apply_transport_update(const OrderLifecycleEvent& event){
-        OrderState* const order_state = find_order_state(event);
-        if (order_state == nullptr) {
-            return false;
-        }
-
-        order_state->status = event.status;
-        order_state->last_update_ts_ns = event.recv_ts_ns;
-        if (event.exchange_order_id.has_value()) {
-            order_state->exchange_order_id = event.exchange_order_id;
-            request_by_exchange_order_id_[*event.exchange_order_id] = order_state->oms_request_id;
-        }
-
-        if (const auto* fill = std::get_if<OrderFill>(&event.data)) {
-            order_state->cum_fill_qty_lots += fill->fill_qty_lots;
-            order_state->live_qty_lots -= fill->fill_qty_lots;
-            if (order_state->live_qty_lots < 0) {
-                order_state->live_qty_lots = 0;
-            }
-            if (order_state->first_fill_recv_ns == 0) {
-                order_state->first_fill_recv_ns = event.recv_ts_ns;
-            }
-        }
-        if (const auto* replace_ack = std::get_if<ReplaceAck>(&event.data)) {
-            order_state->live_qty_lots = replace_ack->replaced_qty_lots;
-            order_state->live_limit_price_ticks = replace_ack->replaced_limit_price_ticks;
-        }
-        if (event.kind == OrderLifecycleEventKind::kReject ||
-            event.kind == OrderLifecycleEventKind::kCanceled ||
-            event.kind == OrderLifecycleEventKind::kFill) {
-            order_state->live_qty_lots = 0;
-            order_state->terminal_recv_ns = event.recv_ts_ns;
-        }
-
-        return true;
-    }
-
-    [[nodiscard]] OrderState* Oms::find_order_state(const OrderLifecycleEvent& event) {
-        auto by_request = orders_by_request_id_.find(event.oms_request_id);
-        if (by_request != orders_by_request_id_.end()) {
-            return &by_request->second;
-        }
-        if (!event.client_order_id.empty()) {
-            auto by_client = request_by_client_order_id_.find(event.client_order_id);
-            if (by_client != request_by_client_order_id_.end()) {
-                auto by_mapped_request = orders_by_request_id_.find(by_client->second);
-                if (by_mapped_request != orders_by_request_id_.end()) {
-                    return &by_mapped_request->second;
-                }
-            }
-        }
-        if (event.exchange_order_id.has_value()) {
-            auto by_exchange = request_by_exchange_order_id_.find(*event.exchange_order_id);
-            if (by_exchange != request_by_exchange_order_id_.end()) {
-                auto by_mapped_request = orders_by_request_id_.find(by_exchange->second);
-                if (by_mapped_request != orders_by_request_id_.end()) {
-                    return &by_mapped_request->second;
-                }
-            }
-        }
-        return nullptr;
-    }
+    return OmsProcessCode::kProcessedKalshiEvent;
 }
+
+std::optional<ShardOrderCorrelation>
+Oms::resolve_correlation(const OmsOrderRef& order) const noexcept {
+    const auto* state = order_store_.find(order);
+    if (state == nullptr) {
+        return std::nullopt;
+    }
+    return ShardOrderCorrelation{
+        .context = state->context,
+        .order = state->order,
+    };
+}
+
+std::optional<OrderStore::LookupKey>
+Oms::make_lookup_key(const CancelOrderIntent& intent) const noexcept {
+    if (intent.target_oms_request_id.has_value() || !intent.target_client_order_id.empty() ||
+        intent.target_exchange_order_id.has_value()) {
+        return OrderStore::LookupKey{
+            .oms_request_id = intent.target_oms_request_id,
+            .client_order_id = intent.target_client_order_id,
+            .exchange_order_id = intent.target_exchange_order_id,
+        };
+    }
+    return std::nullopt;
+}
+
+std::optional<OrderStore::LookupKey>
+Oms::make_lookup_key(const ModifyOrderIntent& intent) const noexcept {
+    if (intent.target_oms_request_id.has_value() || !intent.target_client_order_id.empty() ||
+        intent.target_exchange_order_id.has_value()) {
+        return OrderStore::LookupKey{
+            .oms_request_id = intent.target_oms_request_id,
+            .client_order_id = intent.target_client_order_id,
+            .exchange_order_id = intent.target_exchange_order_id,
+        };
+    }
+    return std::nullopt;
+}
+
+OmsOrderRef Oms::make_order_ref() {
+    const auto oms_request_id = next_oms_request_id_++;
+    return OmsOrderRef{
+        .oms_request_id = oms_request_id,
+        .client_order_id = make_client_order_id(oms_request_id),
+        .exchange_order_id = std::nullopt,
+    };
+}
+
+ClientOrderId Oms::make_client_order_id(OmsRequestId oms_request_id) noexcept {
+    ClientOrderId identity{};
+
+    char* const begin = identity.storage.data();
+    char* out = begin;
+    char* const end = begin + ClientOrderId::kCapacity - 1;
+
+    auto append_literal = [&](std::string_view str) noexcept -> bool {
+        if (static_cast<std::size_t>(end - out) < str.size()) {
+            return false;
+        }
+        std::memcpy(out, str.data(), str.size());
+        out += str.size();
+        return true;
+    };
+
+    auto append_u64_hex = [&](std::uint64_t value) noexcept -> bool {
+        //NOLINTNEXTLINE accepting 16 as a magic number here for hex formatting
+        auto [ptr, ec] = std::to_chars(out, end, value, 16);
+        if (ec != std::errc{}) {
+            return false;
+        }
+        out = ptr;
+        return true;
+    };
+
+    const auto seq = next_client_order_seq_++;
+
+    const bool okay =
+        append_literal("oms-") &&
+        append_u64_hex(client_order_session_nonce_) &&
+        append_literal("-") &&
+        append_u64_hex(oms_request_id) &&
+        append_literal("-") &&
+        append_u64_hex(seq);
+
+    if (!okay) {
+        identity.clear();
+        return identity;
+    }
+
+    identity.size = static_cast<std::uint8_t>(out - begin);
+    identity.storage[identity.size] = '\0';
+    return identity;
+}
+
+bool Oms::emit_kalshi_command(const OmsToKalshiCommand& command) {
+    return transport_.try_send(command);
+}
+
+bool Oms::emit_shard_decision(const OmsToShardDecision& decision, std::uint16_t shard_id) noexcept {
+    const auto shard_index = shard_index_for(shard_id);
+    return shard_index.has_value() && shard_decision_queues_[*shard_index] != nullptr &&
+           shard_decision_queues_[*shard_index]->try_push(decision);
+}
+
+bool Oms::emit_shard_lifecycle(const OmsToShardLifecycleEvent& event,
+                               std::uint16_t shard_id) noexcept {
+    const auto shard_index = shard_index_for(shard_id);
+    return shard_index.has_value() && shard_lifecycle_queues_[*shard_index] != nullptr &&
+           shard_lifecycle_queues_[*shard_index]->try_push(event);
+}
+
+std::optional<std::size_t> Oms::shard_index_for(std::uint16_t shard_id) const noexcept {
+    if (static_cast<std::size_t>(shard_id) >= shard_request_queues_.size()) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(shard_id);
+}
+
+void Oms::emit_audit(const predex::core::audit::AuditEvent& event) noexcept {
+    if (audit_queue_ == nullptr) {
+        return;
+    }
+    static_cast<void>(audit_queue_->try_push(event));
+}
+
+void Oms::emit_decision_audit(const IntentContext& context, OmsRequestId oms_request_id,
+                              internal::TimestampNs decision_ts_ns, std::uint8_t decision_code,
+                              std::uint8_t reject_reason, internal::QtyLots qty_lots) noexcept {
+    if (decision_code == static_cast<std::uint8_t>(DecisionAuditCode::kRejected)) {
+        ++rejected_decision_count_;
+    }
+    ++emitted_decision_count_;
+    emit_audit(predex::core::audit::AuditEvent{
+        .kind = predex::core::audit::AuditKind::kOmsDecision,
+        .ts_ns = decision_ts_ns,
+        .shard_id = context.shard_id,
+        .signal_id = context.signal_id,
+        .group_id = context.group_intent_id,
+        .local_intent_id = context.local_intent_id,
+        .oms_request_id = oms_request_id,
+        .tick_recv_ns = context.tick_recv_ns,
+        .signal_ts_ns = context.signal_ts_ns,
+        .submission_enqueued_ns = context.submission_enqueued_ns,
+        .oms_decision_ts_ns = decision_ts_ns,
+        .signal_to_submission_ns =
+            latency_delta_ns(context.submission_enqueued_ns, context.signal_ts_ns),
+        .submission_to_decision_ns =
+            latency_delta_ns(decision_ts_ns, context.submission_enqueued_ns),
+        .event_id = context.event_id,
+        .market_id = context.market_id,
+        .leg_index = context.leg_index,
+        .leg_count = context.leg_count,
+        .qty_lots = qty_lots,
+        .decision_code = decision_code,
+        .reject_reason = reject_reason,
+    });
+}
+
+void Oms::emit_transport_audit(const ShardOrderCorrelation& corr,
+                               internal::TimestampNs oms_decision_ts_ns,
+                               internal::TimestampNs transport_submit_ts_ns,
+                               internal::TimestampNs transport_response_ts_ns,
+                               std::uint8_t decision_code, std::uint16_t transport_http_status,
+                               std::uint16_t transport_retry_count, internal::QtyLots qty_lots,
+                               internal::PriceTicks price_ticks) noexcept {
+    ++emitted_transport_count_;
+    emit_audit(predex::core::audit::AuditEvent{
+        .kind = predex::core::audit::AuditKind::kOmsTransport,
+        .ts_ns = transport_response_ts_ns,
+        .shard_id = corr.context.shard_id,
+        .signal_id = corr.context.signal_id,
+        .group_id = corr.context.group_intent_id,
+        .local_intent_id = corr.context.local_intent_id,
+        .oms_request_id = corr.order.oms_request_id,
+        .transport_http_status = transport_http_status,
+        .transport_retry_count = transport_retry_count,
+        .tick_recv_ns = corr.context.tick_recv_ns,
+        .signal_ts_ns = corr.context.signal_ts_ns,
+        .submission_enqueued_ns = corr.context.submission_enqueued_ns,
+        .oms_decision_ts_ns = oms_decision_ts_ns,
+        .transport_submit_ts_ns = transport_submit_ts_ns,
+        .transport_response_recv_ns = transport_response_ts_ns,
+        .signal_to_submission_ns =
+            latency_delta_ns(corr.context.submission_enqueued_ns, corr.context.signal_ts_ns),
+        .submission_to_decision_ns =
+            latency_delta_ns(oms_decision_ts_ns, corr.context.submission_enqueued_ns),
+        .decision_to_transport_ns = latency_delta_ns(transport_submit_ts_ns, oms_decision_ts_ns),
+        .tick_to_transport_submit_ns =
+            latency_delta_ns(transport_submit_ts_ns, corr.context.tick_recv_ns),
+        .transport_submit_to_response_ns =
+            latency_delta_ns(transport_response_ts_ns, transport_submit_ts_ns),
+        .tick_to_transport_response_ns =
+            latency_delta_ns(transport_response_ts_ns, corr.context.tick_recv_ns),
+        .event_id = corr.context.event_id,
+        .market_id = corr.context.market_id,
+        .leg_index = corr.context.leg_index,
+        .leg_count = corr.context.leg_count,
+        .qty_lots = qty_lots,
+        .price_ticks = price_ticks,
+        .decision_code = decision_code,
+    });
+}
+
+void Oms::emit_lifecycle_audit(const ShardOrderCorrelation& corr,
+                               internal::TimestampNs lifecycle_ts_ns, std::uint8_t lifecycle_kind,
+                               std::uint8_t order_status, std::uint8_t reject_reason,
+                               internal::QtyLots qty_lots, internal::PriceTicks price_ticks,
+                               internal::TimestampNs first_fill_ts_ns,
+                               internal::TimestampNs terminal_ts_ns) noexcept {
+    ++emitted_lifecycle_count_;
+    emit_audit(predex::core::audit::AuditEvent{
+        .kind = predex::core::audit::AuditKind::kOmsLifecycle,
+        .ts_ns = lifecycle_ts_ns,
+        .shard_id = corr.context.shard_id,
+        .signal_id = corr.context.signal_id,
+        .group_id = corr.context.group_intent_id,
+        .local_intent_id = corr.context.local_intent_id,
+        .oms_request_id = corr.order.oms_request_id,
+        .tick_recv_ns = corr.context.tick_recv_ns,
+        .signal_ts_ns = corr.context.signal_ts_ns,
+        .submission_enqueued_ns = corr.context.submission_enqueued_ns,
+        .first_fill_recv_ns = first_fill_ts_ns,
+        .terminal_recv_ns = terminal_ts_ns,
+        .tick_to_first_fill_ns = latency_delta_ns(first_fill_ts_ns, corr.context.tick_recv_ns),
+        .tick_to_terminal_ns = latency_delta_ns(terminal_ts_ns, corr.context.tick_recv_ns),
+        .event_id = corr.context.event_id,
+        .market_id = corr.context.market_id,
+        .leg_index = corr.context.leg_index,
+        .leg_count = corr.context.leg_count,
+        .qty_lots = qty_lots,
+        .price_ticks = price_ticks,
+        .reject_reason = reject_reason,
+        .lifecycle_kind = lifecycle_kind,
+        .order_status = order_status,
+    });
+}
+
+OmsProcessCode Oms::handle_shard_request(const ShardOmsRequest& request) {
+    return std::visit(
+        [this](const auto& typed_request) -> OmsProcessCode {
+            using T = std::decay_t<decltype(typed_request)>;
+            if constexpr (std::is_same_v<T, NewOrderIntent>) {
+                return handle_new_order_intent(typed_request);
+            } else if constexpr (std::is_same_v<T, GroupOrderIntent>) {
+                return handle_group_order_intent(typed_request);
+            } else if constexpr (std::is_same_v<T, CancelOrderIntent>) {
+                return handle_cancel_order_intent(typed_request);
+            } else {
+                return handle_modify_order_intent(typed_request);
+            }
+        },
+        request);
+}
+
+} // namespace predex::core::oms::kalshi

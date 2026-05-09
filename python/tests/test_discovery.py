@@ -102,6 +102,60 @@ class ClassifierTests(unittest.TestCase):
             ["MKT-LT-20", "MKT-LT-10"],
         )
 
+    def test_numeric_thresholds_with_distinct_close_times_stay_unordered(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-HORIZON-MISMATCH",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-2025",
+                    event_ticker="EV-NUMERIC-HORIZON-MISMATCH",
+                    strike_type="less",
+                    cap_strike=3317.5,
+                    close_time="2025-12-31T23:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-2030",
+                    event_ticker="EV-NUMERIC-HORIZON-MISMATCH",
+                    strike_type="less",
+                    cap_strike=4909.9,
+                    close_time="2030-12-31T23:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
+
+    def test_numeric_thresholds_with_same_close_time_form_monotonic_chain(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-SAME-HORIZON",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-5",
+                    event_ticker="EV-NUMERIC-SAME-HORIZON",
+                    strike_type="greater",
+                    floor_strike=5,
+                    close_time="2030-01-01T00:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-6",
+                    event_ticker="EV-NUMERIC-SAME-HORIZON",
+                    strike_type="greater",
+                    floor_strike=6,
+                    close_time="2030-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.MONOTONIC_CHAIN)
+        self.assertEqual(
+            [market.market.ticker for market in classified.markets],
+            ["MKT-5", "MKT-6"],
+        )
+
     def test_before_close_time_ladder_reverses_into_easiest_to_hardest_order(self) -> None:
         event = EventRecord(
             event_ticker="EV-DATE",
@@ -202,6 +256,66 @@ class ClassifierTests(unittest.TestCase):
             ["MKT-Q3", "MKT-Q2"],
         )
 
+    def test_close_time_ladder_with_same_numeric_threshold_forms_monotonic_chain(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-DATE",
+            title="When will this hit 100?",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-2027",
+                    event_ticker="EV-NUMERIC-DATE",
+                    strike_type="greater_or_equal",
+                    floor_strike=100,
+                    yes_sub_title="Before 2027",
+                    close_time="2027-01-01T00:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-2028",
+                    event_ticker="EV-NUMERIC-DATE",
+                    strike_type="greater_or_equal",
+                    floor_strike=100,
+                    yes_sub_title="Before 2028",
+                    close_time="2028-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.MONOTONIC_CHAIN)
+        self.assertEqual(
+            [market.market.ticker for market in classified.markets],
+            ["MKT-2028", "MKT-2027"],
+        )
+
+    def test_close_time_ladder_with_different_numeric_thresholds_stays_unordered(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-NUMERIC-DATE-MIXED",
+            title="When will this hit these levels?",
+            markets=[
+                MarketRecord(
+                    ticker="MKT-100-2027",
+                    event_ticker="EV-NUMERIC-DATE-MIXED",
+                    strike_type="greater_or_equal",
+                    floor_strike=100,
+                    yes_sub_title="Before 2027",
+                    close_time="2027-01-01T00:00:00Z",
+                ),
+                MarketRecord(
+                    ticker="MKT-200-2028",
+                    event_ticker="EV-NUMERIC-DATE-MIXED",
+                    strike_type="greater_or_equal",
+                    floor_strike=200,
+                    yes_sub_title="Before 2028",
+                    close_time="2028-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
+
     def test_close_time_ladder_without_direction_hint_stays_unordered(self) -> None:
         event = EventRecord(
             event_ticker="EV-AMBIGUOUS-DATE",
@@ -297,6 +411,41 @@ class ClassifierTests(unittest.TestCase):
 
         self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
 
+    def test_mixed_numeric_entities_fail_closed_as_unordered(self) -> None:
+        event = EventRecord(
+            event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+            markets=[
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI1",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=1.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS2",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=2.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI4",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=4.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS5",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=5.5,
+                ),
+            ],
+        )
+
+        classified = classify_event(event)
+
+        self.assertEqual(classified.topology_kind, TopologyKind.UNORDERED_GROUP)
+
     def test_non_monotonic_event_falls_back_to_unordered_group(self) -> None:
         event = EventRecord(
             event_ticker="EV-UNORDERED",
@@ -369,6 +518,37 @@ class ConfigTests(unittest.TestCase):
         config = build_trader_config(events)
 
         self.assertEqual(config["kalshi"]["market_tickers"], ["MKT-1A", "MKT-1B", "MKT-2A", "MKT-2B"])
+        self.assertEqual(
+            config["oms_transport"],
+            {
+                "enabled": False,
+                "rest_endpoint": "https://api.elections.kalshi.com",
+                "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+                "private_ws_channels": ["user_orders"],
+                "max_session_loss_ticks": 5000,
+                "available_capital_ticks": 10000,
+                "rest_worker_count": 8,
+            },
+        )
+        self.assertEqual(
+            config["pipeline"],
+            {
+                "frame_pool_capacity": 8192,
+                "shard_count": 4,
+                "io_to_router_capacity": 8192,
+                "router_to_logger_capacity": 8192,
+                "shard_input_capacity": 8192,
+                "shard_to_logger_capacity": 8192,
+            },
+        )
+        self.assertEqual(
+            config["local_risk"],
+            {
+                "max_net_position_lots_per_market": 200,
+                "min_seconds_to_close": 300,
+                "trading_enabled": False,
+            },
+        )
         self.assertEqual(len(config["market_routes"]), 4)
         first_event_routes = [
             route
@@ -443,6 +623,157 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             result.config["kalshi"]["market_tickers"],
             ["MKT-FILTER-C1", "MKT-FILTER-C2"],
+        )
+
+    def test_config_builder_splits_bosphi_1h_spread_into_two_synthetic_events(self) -> None:
+        event = EventRecord(
+            event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+            series_ticker="KXNBA1HSPREAD",
+            markets=[
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI1",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=1.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS2",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=2.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI4",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=4.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS5",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=5.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI7",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=7.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS8",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=8.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI10",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=10.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-BOS11",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=11.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI13",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=13.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI16",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=16.5,
+                ),
+                MarketRecord(
+                    ticker="KXNBA1HSPREAD-26APR26BOSPHI-PHI19",
+                    event_ticker="KXNBA1HSPREAD-26APR26BOSPHI",
+                    strike_type="greater",
+                    floor_strike=19.5,
+                ),
+            ],
+        )
+
+        result = build_trader_config_result([event])
+
+        self.assertEqual(len(result.included_events), 2)
+        self.assertEqual(len({included.event_id for included in result.included_events}), 2)
+        self.assertEqual(len({included.affinity_key for included in result.included_events}), 1)
+
+        routes_by_event_id: dict[int, list[dict[str, object]]] = {}
+        for route in result.config["market_routes"]:
+            routes_by_event_id.setdefault(route["event_id"], []).append(route)
+
+        self.assertEqual(len(routes_by_event_id), 2)
+        grouped_tickers = {
+            tuple(route["market_ticker"] for route in sorted(routes, key=lambda item: item["strike_key"]))
+            for routes in routes_by_event_id.values()
+        }
+        self.assertEqual(
+            grouped_tickers,
+            {
+                (
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS2",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS5",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS8",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-BOS11",
+                ),
+                (
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI1",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI4",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI7",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI10",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI13",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI16",
+                    "KXNBA1HSPREAD-26APR26BOSPHI-PHI19",
+                ),
+            },
+        )
+
+    def test_config_builder_keeps_valid_numeric_subchain_and_drops_singleton_leftover(self) -> None:
+        event = EventRecord(
+            event_ticker="KXWNBASPREAD-26MAY09DALIND",
+            series_ticker="KXWNBASPREAD",
+            markets=[
+                MarketRecord(
+                    ticker="KXWNBASPREAD-26MAY09DALIND-DAL4",
+                    event_ticker="KXWNBASPREAD-26MAY09DALIND",
+                    strike_type="greater",
+                    floor_strike=3.5,
+                ),
+                MarketRecord(
+                    ticker="KXWNBASPREAD-26MAY09DALIND-IND6",
+                    event_ticker="KXWNBASPREAD-26MAY09DALIND",
+                    strike_type="greater",
+                    floor_strike=5.5,
+                ),
+                MarketRecord(
+                    ticker="KXWNBASPREAD-26MAY09DALIND-IND11",
+                    event_ticker="KXWNBASPREAD-26MAY09DALIND",
+                    strike_type="greater",
+                    floor_strike=10.5,
+                ),
+            ],
+        )
+
+        result = build_trader_config_result([event])
+
+        self.assertEqual(len(result.included_events), 1)
+        self.assertEqual(
+            result.report()["included_events"][0]["topology_kind"],
+            "monotonic_chain",
+        )
+        self.assertEqual(
+            result.config["kalshi"]["market_tickers"],
+            [
+                "KXWNBASPREAD-26MAY09DALIND-IND6",
+                "KXWNBASPREAD-26MAY09DALIND-IND11",
+            ],
         )
 
     def test_config_builder_raises_when_filters_remove_everything(self) -> None:

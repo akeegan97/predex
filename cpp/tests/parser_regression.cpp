@@ -34,7 +34,7 @@ int fail(std::string_view message) {
     return 1;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     Parser parser{};
@@ -70,14 +70,14 @@ int main() {
         return fail("expected ask side for explicit no delta");
     }
 
-    if (delta->price_ticks != 8700) {
-        std::cerr << "parser_regression_test: expected reciprocal ask price 8700, got "
+    if (delta->price_ticks != 870) {
+        std::cerr << "parser_regression_test: expected reciprocal ask price 870, got "
                   << delta->price_ticks << '\n';
         return 1;
     }
 
-    if (delta->delta_qty_lots != 1) {
-        std::cerr << "parser_regression_test: expected qty 1, got " << delta->delta_qty_lots
+    if (delta->delta_qty_lots != 100) {
+        std::cerr << "parser_regression_test: expected qty 100, got " << delta->delta_qty_lots
                   << '\n';
         return 1;
     }

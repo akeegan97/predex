@@ -227,20 +227,20 @@ bool Oms::is_halted() const noexcept {
 std::size_t Oms::live_order_count() const noexcept { return order_store_.live_order_count(); }
 
 std::uint64_t Oms::processed_shard_request_count() const noexcept {
-    return processed_shard_request_count_;
+    return processed_shard_request_count_.load(std::memory_order_relaxed);
 }
 
 std::uint64_t Oms::processed_kalshi_event_count() const noexcept {
-    return processed_kalshi_event_count_;
+    return processed_kalshi_event_count_.load(std::memory_order_relaxed);
 }
 
-std::uint64_t Oms::emitted_decision_count() const noexcept { return emitted_decision_count_; }
+std::uint64_t Oms::emitted_decision_count() const noexcept { return emitted_decision_count_.load(std::memory_order_relaxed); }
 
-std::uint64_t Oms::emitted_transport_count() const noexcept { return emitted_transport_count_; }
+std::uint64_t Oms::emitted_transport_count() const noexcept { return emitted_transport_count_.load(std::memory_order_relaxed); }
 
-std::uint64_t Oms::emitted_lifecycle_count() const noexcept { return emitted_lifecycle_count_; }
+std::uint64_t Oms::emitted_lifecycle_count() const noexcept { return emitted_lifecycle_count_.load(std::memory_order_relaxed); }
 
-std::uint64_t Oms::rejected_decision_count() const noexcept { return rejected_decision_count_; }
+std::uint64_t Oms::rejected_decision_count() const noexcept { return rejected_decision_count_.load(std::memory_order_relaxed); }
 
 OmsProcessCode Oms::process_one_shard_request() {
     if (shard_request_queues_.empty()) {
@@ -259,7 +259,7 @@ OmsProcessCode Oms::process_one_shard_request() {
             continue;
         }
         next_shard_index_ = (index + 1U) % queue_count;
-        ++processed_shard_request_count_;
+        processed_shard_request_count_.fetch_add(1, std::memory_order_relaxed);
         return handle_shard_request(request);
     }
     return OmsProcessCode::kIdle;
@@ -270,7 +270,7 @@ OmsProcessCode Oms::process_one_kalshi_event() noexcept {
     if (!transport_.try_pop_event(event)) {
         return OmsProcessCode::kIdle;
     }
-    ++processed_kalshi_event_count_;
+    processed_kalshi_event_count_.fetch_add(1, std::memory_order_relaxed);
     return handle_kalshi_event(event);
 }
 
@@ -804,9 +804,9 @@ void Oms::emit_decision_audit(const IntentContext& context, OmsRequestId oms_req
                               internal::TimestampNs decision_ts_ns, std::uint8_t decision_code,
                               std::uint8_t reject_reason, internal::QtyLots qty_lots) noexcept {
     if (decision_code == static_cast<std::uint8_t>(DecisionAuditCode::kRejected)) {
-        ++rejected_decision_count_;
+        rejected_decision_count_.fetch_add(1, std::memory_order_relaxed);
     }
-    ++emitted_decision_count_;
+    emitted_decision_count_.fetch_add(1, std::memory_order_relaxed);
     emit_audit(predex::core::audit::AuditEvent{
         .kind = predex::core::audit::AuditKind::kOmsDecision,
         .ts_ns = decision_ts_ns,
@@ -840,7 +840,7 @@ void Oms::emit_transport_audit(const ShardOrderCorrelation& corr,
                                std::uint8_t decision_code, std::uint16_t transport_http_status,
                                std::uint16_t transport_retry_count, internal::QtyLots qty_lots,
                                internal::PriceTicks price_ticks) noexcept {
-    ++emitted_transport_count_;
+    emitted_transport_count_.fetch_add(1, std::memory_order_relaxed);
     emit_audit(predex::core::audit::AuditEvent{
         .kind = predex::core::audit::AuditKind::kOmsTransport,
         .ts_ns = transport_response_ts_ns,
@@ -884,7 +884,7 @@ void Oms::emit_lifecycle_audit(const ShardOrderCorrelation& corr,
                                internal::QtyLots qty_lots, internal::PriceTicks price_ticks,
                                internal::TimestampNs first_fill_ts_ns,
                                internal::TimestampNs terminal_ts_ns) noexcept {
-    ++emitted_lifecycle_count_;
+    emitted_lifecycle_count_.fetch_add(1, std::memory_order_relaxed);
     emit_audit(predex::core::audit::AuditEvent{
         .kind = predex::core::audit::AuditKind::kOmsLifecycle,
         .ts_ns = lifecycle_ts_ns,

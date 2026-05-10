@@ -88,7 +88,10 @@ void OrderStore::insert_pending_submit(const BeginSubmitTransition& transition) 
     if (state.order.exchange_order_id.has_value()) {
         bind_exchange_order_id(*state.order.exchange_order_id, state.order.oms_request_id);
     }
-    orders_by_request_id_[state.order.oms_request_id] = state;
+    const auto [itr, inserted] = orders_by_request_id_.emplace(state.order.oms_request_id, state);
+    if (inserted) {
+        live_order_count_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void OrderStore::mark_submitted(const MarkSubmittedTransition& transition) noexcept {
@@ -313,7 +316,11 @@ OrderStore::apply_venue_event(const SourcedKalshiEvent& sourced_event) {
 
     if (result.became_terminal) {
         erase_indices_for(*state);
-        orders_by_request_id_.erase(state->order.oms_request_id);
+        const OmsRequestId request_id = state->order.oms_request_id;
+        const auto erased =orders_by_request_id_.erase(request_id);
+        if(erased!=0) {
+            live_order_count_.fetch_sub(1, std::memory_order_relaxed);
+        }
     }
 
     return result;
@@ -324,7 +331,10 @@ void OrderStore::adopt_reconciled_order(OrderState state) {
     if (state.order.exchange_order_id.has_value()) {
         bind_exchange_order_id(*state.order.exchange_order_id, state.order.oms_request_id);
     }
-    orders_by_request_id_[state.order.oms_request_id] = state;
+    const auto [itr, inserted] = orders_by_request_id_.emplace(state.order.oms_request_id, state);
+    if(inserted){
+        live_order_count_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 std::vector<CancelOrderCmd> OrderStore::build_cancel_all_cmds(internal::TimestampNs ts_ns) const {
@@ -346,7 +356,7 @@ std::vector<CancelOrderCmd> OrderStore::build_cancel_all_cmds(internal::Timestam
     return cmds;
 }
 
-std::size_t OrderStore::live_order_count() const noexcept { return orders_by_request_id_.size(); }
+std::size_t OrderStore::live_order_count() const noexcept { return live_order_count_.load(std::memory_order_relaxed); }
 
 OrderState* OrderStore::find_by_request_id(OmsRequestId oms_request_id) noexcept {
     const auto itr = orders_by_request_id_.find(oms_request_id);

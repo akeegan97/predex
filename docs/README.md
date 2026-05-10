@@ -36,10 +36,7 @@ If you are new to the repo, start with the first group and ignore the rest until
 
 These are useful working notes, but they are not the best entry point for a new reader.
 
-- [planning/async_gateway_plan.md](planning/async_gateway_plan.md)
-- [planning/async_transport_direction.md](planning/async_transport_direction.md)
-- [planning/cleanup_bugs_etc.md](planning/cleanup_bugs_etc.md)
-- [planning/perf_backlog.md](planning/perf_backlog.md)
+- [planning/open_backlog.md](planning/open_backlog.md)
 - [planning/replay_matrix.md](planning/replay_matrix.md)
 
 ## Generated Artifacts

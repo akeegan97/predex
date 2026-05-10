@@ -71,11 +71,8 @@ Supporting docs:
 
 Planning/backlog docs that are useful but not front-door material:
 
-- [Performance Backlog](docs/planning/perf_backlog.md)
+- [Open Backlog](docs/planning/open_backlog.md)
 - [Replay Roadmap](docs/planning/replay_matrix.md)
-- [Async Gateway Plan](docs/planning/async_gateway_plan.md)
-- [Async Transport Direction](docs/planning/async_transport_direction.md)
-- [Cleanup Notes](docs/planning/cleanup_bugs_etc.md)
 
 Generated examples and working artifacts live in `docs/`, but they are outputs, not canonical documentation:
 

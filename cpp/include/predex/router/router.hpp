@@ -1,28 +1,38 @@
 #pragma once
+#include <cstddef>
+#include <cstdint>
+#include <simdjson.h>
+#include <string_view>
+#include <unordered_map>
+#include <atomic>
 
 #include "predex/audit/audit_types.hpp"
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/router/market_registry.hpp"
 #include "predex/router/shard_dispatch.hpp"
 #include "predex/utils/spsc_queue.hpp"
-#include <cstddef>
-#include <cstdint>
-#include <simdjson.h>
-#include <string_view>
-#include <unordered_map>
+
 
 namespace predex::core::routing::kalshi {
 struct RouterTelemetry {
-    std::size_t processed_frames_{0};
+    std::atomic<std::size_t> processed_frames_{0};
     // Downstream shard AND logger queues both full — operator alert.
-    std::size_t dropped_backpressure_{0};
+    std::atomic<std::size_t> dropped_backpressure_{0};
     // Shard queue filled, but frame was preserved by forwarding it to logger.
-    std::size_t shard_backpressure_to_logger_{0};
+    std::atomic<std::size_t> shard_backpressure_to_logger_{0};
     // Lifecycle messages for tickers not in our registry — expected at startup (shotgun blast).
-    std::size_t dropped_unknown_ticker_lifecycle_{0};
+    std::atomic<std::size_t> dropped_unknown_ticker_lifecycle_{0};
     // Frame pool returned nullptr (corrupt handle, gen mismatch). Should be ~0.
-    std::size_t dropped_invalid_{0};
+    std::atomic<std::size_t> dropped_invalid_{0};
     // Frames rejected because sequence did not advance by exactly one on the shared sid.
+    std::atomic<std::size_t> sequence_rejects_{0};
+};
+struct RouterTelemetrySnapshot {
+    std::size_t processed_frames_{0};
+    std::size_t dropped_backpressure_{0};
+    std::size_t shard_backpressure_to_logger_{0};
+    std::size_t dropped_unknown_ticker_lifecycle_{0};
+    std::size_t dropped_invalid_{0};
     std::size_t sequence_rejects_{0};
 };
 
@@ -41,7 +51,16 @@ class Router {
 
     [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
 
-    [[nodiscard]] const RouterTelemetry& telemetry() const noexcept { return telemetry_; }
+    [[nodiscard]] RouterTelemetrySnapshot telemetry() const noexcept { 
+        return RouterTelemetrySnapshot {
+            .processed_frames_ = telemetry_.processed_frames_.load(std::memory_order_relaxed),
+            .dropped_backpressure_ = telemetry_.dropped_backpressure_.load(std::memory_order_relaxed),
+            .shard_backpressure_to_logger_ = telemetry_.shard_backpressure_to_logger_.load(std::memory_order_relaxed),
+            .dropped_unknown_ticker_lifecycle_ = telemetry_.dropped_unknown_ticker_lifecycle_.load(std::memory_order_relaxed),
+            .dropped_invalid_ = telemetry_.dropped_invalid_.load(std::memory_order_relaxed),
+            .sequence_rejects_ = telemetry_.sequence_rejects_.load(std::memory_order_relaxed),
+        }; 
+    }
     void reset_sequence_state() noexcept;
 
   private:

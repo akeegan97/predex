@@ -1014,8 +1014,8 @@ void App::Runtime::print_health_status() const noexcept {
         desynced_events += event_store.desynced_event_count();
     }
 
-    const auto& telem =
-        router ? router->telemetry() : predex::core::routing::kalshi::RouterTelemetry{};
+    const auto telem =
+        router ? router->telemetry() : predex::core::routing::kalshi::RouterTelemetrySnapshot{};
 
     std::fprintf(stdout,
                  "[%s] STATUS | halted=%s"

@@ -90,12 +90,12 @@ class Oms {
     std::uint64_t next_client_order_seq_{1};
     internal::TimestampNs client_order_session_nonce_{0};
 
-    std::uint64_t processed_shard_request_count_{0};
-    std::uint64_t processed_kalshi_event_count_{0};
-    std::uint64_t emitted_decision_count_{0};
-    std::uint64_t emitted_transport_count_{0};
-    std::uint64_t emitted_lifecycle_count_{0};
-    std::uint64_t rejected_decision_count_{0};
+    std::atomic<std::uint64_t> processed_shard_request_count_{0};
+    std::atomic<std::uint64_t> processed_kalshi_event_count_{0};
+    std::atomic<std::uint64_t> emitted_decision_count_{0};
+    std::atomic<std::uint64_t> emitted_transport_count_{0};
+    std::atomic<std::uint64_t> emitted_lifecycle_count_{0};
+    std::atomic<std::uint64_t> rejected_decision_count_{0};
 
     std::atomic<std::uint8_t> halt_mode_{0};
     bool hard_halt_cancel_triggered_{false};

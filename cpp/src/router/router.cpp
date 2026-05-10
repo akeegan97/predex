@@ -200,14 +200,14 @@ bool Router::check_sequence(const predex::core::ingest::kalshi::FrameHandle& han
         return true;
     }
     // out of order or duplicate,
-    ++telemetry_.sequence_rejects_;
-    if (telemetry_.sequence_rejects_ <= 20U || (telemetry_.sequence_rejects_ % 1000U) == 0U) { //NOLINT -- log the first few and then every 1000 rejects to avoid spamming logs if something is really broken
+    telemetry_.sequence_rejects_.fetch_add(1, std::memory_order_relaxed);
+    if (telemetry_.sequence_rejects_.load(std::memory_order_relaxed) <= 20U || (telemetry_.sequence_rejects_.load(std::memory_order_relaxed) % 1000U) == 0U) { //NOLINT -- log the first few and then every 1000 rejects to avoid spamming logs if something is really broken
         char time_buf[32]; //NOLINT -- enough to hold formatted timestamp
         format_utc_timestamp(time_buf, sizeof(time_buf));
         std::fprintf(stdout,
                      "[%s] ROUTER | phase=sequence_reject | count=%zu | sid=%u | prev_seq=%llu"
                      " | curr_seq=%llu | event_type=%s | market_ticker=%.*s\n",
-                     time_buf, telemetry_.sequence_rejects_, handle.sid_,
+                     time_buf, telemetry_.sequence_rejects_.load(std::memory_order_relaxed), handle.sid_,
                      static_cast<unsigned long long>(last_seq),
                      static_cast<unsigned long long>(handle.seq_),
                      event_type_name(handle.event_type_), static_cast<int>(market_ticker.size()),
@@ -232,40 +232,40 @@ bool Router::process_one() noexcept {
     if (frame == nullptr) {
         // Gen mismatch or out-of-range idx — handle does not reference any live frame,
         // so there is nothing to recycle.
-        ++telemetry_.dropped_invalid_;
+        telemetry_.dropped_invalid_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     const auto decision = classify(handle, *frame);
     if (decision == RouteDecision::kToShard) {
         const auto shard_id = compute_shard_id(handle.affinity_key_, shard_dispatch_.shard_count());
         if (shard_dispatch_.try_dispatch(shard_id, handle)) {
-            ++telemetry_.processed_frames_;
+            telemetry_.processed_frames_.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
         // Shard queue full; fall back to logger so the frame is still captured for tape.
         if (forward_to_logger(handle)) {
-            ++telemetry_.shard_backpressure_to_logger_;
+            telemetry_.shard_backpressure_to_logger_.fetch_add(1, std::memory_order_relaxed);
             emit_shard_backpressure_audit(handle, shard_id);
-            ++telemetry_.processed_frames_;
+            telemetry_.processed_frames_.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
         // Both downstream paths full — recycle the handle so the frame pool does not bleed.
-        ++telemetry_.dropped_backpressure_;
+        telemetry_.dropped_backpressure_.fetch_add(1, std::memory_order_relaxed);
         (void)recycle_queue_.try_push(handle);
         return false;
     }
     if (decision == RouteDecision::kToLogger) {
         if (forward_to_logger(handle)) {
-            ++telemetry_.processed_frames_;
+            telemetry_.processed_frames_.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
-        ++telemetry_.dropped_backpressure_;
+        telemetry_.dropped_backpressure_.fetch_add(1, std::memory_order_relaxed);
         (void)recycle_queue_.try_push(handle);
         return false;
     }
     // kDrop: explicit benign drop (e.g. lifecycle for unregistered ticker). Recycle and
     // keep pumping so the startup shotgun blast drains quickly.
-    ++telemetry_.dropped_unknown_ticker_lifecycle_;
+    telemetry_.dropped_unknown_ticker_lifecycle_.fetch_add(1, std::memory_order_relaxed);
     (void)recycle_queue_.try_push(handle);
     return true;
 }

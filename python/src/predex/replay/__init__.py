@@ -2,6 +2,16 @@ from .audit import AuditEvent, SignalBundle, build_signal_bundles, load_audit_ev
 from .books import ReplayBookStore
 from .config import ConfigIndex, EventRoute, MarketRoute, load_config_index
 from .ingest import IngestedRun, load_ingested_run
+from .soft_monotonic import (
+    ChainMarketSnapshot,
+    MonotonicChainSnapshot,
+    MonotonicRoute,
+    SoftMonotonicCandidate,
+    build_soft_monotonic_candidates,
+    iter_monotonic_chain_snapshots,
+    load_monotonic_routes,
+    select_monotonic_event_ids,
+)
 from .tape import MarketEvent, iter_market_events, iter_tape_payloads
 from .timeline import (
     EventTimeline,
@@ -30,6 +40,10 @@ __all__ = [
     "MarketRoute",
     "IngestedRun",
     "ReplayBookStore",
+    "MonotonicRoute",
+    "ChainMarketSnapshot",
+    "MonotonicChainSnapshot",
+    "SoftMonotonicCandidate",
     "EventTimeline",
     "SignalHit",
     "TimelineRow",
@@ -41,13 +55,17 @@ __all__ = [
     "SignalBundle",
     "SignalVerificationResult",
     "build_event_timeline",
+    "build_soft_monotonic_candidates",
     "build_signal_edge_lifetimes",
     "build_signal_windows",
+    "iter_monotonic_chain_snapshots",
     "write_timeline_parquet",
     "write_signal_hits_parquet",
     "build_signal_bundles",
     "iter_market_events",
     "iter_tape_payloads",
+    "load_monotonic_routes",
+    "select_monotonic_event_ids",
     "load_ingested_run",
     "load_audit_events",
     "load_config_index",

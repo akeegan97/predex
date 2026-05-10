@@ -59,3 +59,10 @@ predex_tape_5_6_2026.bin
 predex_tape_5_7_2026.bin
 predex_audit_5_8_2026.jsonl
 predex_tape_5_8_2026.bin
+/*.txt
+python/eda/*.py
+
+python/tests/*.py
+python/src/predex/replay/*.py
+python/src/predex/ingest/*.py
+

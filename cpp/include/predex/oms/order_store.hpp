@@ -4,6 +4,7 @@
 #include <optional>
 #include <unordered_map>
 #include <vector>
+#include <atomic>
 
 #include "predex/internal/market_types.hpp"
 #include "predex/oms/oms_types.hpp"
@@ -134,6 +135,8 @@ class OrderStore {
     std::unordered_map<OmsRequestId, OrderState> orders_by_request_id_;
     std::unordered_map<ClientOrderId, OmsRequestId> request_by_client_order_id_;
     std::unordered_map<ExchangeOrderId, OmsRequestId> request_by_exchange_order_id_;
+
+    std::atomic<std::size_t> live_order_count_{0};
 };
 
 } // namespace predex::core::oms::kalshi

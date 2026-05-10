@@ -70,16 +70,6 @@ Format: `### <title>` → **Where / Impact / Next step / Status**
   after measuring that it matters relative to parser, routing, and OMS work.
 - **Status**: open
 
-### Reduce parser-side transient allocation / copy overhead
-
-- **Where**: parser + parse-result shaping in `cpp/include/predex/parsers` and
-  `cpp/src/parsers`
-- **Impact**: inbound payload ownership is already much better than earlier
-  versions, but parser-side work may still allocate or copy more than necessary.
-- **Next step**: keep parsing as close to frame-pool-backed memory as practical,
-  then measure the delta.
-- **Status**: open
-
 ### Reuse parser state per thread where it pays off
 
 - **Where**: parser construction / per-message transient state

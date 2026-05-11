@@ -308,9 +308,13 @@ RecvResult BoostBeastWsTransport::recv_text(std::chrono::milliseconds timeout) {
         return {.status = RecvStatus::kError};
     }
 
+    const auto buffer = impl_->read_buffer.data();
     return {
         .status = RecvStatus::kMessage,
-        .payload = beast::buffers_to_string(impl_->read_buffer.data()),
+        .payload = std::span<const std::byte>{
+            static_cast<const std::byte*>(buffer.data()),
+            buffer.size()
+        },
     };
 }
 

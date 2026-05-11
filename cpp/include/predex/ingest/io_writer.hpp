@@ -15,7 +15,7 @@ constexpr std::size_t kMaxBatchSize =
     64; // max number of frames to process in one batch, can be tuned for performance
 class IOWriter {
   public:
-    // recycle_queues is a fan-in of per-producer SPSC queues (one per producer thread:
+    // recycle_queues is a fan-in of per-producer SPSC queues (one per producer thread)
     // logger, router, each shard). IOWriter is the single consumer across all of them.
     // Passing a vector of explicit SPSCs rather than a single shared queue preserves the
     // SPSC contract on every edge.
@@ -25,7 +25,7 @@ class IOWriter {
         std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*>
             recycle_queues) noexcept;
 
-    [[nodiscard]] bool on_wire_message(std::string_view payload) noexcept;
+    [[nodiscard]] bool on_wire_message(std::span<const std::byte> payload) noexcept;
 
   private:
     predex::core::ingest::kalshi::FramePool& frame_pool_;

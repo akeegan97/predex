@@ -13,7 +13,7 @@ IOWriter::IOWriter(
     : frame_pool_(frame_pool), router_queue_(router_queue),
       recycle_queues_(std::move(recycle_queues)) {}
 
-bool IOWriter::on_wire_message(std::string_view payload) noexcept {
+bool IOWriter::on_wire_message(std::span<const std::byte> payload) noexcept {
     ++received_count_;
     if (payload.size() > predex::core::ingest::kalshi::kMaxFrameBytes) {
         ++oversized_count_;

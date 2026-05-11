@@ -138,15 +138,15 @@ After each transport update, if `max_session_loss_ticks_ > 0` and `session_net_t
 
 ## Transport Commands
 
-The OMS coordinator enqueues commands to three separate queues consumed by the OMS REST thread:
+The OMS coordinator pushes typed command variants to a single `oms_command_queue` consumed by the OMS Gateway thread:
 
 | Command | Queue | Trigger |
 |---|---|---|
-| `SubmitOrderCmd` | `oms_submit_queue` | accepted intent |
-| `CancelOrderCmd` | `oms_cancel_queue` | cancel intent or `cancel_all_live_orders()` |
-| `ModifyOrderCmd` | `oms_modify_queue` | modify intent |
+| `SubmitOrderCmd` | `oms_command_queue` | accepted intent |
+| `CancelOrderCmd` | `oms_command_queue` | cancel intent or `cancel_all_live_orders()` |
+| `ModifyOrderCmd` | `oms_command_queue` | modify intent |
 
-The REST thread executes blocking HTTP calls and pushes the resulting `OrderLifecycleEvent` to `oms_rest_update_queue`. The private WS thread pushes fill and lifecycle events to `oms_ws_update_queue`. The OMS coordinator drains both round-robin via `ExecutionTransport::try_pop_lifecycle_event()`.
+`oms_command_queue` carries `OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>`. The Gateway thread routes commands through the 5-stage pipeline (`CommandIngress → OrderSequencer → BatchPlanner → RateLimiter → SessionPool`) and executes them via `AsyncRestConnection`. Results are pushed to `oms_rest_event_queue`; private WS events (when wired) arrive via `ws_event_queue`. The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`.
 
 ## Pump Loop
 

@@ -53,7 +53,7 @@ Responsibilities:
 
 ## Thread Topology
 
-The runtime runs eight classes of worker thread:
+The runtime runs seven classes of worker thread:
 
 1. **IO thread** — owns public WS receive; calls `IOWriter::on_wire_message`; drains frame recycle queue; handles reconnect with backoff.
 
@@ -61,15 +61,13 @@ The runtime runs eight classes of worker thread:
 
 3. **N shard threads** — each shard owns one input queue; parses frames into `NormalizedEvent`; applies events to `EventStore` (books + derived topology state); runs `ShardPipeline` (local risk + strategy evaluation); drains OMS decision and lifecycle queues; forwards handles to the logger.
 
-4. **OMS coordinator thread** — drains all shard intent queues (round-robin); runs `GlobalRiskManager` pre-trade checks; maintains `OrderStore`; enqueues `SubmitOrderCmd` / `CancelOrderCmd` / `ModifyOrderCmd` to the REST thread; drains `oms_transport_update_queue` for lifecycle events from both REST responses and the private WS; fans lifecycle events back to the originating shard.
+4. **OMS coordinator thread** — drains all shard intent queues (round-robin); runs `GlobalRiskManager` pre-trade checks; maintains `OrderStore`; pushes `OmsToKalshiCommand` variants (Submit / Cancel / Modify) to `oms_command_queue`; drains `oms_rest_event_queue` (and optionally `ws_event_queue`) for venue lifecycle events via `ExecutionTransport::try_pop_event()`; fans lifecycle events back to the originating shard.
 
-5. **OMS REST thread** — drains submit, cancel, and modify queues; executes blocking REST API calls; pushes results back to `oms_transport_update_queue`.
+5. **OMS Gateway thread** — 5-stage pipeline (`CommandIngress → OrderSequencer → BatchPlanner → RateLimiter → SessionPool`) that pops typed command variants from `oms_command_queue`, enforces per-lineage ordering and rate limits, and executes orders asynchronously via persistent HTTPS connections (`AsyncRestConnection`); pushes `KalshiToOmsEvent` results to `oms_rest_event_queue`.
 
-6. **OMS private WS thread** — owns private WS receive; parses fill and order-lifecycle events; pushes them to `oms_transport_update_queue`; handles reconnect with backoff; calls `reconcile_open_orders_from_rest` after reconnect.
+6. **Logger thread** — drains router and all shard logger queues; writes frames to the binary tape file; recycles frame handles back to the IO thread.
 
-7. **Logger thread** — drains router and all shard logger queues; writes length-prefixed payloads to the binary tape file; recycles frame handles back to the IO thread.
-
-8. **Audit thread** — drains all shard and OMS audit queues; writes `AuditEvent` records as JSONL.
+7. **Audit thread** — drains all shard and OMS audit queues; writes `AuditEvent` records as JSONL.
 
 ## Queue Graph
 
@@ -92,21 +90,16 @@ OMS coordinator thread
   <- shard_to_oms_intent_queue[i]   (polls all, round-robin)
   -> oms_to_shard_decision_queue[i]
   -> oms_to_shard_lifecycle_queue[i]
-  -> oms_submit_queue
-  -> oms_cancel_queue
-  -> oms_modify_queue
+  -> oms_command_queue              (variant: SubmitOrderCmd | CancelOrderCmd | ModifyOrderCmd)
   -> oms_audit_queue
-  <- oms_rest_update_queue          (REST thread only)
-  <- oms_ws_update_queue            (private WS thread only)
+  <- oms_rest_event_queue           (Gateway thread only)
+  <- ws_event_queue                 (private WS, when wired)
 
-OMS REST thread
-  <- oms_submit_queue
-  <- oms_cancel_queue
-  <- oms_modify_queue
-  -> oms_rest_update_queue
-
-OMS private WS thread
-  -> oms_ws_update_queue
+OMS Gateway thread
+  <- oms_command_queue
+    [CommandIngress -> OrderSequencer -> BatchPlanner -> RateLimiter -> SessionPool]
+    -> AsyncRestConnection -> Kalshi REST API
+  -> oms_rest_event_queue
 
 Logger thread
   <- router_to_logger_queue
@@ -121,7 +114,7 @@ IO thread
   <- recycle_queue
 ```
 
-All queues are strict SPSC. The OMS coordinator drains `oms_rest_update_queue` and `oms_ws_update_queue` round-robin via `ExecutionTransport::try_pop_lifecycle_event()`.
+All queues are strict SPSC. The OMS coordinator drains `oms_rest_event_queue` (and optionally `ws_event_queue`) via `ExecutionTransport::try_pop_event()`.
 
 ## Frame Lifecycle
 
@@ -167,15 +160,15 @@ Kalshi's wire format has no explicit Ask book. The ask side is derived from the 
 
 Each shard runs a `ShardPipeline` that fires on every applied market event:
 
-1. **`LocalRiskManager::evaluate`** — checks close-time gating, net position limits, open intent counts, and event/market exposure limits. Rejects the intent before any strategy sees it if limits are breached.
-
-2. **Strategy evaluation** (in order, first accepted intent wins):
-   - `MonotonicArbStrategy` — detects probability-monotonicity violations across a chain event; submits IOC legs.
+1. All active strategies fan out and emit signals into a shared buffer (up to `kMaxSignalsPerEvent = 16` single-leg signals and a separate group-signal buffer):
+   - `MonotonicArbStrategy` — detects probability-monotonicity violations across a chain event; emits IOC leg pairs as `GroupSignal`.
    - `CdfViolationStrategy` — detects CDF-level mispricing (stub).
    - `MarketMakingStrategy` — quotes bid/ask around fair value (stub).
    - `MeanReversionStrategy` — mean-reversion signal (stub).
 
-3. Accepted intents are pushed to `shard_to_oms_intent_queue[i]`.
+2. The pipeline then iterates every collected signal and runs **`LocalRiskManager::evaluate`** independently per signal — checks close-time gating, net position limits, open intent counts, and event/market exposure limits. Each risk-approved signal is submitted as an `OmsSubmission`; rejected signals are skipped and counted.
+
+3. All accepted intents (potentially multiple per event) are pushed to `shard_to_oms_intent_queue[i]`.
 
 4. OMS decisions and fill lifecycle events are drained from `oms_to_shard_decision_queue[i]` and `oms_to_shard_lifecycle_queue[i]` to update `LocalRiskState` (open exposure, net filled position).
 
@@ -214,25 +207,32 @@ On public WS reconnect:
 
 ## Tape Model
 
-The logger is the terminal sink for raw feed capture.
+The logger is the terminal sink for raw feed capture. Tape format (PDT2):
 
 ```
-[u32 payload_len_le][payload bytes] ...
+File header:
+  magic[4]    = 'P','D','T','2'
+  version     = 2  (uint16_t, little-endian)
+  flags       = 0  (uint16_t, little-endian)
+
+Per record (repeated):
+  recv_ts_ns  (uint64_t, little-endian)
+  len         (uint32_t, little-endian)
+  payload     (len bytes — raw websocket text)
 ```
 
-Repeated for every message that reaches the logger. The payload is the raw websocket text, not the normalized event.
+The payload is the raw websocket text, not the normalized event.
 
 ## Shutdown Sequence
 
 `stop()` drains the pipeline in dependency order:
 
-1. `request_hard_halt()` on OMS (blocks new submissions).
+1. `request_hard_halt()` on OMS (blocks new submissions; schedules cancel-all on next OMS pump).
 2. `running = false`.
 3. Join IO thread (closes WS).
 4. Join + drain router thread.
 5. Join + drain shard threads.
-6. Join OMS thread (tail drain: `cancel_all_live_orders()` + pump until idle).
-7. Directly flush remaining cancel commands from `oms_cancel_queue` via REST client.
-8. Join OMS REST and private WS threads.
-9. Drain + join logger thread.
-10. Drain + join audit thread.
+6. Join OMS coordinator thread (tail drain: `cancel_all_live_orders()` + pump until idle).
+7. Join OMS Gateway thread.
+8. Drain + join logger thread.
+9. Drain + join audit thread.

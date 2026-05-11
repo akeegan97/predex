@@ -21,8 +21,7 @@ The runtime is designed around single-owner stage execution:
 - The router is owned by the router thread
 - Shard `i` is owned by shard thread `i`
 - The OMS coordinator (including `OrderStore` and `RiskEngine`) is owned by the OMS coordinator thread
-- The OMS REST client is owned by the OMS REST thread
-- The OMS private websocket is owned by the OMS private WS thread
+- The OMS Gateway pipeline (including `AsyncRestConnection` pool) is owned by the OMS Gateway thread
 - The logger is owned by the logger thread
 - The audit writer is owned by the audit thread
 - Each `BookStore` is shard-local and only written by its shard thread
@@ -71,31 +70,24 @@ Each queue has exactly one producer and one consumer (SPSC), except where noted.
   - producer: OMS coordinator thread
   - consumer: shard thread `i`
 
-**OMS coordinator → REST thread:**
+**OMS coordinator → Gateway thread:**
 
-- `oms_submit_queue`
+- `oms_command_queue`
   - producer: OMS coordinator thread
-  - consumer: OMS REST thread
+  - consumer: OMS Gateway thread (`CommandIngress` stage)
+  - carries: `OmsToKalshiCommand` variant (`SubmitOrderCmd | CancelOrderCmd | ModifyOrderCmd`)
 
-- `oms_cancel_queue`
-  - producer: OMS coordinator thread
-  - consumer: OMS REST thread
+**Gateway thread → OMS coordinator:**
 
-- `oms_modify_queue`
-  - producer: OMS coordinator thread
-  - consumer: OMS REST thread
-
-**Transport → OMS coordinator:**
-
-- `oms_rest_update_queue`
-  - producer: OMS REST thread only
+- `oms_rest_event_queue`
+  - producer: OMS Gateway thread (`AsyncRestConnection` via `SessionPool`)
   - consumer: OMS coordinator thread
 
-- `oms_ws_update_queue`
-  - producer: OMS private WS thread only (including post-reconnect reconciliation)
+- `ws_event_queue` (optional, when private WS is wired)
+  - producer: private WS thread
   - consumer: OMS coordinator thread
 
-`ExecutionTransport::try_pop_lifecycle_event()` round-robins between the two queues on each call so neither starves the other. All queues are strict SPSC.
+`ExecutionTransport::try_pop_event()` checks `ws_event_queue` first, then round-robins across `rest_event_queues`. All queues are strict SPSC.
 
 **Audit:**
 

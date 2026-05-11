@@ -119,13 +119,15 @@ After each book application, the shard runs `ShardPipeline::on_event(NormalizedE
    - Open intent count limit per event
    - Event and market exposure limits
 
-2. Strategy evaluation (first accepted intent wins):
-   - `MonotonicArbStrategy` — detects probability-monotonicity violations across a chain event; submits IOC leg pair
+2. All active strategies fan out and emit signals into a shared buffer (up to `kMaxSignalsPerEvent = 16` single-leg signals plus a group-signal buffer):
+   - `MonotonicArbStrategy` — detects probability-monotonicity violations across a chain event; emits IOC leg pairs as `GroupSignal`
    - `CdfViolationStrategy` — stub
    - `MarketMakingStrategy` — stub
    - `MeanReversionStrategy` — stub
 
-3. Accepted `OmsSubmission` is pushed to `shard_to_oms_intent_queue[i]`.
+3. The pipeline iterates every collected signal and runs `LocalRiskManager::evaluate` independently per signal. Each risk-approved signal generates an `OmsSubmission`; rejected signals are skipped. Multiple submissions may be pushed per event.
+
+4. Accepted `OmsSubmission`s are pushed to `shard_to_oms_intent_queue[i]`.
 
 ## 7. OMS Intent Contract
 
@@ -146,11 +148,11 @@ The originating shard uses decisions to update `LocalRiskState` (open intent cou
 
 ## 9. Order Lifecycle Contract
 
-`OrderLifecycleEvent` is pushed to two separate SPSC queues, one per producer:
-- `oms_rest_update_queue` — written by the OMS REST thread (REST API responses)
-- `oms_ws_update_queue` — written by the OMS private WS thread (exchange push events)
+`KalshiToOmsEvent` records are pushed to two SPSC queues, one per producer:
+- `oms_rest_event_queue` — written by the OMS Gateway thread (REST API responses from `AsyncRestConnection`)
+- `ws_event_queue` — written by the private WS thread when wired
 
-The OMS coordinator drains the queue, applies the event to `OrderStore`, updates `RiskEngine`, and fans the event to `oms_to_shard_lifecycle_queue[i]` for the originating shard.
+The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`, applies each event to `OrderStore`, updates `RiskEngine`, and fans the event to `oms_to_shard_lifecycle_queue[i]` for the originating shard.
 
 The shard uses lifecycle events to update `LocalRiskState` (net filled position).
 
@@ -158,13 +160,15 @@ Lifecycle event kinds: `kAck`, `kReject`, `kPartialFill`, `kFill`, `kCancelAck`,
 
 ## 10. Transport Command Contract
 
-Commands pushed by the OMS coordinator to the REST thread:
+Commands pushed by the OMS coordinator to the Gateway thread via a single unified queue:
 
-| Type | Queue | Fields |
+| Queue | Type (variant) | Key Fields |
 |---|---|---|
-| `SubmitOrderCmd` | `oms_submit_queue` | `oms_request_id`, `intent`, `client_order_id` |
-| `CancelOrderCmd` | `oms_cancel_queue` | `oms_request_id`, `origin`, `client_order_id`, `exchange_order_id`, `cmd_ts_ns` |
-| `ModifyOrderCmd` | `oms_modify_queue` | `oms_request_id`, `replacement_intent`, `client_order_id`, `exchange_order_id` |
+| `oms_command_queue` | `SubmitOrderCmd` | `oms_request_id`, `intent`, `client_order_id` |
+| `oms_command_queue` | `CancelOrderCmd` | `oms_request_id`, `origin`, `client_order_id`, `exchange_order_id`, `cmd_ts_ns` |
+| `oms_command_queue` | `ModifyOrderCmd` | `oms_request_id`, `replacement_intent`, `client_order_id`, `exchange_order_id` |
+
+`oms_command_queue` carries `OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>`. The Gateway's `CommandIngress` stage pops from this queue and routes commands through the 5-stage pipeline (`CommandIngress → OrderSequencer → BatchPlanner → RateLimiter → SessionPool`) before dispatching to `AsyncRestConnection`.
 
 ## 11. Audit Contract
 
@@ -177,13 +181,21 @@ Audit events capture: OMS decisions, fills, latency spans, halt transitions.
 Terminal sink:
 - [`predex::core::tape::kalshi::Logger`](../cpp/include/predex/tape/logger.hpp)
 
-Tape record format:
+Tape record format (PDT2):
 
 ```text
-[u32 payload_len_le][payload bytes]
+File header:
+  magic[4]    = 'P','D','T','2'
+  version     = 2  (uint16_t, little-endian)
+  flags       = 0  (uint16_t, little-endian)
+
+Per record (repeated):
+  recv_ts_ns  (uint64_t, little-endian)
+  len         (uint32_t, little-endian)
+  payload     (len bytes — raw websocket text)
 ```
 
-Repeated for every message that reaches the logger. The payload written to tape is the raw inbound websocket text, not the normalized event.
+The payload written to tape is the raw inbound websocket text, not the normalized event.
 
 ## 13. Ownership Contract
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -18,8 +19,6 @@ constexpr internal::PriceTicks kTicksPerCent = internal::kTicksPerCent;
 constexpr double kTakerFeeRate = 0.07;
 constexpr double kMakerFeeRate = 0.0175;
 constexpr std::int64_t kMinEdgeTicks = 20;
-constexpr std::uint64_t kNanosecPerSec = 1'000'000'000ULL;
-
 struct MonotonicArbConfig {
     constexpr static std::int64_t kMaxTopGapTicks = 20;
     constexpr static std::int64_t kMaxEasierAggressionTicks = 30;
@@ -70,11 +69,13 @@ class MonotonicArbStrategy {
         // motivated adding strategy-time tradeability checks rather than relying on
         // venue-driven deactivation.
         //
-        // Using update.update.meta.recv_ns instead of system_clock::now() keeps decisions
-        // deterministic across replay and avoids a syscall on the hot path. Pipeline latency
-        // is sub-millisecond, well below close_time's second-resolution grain.
-
-        const auto now_s = static_cast<std::uint64_t>(update.update.meta.recv_ns / kNanosecPerSec);
+        // recv_ns is intentionally stamped from steady_clock for latency measurement, so it
+        // cannot be compared against venue close_time. Tradeability must use wall-clock epoch
+        // seconds even though the rest of the pipeline uses monotonic timestamps.
+        const auto now_s = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
 
         std::optional<GroupSignal> best_signal;
         const std::size_t index = market_index->second;

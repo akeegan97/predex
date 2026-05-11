@@ -169,8 +169,9 @@ void build_submit_body(const SubmitOrderCmd& command,
 }
 
 [[nodiscard]] bool append_submit_order_json_object(const SubmitOrderCmd& command,
-    // NOLINTNEXTLINE
+
                                                 std::string_view market_ticker,
+                                                    // NOLINTNEXTLINE
                                                 std::string& out_body,
                                                 std::string& error_message) {
     if (market_ticker.empty()) {
@@ -355,12 +356,12 @@ KalshiRestAdapter::resolve_market_ticker_(internal::MarketId market_id) const no
         return {};
     }
 
-    const auto it = market_tickers_by_id_->find(market_id);
-    if (it == market_tickers_by_id_->end()) {
+    const auto itr = market_tickers_by_id_->find(market_id);
+    if (itr == market_tickers_by_id_->end()) {
         return {};
     }
 
-    return it->second;
+    return itr->second;
 }
 CommandResult KalshiRestAdapter::submit_order(const SubmitOrderCmd& command) {
     const auto prepared = prepare_submit_order(command);

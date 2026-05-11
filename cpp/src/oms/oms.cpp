@@ -329,14 +329,15 @@ Oms::handle_new_order_intent(const NewOrderIntent& intent,
         return OmsProcessCode::kShardBackpressure;
     }
 
-    const std::string market_ticker =
-        market_ticker_resolver_ != nullptr
-            ? market_ticker_resolver_(intent.context.market_id).value_or(std::string{})
-            : std::string{};
+    // const std::string market_ticker =
+    //     market_ticker_resolver_ != nullptr
+    //         ? market_ticker_resolver_(intent.context.market_id).value_or(std::string{})
+    //         : std::string{};
+    
     if (!emit_kalshi_command(OmsToKalshiCommand{SubmitOrderCmd{
             .order = order,
             .intent = intent,
-            .market_ticker = market_ticker,
+            .market_id = intent.context.market_id,
             .group_execution_policy = group_execution_policy,
         }})) {
         return OmsProcessCode::kVenueBackpressure;

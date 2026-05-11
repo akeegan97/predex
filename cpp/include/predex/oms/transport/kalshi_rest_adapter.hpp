@@ -67,13 +67,14 @@ struct PreparedCommandRequest {
     RestTraceInfo trace{};
     std::string error_message;
 };
-
+using MarketTickerMap = std::unordered_map<internal::MarketId, std::string>;
 // Kalshi-specific request/response translation layer. This owns endpoint paths,
 // JSON payload shaping, and response parsing, but delegates raw HTTPS I/O to the
 // persistent session below it.
 class KalshiRestAdapter {
   public:
-    explicit KalshiRestAdapter(PersistentHttpSession session);
+    explicit KalshiRestAdapter(PersistentHttpSession session,const MarketTickerMap* market_tickers_by_id)
+        : session_(std::move(session)), market_tickers_by_id_(market_tickers_by_id) {};
 
     [[nodiscard]] CommandResult submit_order(const SubmitOrderCmd& command);
     [[nodiscard]] CommandResult cancel_order(const CancelOrderCmd& command);
@@ -110,7 +111,8 @@ class KalshiRestAdapter {
 
   private:
     PersistentHttpSession session_;
-
+    const MarketTickerMap* market_tickers_by_id_;
+    std::string_view resolve_market_ticker_(internal::MarketId market_id) const noexcept;
     [[nodiscard]] static std::string build_submit_target_();
     [[nodiscard]] static std::string build_batched_submit_target_();
     [[nodiscard]] static std::string build_cancel_target_(const ExchangeOrderId& exchange_order_id);

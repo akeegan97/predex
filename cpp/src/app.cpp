@@ -527,7 +527,7 @@ App::Runtime::Runtime(AppConfig config_in)
                 predex::core::oms::kalshi::transport::KalshiRestAdapter{
                     predex::core::oms::kalshi::transport::PersistentHttpSession{
                         websocket::kalshi::AuthSigner{auth_signer},
-                        config.oms_transport.rest_endpoint}},
+                        config.oms_transport.rest_endpoint}, &market_ticker_by_id_},
                 AsyncRestConnectionConfig{
                     .connection_index = connection_index,
                     .trace_output_path = rest_trace_output_path("logs/live/predex_rest_trace.jsonl",
@@ -537,7 +537,7 @@ App::Runtime::Runtime(AppConfig config_in)
 
         auto recovery_rest_adapter = predex::core::oms::kalshi::transport::KalshiRestAdapter{
             predex::core::oms::kalshi::transport::PersistentHttpSession{
-                websocket::kalshi::AuthSigner{auth_signer}, config.oms_transport.rest_endpoint}};
+                websocket::kalshi::AuthSigner{auth_signer}, config.oms_transport.rest_endpoint}, &market_ticker_by_id_};
 
         oms_gateway = std::make_unique<OmsGateway>(
             GatewayQueues{

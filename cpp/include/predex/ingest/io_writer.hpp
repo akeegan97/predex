@@ -3,9 +3,8 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
 #include <vector>
-
+#include <span>
 #include "predex/ingest/frame_pool.hpp"
 
 #include "predex/utils/spsc_queue.hpp"

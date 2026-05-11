@@ -137,14 +137,18 @@ void append_url_encoded(std::string& out, std::string_view value) {
 constexpr std::size_t kReserveBodySizeStart = 256;
 void build_submit_body(const SubmitOrderCmd& command,
                        // NOLINTNEXTLINE
-                       std::string_view action, std::string_view outcome_side,
-                       std::string_view time_in_force, std::string_view price_field,
-                       std::optional<std::int64_t> price_cents, std::string& body) {
+                       std::string_view market_ticker,
+                       std::string_view action, 
+                       std::string_view outcome_side,
+                       std::string_view time_in_force, 
+                       std::string_view price_field,
+                       std::optional<std::int64_t> price_cents, 
+                       std::string& body) {
     body.clear();
-    body.reserve(kReserveBodySizeStart + command.market_ticker.size() + command.order.client_order_id.view().size());
+    body.reserve(kReserveBodySizeStart + market_ticker.size() + command.order.client_order_id.view().size());
     body.push_back('{');
     body.append("\"ticker\":");
-    append_json_escaped(body, command.market_ticker);
+    append_json_escaped(body, market_ticker);
     body.append(",\"action\":");
     append_json_escaped(body, action);
     body.append(",\"client_order_id\":");
@@ -166,9 +170,10 @@ void build_submit_body(const SubmitOrderCmd& command,
 
 [[nodiscard]] bool append_submit_order_json_object(const SubmitOrderCmd& command,
     // NOLINTNEXTLINE
-                                                   std::string& out_body,
-                                                   std::string& error_message) {
-    if (command.market_ticker.empty()) {
+                                                std::string_view market_ticker,
+                                                std::string& out_body,
+                                                std::string& error_message) {
+    if (market_ticker.empty()) {
         error_message = "market_ticker is required for submit";
         return false;
     }
@@ -199,7 +204,7 @@ void build_submit_body(const SubmitOrderCmd& command,
             return false;
         }
     }
-    build_submit_body(command, action, outcome_side, tif, price_field, price_cents, out_body);
+    build_submit_body(command,market_ticker, action, outcome_side, tif, price_field, price_cents, out_body);
     return true;
 }
 
@@ -341,9 +346,22 @@ constexpr std::uint64_t kMultiplier = 10;
 
 } // namespace
 
-KalshiRestAdapter::KalshiRestAdapter(PersistentHttpSession session)
-    : session_(std::move(session)) {}
+KalshiRestAdapter::KalshiRestAdapter(PersistentHttpSession session, const MarketTickerMap* market_tickers_by_id)
+    : session_(std::move(session)), market_tickers_by_id_(market_tickers_by_id) {}
 
+std::string_view
+KalshiRestAdapter::resolve_market_ticker_(internal::MarketId market_id) const noexcept {
+    if (market_tickers_by_id_ == nullptr) {
+        return {};
+    }
+
+    const auto it = market_tickers_by_id_->find(market_id);
+    if (it == market_tickers_by_id_->end()) {
+        return {};
+    }
+
+    return it->second;
+}
 CommandResult KalshiRestAdapter::submit_order(const SubmitOrderCmd& command) {
     const auto prepared = prepare_submit_order(command);
     if (!prepared.ok) {
@@ -430,7 +448,8 @@ PreparedCommandRequest
 KalshiRestAdapter::prepare_submit_order(const SubmitOrderCmd& command) const {
     thread_local std::string body_scratch;
     std::string error_message;
-    if (!append_submit_order_json_object(command, body_scratch, error_message)) {
+    const std::string_view market_ticker = resolve_market_ticker_(command.market_id);
+    if (!append_submit_order_json_object(command, market_ticker, body_scratch, error_message)) {
         return {.ok = false, .error_message = std::move(error_message)};
     }
 
@@ -464,7 +483,8 @@ PreparedCommandRequest KalshiRestAdapter::prepare_batched_submit_orders(
     body_scratch.append("{\"orders\":[");
     for (std::size_t index = 0; index < commands.size(); ++index) {
         std::string error_message;
-        if (!append_submit_order_json_object(commands[index], order_scratch, error_message)) {
+        const std::string_view market_ticker = resolve_market_ticker_(commands[index].market_id);
+        if (!append_submit_order_json_object(commands[index], market_ticker, order_scratch, error_message)) {
             return {.ok = false, .error_message = std::move(error_message)};
         }
         if (index > 0) {

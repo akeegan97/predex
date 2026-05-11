@@ -289,7 +289,10 @@ using RiskToOmsDecision = std::variant<RiskApproved, RiskRejected>;
 struct SubmitOrderCmd {
     OmsOrderRef order{};
     NewOrderIntent intent{};
-    std::string market_ticker;
+    //surfaced that std::string market_ticker is not actually used until the last JSON serialization step in the transport,
+    //as a result can remove market_ticker from OMS->Kalshi command and just resolve it at the transport layer, 
+    //converted to internal::MarketId so that OMS doesn't need to carry around string tickers
+    internal::MarketId market_id{0};
     std::optional<GroupExecutionPolicy> group_execution_policy;
     internal::TimestampNs transport_enqueue_ts_ns{0};
 };

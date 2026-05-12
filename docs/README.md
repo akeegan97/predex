@@ -41,20 +41,13 @@ These are useful working notes, but they are not the best entry point for a new 
 
 ## Generated Artifacts
 
-These are example outputs from the discovery/config toolchain and live/replay workflows:
+These are example outputs from the discovery/config toolchain, kept under `docs/` for inspection and demos. They are not canonical documentation:
 
-- `generated_config.json`
-- `generated_config.report.json`
-- `generated_config_subset.json`
-- `generated_discovery_report.json`
+- `generated_config_subset.json` — example output from the Python discovery CLI (`predex.discovery --output`)
+- `generated_discovery_report.json` — example report companion to the above
 
-They are useful for inspection and demos, but they should not be read as canonical source documentation.
-
-## Reference Schemas And Captures
-
-- `private_ws_schemas/` — captured or normalized private websocket payload shapes
-- `rest_schemas/` — venue REST notes, limits, and response references
+The Python CLI writes its working `generated_config.json` / `generated_config.report.json` wherever `--output` / `--report-output` point — by convention to the repo root or `docs/`, but those files are runtime-produced and not committed.
 
 ## Replay Outputs
 
-`replay/` contains historical analysis outputs, charts, summaries, and example exports produced by replay tooling. Treat it as artifact/examples space, not as source documentation.
+`replay/` contains historical analysis outputs and example exports produced by replay tooling. Treat it as artifact/examples space, not as source documentation.

@@ -36,26 +36,34 @@ Format: `### <title>` → **Where / Impact / Next step / Status**
   handling cannot permanently bleed pool capacity.
 - **Status**: open
 
-### Fills during private OMS WS outage are still not fully recovered
+### Post-reconnect fill recovery (blocked on private WS being wired)
 
-- **Where**: `reconcile_open_orders_from_rest(is_startup=false)` path in
-  `cpp/src/app.cpp`
-- **Impact**: current reconnect repair can re-adopt open orders, but completed
-  fills that happened while the private WS was down are still a blind spot
-  because the open-orders snapshot only reflects remaining working quantity.
-- **Next step**: add post-reconnect fill-history recovery and apply missing fill
-  updates into session PnL / state.
-- **Status**: open
+- **Where**: future private-WS reconnect path, downstream of
+  `cpp/src/app.cpp::reconcile_open_orders_from_rest`
+- **Impact**: the Kalshi `user_orders` private channel is **updates-only** — no
+  snapshot/seq/replay — so any fill that lands during a WS outage is invisible
+  to the OMS after the channel reconnects. The open-orders REST endpoint only
+  shows *remaining working quantity*, not completed fills. Today the gap is
+  silent because the private WS isn't wired at all (`ws_event_queue` is
+  `nullptr`); the moment it lands, post-reconnect REST fill-history recovery
+  becomes mandatory.
+- **Next step**: defer until the private-WS transport is wired. At that point,
+  add a fill-history REST fetch in the reconnect path and apply missing fill
+  updates into OMS state. See `project_kalshi_user_orders_protocol` in memory.
+- **Status**: blocked on private-WS landing
 
 ---
 
 ## Performance / Latency
 
-### Switch hot-path telemetry increments to relaxed atomics
+### Relax memory ordering on hot-path telemetry counters
 
-- **Where**: `cpp/src/ingest/io_writer.cpp`
-- **Impact**: some per-frame telemetry increments still use the default
-  `seq_cst` atomic operators when relaxed ordering is sufficient.
+- **Where**: `cpp/src/ingest/io_writer.cpp` (and any other stage doing `++atomic_counter`
+  in the hot path)
+- **Impact**: counters in `cpp/include/predex/ingest/io_writer.hpp:36-39` are
+  already `std::atomic` — the open work is reducing their ordering. Default
+  `++` is seq_cst, which is unnecessary for counters that are only read for
+  health-line dumps.
 - **Next step**: replace `++atomic_counter` style hot-path increments with
   `fetch_add(1, std::memory_order_relaxed)`.
 - **Status**: open
@@ -116,13 +124,18 @@ Format: `### <title>` → **Where / Impact / Next step / Status**
 
 ## Operational / Observability
 
-### Soft-halt events should be more visible
+### Wire the drawdown soft-halt trigger (and make it visible)
 
-- **Where**: OMS halt path
-- **Impact**: the drawdown-triggered soft halt exists, but operator-facing
-  visibility can still be clearer.
-- **Next step**: emit a stronger audit/log signal when the runtime transitions
-  into soft halt so operators do not have to infer it indirectly.
+- **Where**: OMS halt path; `Oms::request_soft_halt()` exists but has no caller
+- **Impact**: the `HaltMode` enum and `request_soft_halt()` mechanism are in
+  place, but the breaker logic (`session_net_ticks_` accumulation and the
+  `< -max_session_loss_ticks` comparison) is not implemented. `max_session_loss_ticks`
+  is parsed from config but unread. Today there is no condition that can
+  transition the runtime into soft halt.
+- **Next step**: (1) accumulate signed-tick session P&L on fill events, (2)
+  trigger `request_soft_halt()` when the threshold trips, (3) emit a prominent
+  audit/log signal on transition so operators don't have to infer it. Worth
+  landing together since (3) requires (1)–(2) to be observable.
 - **Status**: open
 
 ### Tape rotation / retention policy is still ad hoc

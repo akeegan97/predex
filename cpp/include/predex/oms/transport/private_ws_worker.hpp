@@ -23,8 +23,14 @@ struct PrivateWsWorkerConfig {
 
 struct ReconciliationRequest {};
 
-// Temporary compatibility stub while the new gateway runtime replaces the old
-// worker-based private websocket path.
+// SCAFFOLD: future private-WS worker for fill / lifecycle ingestion.
+//
+// Not constructed by `App` today. `ws_event_queue` is `nullptr` in production
+// and the OMS coordinator only reads `oms_rest_event_queue`. This class will
+// be wired when the private-WS transport lands (see docs/oms_design.md and
+// open_backlog.md "Post-reconnect fill recovery"). The current method bodies
+// are intentional no-ops — wiring this in without implementing real receive
+// and parse logic would silently break the kill-switch invariant.
 class PrivateWsWorker {
   public:
     explicit PrivateWsWorker(PrivateWsWorkerQueues queues, PrivateWsWorkerConfig config,

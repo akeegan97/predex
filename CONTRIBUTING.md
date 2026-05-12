@@ -9,11 +9,10 @@ The current supported C++ surface is:
 - `predex_core_pipeline`
 - `predex_app`
 - `trader_app`
+- `replay_app`
+- `parser_regression_test`, `kalshi_rest_adapter_boundary_test` (test executables)
 
-A few areas still contain placeholder or older scaffolding:
-- `cpp/tests`
-- `cpp/apps/replay`
-- `cpp/apps/logger`
+The private-WS transport headers under `cpp/include/predex/oms/transport/` (`private_ws_worker.hpp`, `kalshi_private_ws_adapter.hpp`) are explicit scaffolds for a future wiring step and are not constructed by `App` today.
 
 If you touch runtime architecture, queue topology, or ownership semantics, update the docs alongside the code:
 - `README.md`

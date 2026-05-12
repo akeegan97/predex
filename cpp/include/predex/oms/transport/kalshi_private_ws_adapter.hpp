@@ -27,9 +27,13 @@ struct PrivateWsParseResult {
     std::string error_message;
 };
 
-// Kalshi-specific private-WS translation layer. Owns payload parsing and
-// normalization into OMS2 venue events, but delegates the actual websocket
-// session mechanics to the lower-level websocket stack.
+// SCAFFOLD: Kalshi-specific private-WS translation layer for the future
+// private-WS landing. Owns payload parsing and normalization into OMS venue
+// events; delegates session mechanics to the lower-level websocket stack.
+// Not constructed by `App` today — its compiled `.cpp` is reachable only via
+// the orphan `PrivateWsWorker`. See `private_ws_worker.hpp` for the wiring
+// plan and the user_orders protocol notes in
+// `project_kalshi_user_orders_protocol` memory.
 class KalshiPrivateWsAdapter {
   public:
     explicit KalshiPrivateWsAdapter(predex::websocket::kalshi::WsAdapter ws_adapter);

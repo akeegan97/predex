@@ -25,17 +25,13 @@
 #include "predex/websocket/session.hpp"
 #include <algorithm>
 #include <atomic>
-#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
-#include <limits>
 #include <memory>
 #include <mutex>
-#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -73,14 +69,6 @@ void log_public_ws_event(const char* phase, std::uint64_t generation,
     std::fflush(stdout);
 }
 
-[[nodiscard]] internal::QtyLots parse_count_fp_to_lots(std::string_view value) {
-    internal::QtyLots qty_lots = 0;
-    if (!internal::parse_non_negative_quantity_fp(value, qty_lots)) {
-        return 0;
-    }
-    return qty_lots;
-}
-
 [[nodiscard]] std::string rest_trace_output_path(std::string_view base_path,
     //NOLINTNEXTLINE
                                                  std::size_t worker_index,
@@ -96,93 +84,6 @@ void log_public_ws_event(const char* phase, std::uint64_t generation,
 
     return std::string{base_path.substr(0, dot_pos)} + ".worker" + std::to_string(worker_index) +
            std::string{base_path.substr(dot_pos)};
-}
-constexpr std::uint64_t kMultiplier = 10;
-[[nodiscard]] bool parse_non_negative_dollars_to_ticks(std::string_view value,
-                                                       internal::PriceTicks& out_ticks) {
-    constexpr auto kDollarToTicksScale =
-        static_cast<std::uint64_t>(internal::kPriceTicksPerDollar);
-    constexpr auto kI64MaxAsU64 =
-        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-
-    if (value.empty() || value.front() == '-' || value.front() == '+') {
-        return false;
-    }
-    const std::size_t dot_pos = value.find('.');
-    const std::string_view int_part =
-        dot_pos == std::string_view::npos ? value : value.substr(0, dot_pos);
-    const std::string_view frac_part =
-        dot_pos == std::string_view::npos ? std::string_view{} : value.substr(dot_pos + 1);
-    if (int_part.empty()) {
-        return false;
-    }
-    for (char digit_char : int_part) {
-        if (digit_char < '0' || digit_char > '9') {
-            return false;
-        }
-    }
-    for (char frac_char : frac_part) {
-        if (frac_char < '0' || frac_char > '9') {
-            return false;
-        }
-    }
-
-    std::uint64_t dollars = 0;
-    const auto [ptr, ec] =
-        std::from_chars(int_part.data(), int_part.data() + int_part.size(), dollars);
-    if (ec != std::errc{} || ptr != int_part.data() + int_part.size()) {
-        return false;
-    }
-
-    std::uint64_t subcent_units = 0;
-    const std::size_t digits_to_take =
-        std::min<std::size_t>(frac_part.size(), internal::kPriceDecimalPlaces);
-    for (std::size_t index = 0; index < digits_to_take; ++index) {
-        subcent_units = subcent_units * kMultiplier + static_cast<std::uint64_t>(frac_part[index] - '0');
-    }
-    for (std::size_t index = digits_to_take; index < internal::kPriceDecimalPlaces; ++index) {
-        subcent_units *= kMultiplier;
-    }
-    if (frac_part.size() > internal::kPriceDecimalPlaces &&
-        frac_part[internal::kPriceDecimalPlaces] >= '5') {
-        ++subcent_units;
-        if (subcent_units == kDollarToTicksScale) {
-            subcent_units = 0U;
-            ++dollars;
-        }
-    }
-
-    if (dollars > (kI64MaxAsU64 - subcent_units) / kDollarToTicksScale) {
-        return false;
-    }
-
-    out_ticks = static_cast<internal::PriceTicks>(dollars * kDollarToTicksScale + subcent_units);
-    return true;
-}
-
-[[nodiscard]] std::optional<std::uint64_t> read_u64_field(const nlohmann::json& object,
-                                                          const char* key) {
-    if (!object.contains(key)) {
-        return std::nullopt;
-    }
-    const auto& value = object[key];
-    if (value.is_number_unsigned()) {
-        return value.get<std::uint64_t>();
-    }
-    if (value.is_number_integer()) {
-        const auto as_i64 = value.get<std::int64_t>();
-        if (as_i64 >= 0) {
-            return static_cast<std::uint64_t>(as_i64);
-        }
-    }
-    if (value.is_string()) {
-        try {
-            return static_cast<std::uint64_t>(std::stoull(value.get<std::string>()));
-        } catch (...) { // any parsing error results in nullopt
-            return std::nullopt;
-        }
-    }
-    return std::nullopt;
 }
 } // namespace
 
@@ -219,8 +120,6 @@ struct App::Runtime {
     std::atomic<bool> running{false};
     std::vector<core::routing::kalshi::MarketRegistryEntry> market_registry_entries;
     std::unordered_map<internal::MarketId, std::string> market_ticker_by_id_;
-    std::unordered_map<std::string, std::size_t> registry_index_by_ticker_;
-    std::unordered_map<std::uint64_t, std::uint64_t> oms_ws_last_seq_by_sid_;
     static std::vector<predex::core::routing::kalshi::MarketRegistryEntry>
     build_market_registry_entries(const AppConfig& config) {
         std::vector<predex::core::routing::kalshi::MarketRegistryEntry> entries;
@@ -397,11 +296,8 @@ App::Runtime::Runtime(AppConfig config_in)
         frame_pool(config.pipeline.frame_pool_capacity), 
         market_registry(market_registry_entries) {
     market_ticker_by_id_.reserve(market_registry_entries.size());
-    registry_index_by_ticker_.reserve(market_registry_entries.size());
-    for (std::size_t i = 0; i < market_registry_entries.size(); ++i) {
-        const auto& entry = market_registry_entries[i];
+    for (const auto& entry : market_registry_entries) {
         market_ticker_by_id_[entry.market_id_] = entry.ticker_;
-        registry_index_by_ticker_[entry.ticker_] = i;
     }
 
     io_to_router_queue = std::make_unique<FrameQueue>(config.pipeline.io_to_router_capacity);
@@ -787,19 +683,98 @@ void App::Runtime::oms_gateway_loop(const std::stop_token& stop_token) { //NOLIN
 }
 
 [[nodiscard]] bool App::Runtime::reconcile_open_orders_from_rest(bool is_startup) {
-    if (is_startup && oms != nullptr) {
-        for (;;) {
-            const auto result = oms->pump(config.pipeline.shard_input_capacity,
-                                          config.pipeline.shard_input_capacity);
-            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kIdle) {
-                break;
-            }
-            if (result.code == predex::core::oms::kalshi::OmsProcessCode::kError) {
-                set_error("OMS failed while applying startup reconciliation");
-                return false;
-            }
-        }
+    if (!is_startup || !config.oms_transport.enabled) {
+        return true;
     }
+
+    const auto policy = config.oms_transport.startup_open_orders_policy;
+
+    if (policy == StartupOpenOrdersPolicy::kIgnore) {
+        std::fprintf(stderr,
+                     "[reconcile] startup_open_orders_policy=ignore; skipping REST fetch. "
+                     "Any orders resting at the venue will not be visible to the OMS this "
+                     "session.\n");
+        return true;
+    }
+
+    namespace transport = predex::core::oms::kalshi::transport;
+    transport::KalshiRestAdapter rest_adapter{
+        transport::PersistentHttpSession{websocket::kalshi::AuthSigner{auth_signer},
+                                         config.oms_transport.rest_endpoint},
+        &market_ticker_by_id_};
+
+    std::vector<transport::OpenOrderSnapshot> open_orders;
+    std::optional<std::string> cursor;
+    do {
+        auto page =
+            rest_adapter.fetch_open_orders(transport::kDefaultOpenOrderFetchLimit, cursor);
+        if (!page.ok) {
+            set_error("startup_open_orders_policy: Kalshi REST fetch_open_orders failed: " +
+                      page.error_message);
+            return false;
+        }
+        open_orders.reserve(open_orders.size() + page.orders.size());
+        for (auto& snapshot : page.orders) {
+            open_orders.push_back(std::move(snapshot));
+        }
+        cursor = page.next_cursor;
+    } while (cursor.has_value());
+
+    if (open_orders.empty()) {
+        return true;
+    }
+
+    switch (policy) {
+    case StartupOpenOrdersPolicy::kIgnore:
+        // Handled above; unreachable.
+        return true;
+
+    case StartupOpenOrdersPolicy::kRefuseIfPresent: {
+        std::fprintf(stderr,
+                     "[reconcile] policy=refuse_if_present found %zu open order(s) at the "
+                     "venue; aborting startup.\n",
+                     open_orders.size());
+        for (const auto& snapshot : open_orders) {
+            const auto exchange_id_view =
+                snapshot.order.exchange_order_id.has_value()
+                    ? snapshot.order.exchange_order_id->view()
+                    : std::string_view{};
+            std::fprintf(
+                stderr,
+                "[reconcile]   ticker=%s status=%s side=%s action=%s remaining=%s "
+                "yes=%s no=%s exchange_order_id=%.*s\n",
+                snapshot.ticker.c_str(), snapshot.status.c_str(), snapshot.side.c_str(),
+                snapshot.action.c_str(), snapshot.remaining_count_fp.c_str(),
+                snapshot.yes_price_dollars.c_str(), snapshot.no_price_dollars.c_str(),
+                static_cast<int>(exchange_id_view.size()), exchange_id_view.data());
+        }
+        set_error("startup_open_orders_policy=refuse_if_present: open orders detected at "
+                  "venue; resolve out-of-band before restarting");
+        return false;
+    }
+
+    case StartupOpenOrdersPolicy::kCancelAll:
+        // Deferred. Two viable implementations: (a) direct REST cancel-by-exchange-order-id
+        // via this temporary adapter, or (b) synthesizing CancelOrderCmd records into the
+        // gateway queue. (b) is preferable for rate-limiting and audit symmetry but requires
+        // the gateway pump to be running, which it isn't at this startup phase. Implement
+        // when the first long-range strategy ships and the operator interface is firmed up.
+        set_error("startup_open_orders_policy=cancel_all is not yet implemented; deferred "
+                  "until long-range strategy landing");
+        return false;
+
+    case StartupOpenOrdersPolicy::kAdopt:
+        // Deferred. The OpenOrderSnapshot → OrderState mapping requires per-order
+        // IntentContext (strategy_id, shard_id, event_id) that is NOT recoverable from a
+        // Kalshi REST snapshot alone. Until OrderStore is persisted across sessions OR
+        // client_order_id encodes a strategy hint, strategy-side semantics cannot be
+        // faithfully restored. Oms::seed_reconciled_order is the intended call site for
+        // this path; see docs/oms_design.md.
+        set_error("startup_open_orders_policy=adopt is not yet implemented; deferred until "
+                  "OrderStore persistence or client_order_id strategy encoding lands");
+        return false;
+    }
+
     return true;
 }
 

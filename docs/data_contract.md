@@ -132,31 +132,31 @@ After each book application, the shard runs `ShardPipeline::on_event(NormalizedE
 ## 7. OMS Intent Contract
 
 Types pushed to `shard_to_oms_intent_queue[i]`:
-- `OmsSubmission` = `std::variant<OrderIntent, GroupOrderIntent, CancelIntent, ModifyIntent>`
+- `ShardOmsRequest` = `std::variant<NewOrderIntent, GroupOrderIntent, CancelOrderIntent, ModifyOrderIntent>`
 
-The OMS coordinator drains these round-robin across shards. Each submission is passed through `RiskEngine::evaluate()` before being accepted or rejected.
+The OMS coordinator drains these round-robin across shards. Each submission is passed through `GlobalRisk` (capital-reservation pre-trade check) before being accepted or rejected.
 
 ## 8. OMS Decision Contract
 
-`IntentDecision` is pushed to `oms_to_shard_decision_queue[i]`:
+`OmsToShardDecision` is pushed to `oms_to_shard_decision_queue[i]`:
 
-- `kAccepted` + `AcceptedIntent{intent, oms_request_id, client_order_id}`
-- `kRejected` + `RejectedIntent{intent, reason}`
-- `kModified` + `ModifiedIntent{original, modified, oms_request_id, client_order_id}`
+- `kAccepted` + accepted-intent data (`oms_request_id`, `client_order_id`, originating intent)
+- `kRejected` + reject reason
+- `kModified` + modification metadata
 
-The originating shard uses decisions to update `LocalRiskState` (open intent counts).
+See `cpp/include/predex/oms/oms_types.hpp` for the canonical field layout. The originating shard uses decisions to update `LocalRiskState` (open intent counts).
 
 ## 9. Order Lifecycle Contract
 
 `KalshiToOmsEvent` records are pushed to two SPSC queues, one per producer:
 - `oms_rest_event_queue` — written by the OMS Gateway thread (REST API responses from `AsyncRestConnection`)
-- `ws_event_queue` — written by the private WS thread when wired
+- `ws_event_queue` — reserved for the future private-WS worker; pointer is `nullptr` today and `ExecutionTransport::try_pop_event()` skips it
 
-The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`, applies each event to `OrderStore`, updates `RiskEngine`, and fans the event to `oms_to_shard_lifecycle_queue[i]` for the originating shard.
+The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`, applies each event to `OrderStore`, releases the `GlobalRisk` capital reservation on terminal events (converting it to realised exposure on fills), and fans the event to `oms_to_shard_lifecycle_queue[i]` for the originating shard.
 
 The shard uses lifecycle events to update `LocalRiskState` (net filled position).
 
-Lifecycle event kinds: `kAck`, `kReject`, `kPartialFill`, `kFill`, `kCancelAck`, `kCancelReject`, `kReplaceAck`, `kReplaceReject`, `kCanceled`.
+Lifecycle event kinds cover: submit ack/reject, partial fill, fill, cancel ack/reject, replace ack/reject, and a transport-level `Uncertain` state used when a write reached the wire but the response was lost. See `cpp/include/predex/oms/oms_types.hpp` for the canonical variant.
 
 ## 10. Transport Command Contract
 
@@ -203,11 +203,11 @@ Stage ownership over the market data message lifecycle:
 
 1. Websocket session receives raw text
 2. `IOWriter` copies it into the frame pool and pushes a handle
-3. Router classifies and forwards the handle
-4. Shard (or logger directly) consumes the handle
+3. Router classifies and forwards the handle (or recycles directly on router-side drops via `recycle_from_router`)
+4. Shard (or logger directly) consumes the handle (shard-side drops recycle via `recycle_from_shards[i]`)
 5. Shard applies the event and forwards the handle to the logger
 6. Logger persists the raw payload
-7. Logger pushes the handle to the recycle queue
-8. `IOWriter` drains recycle and returns the slot to `FramePool`
+7. Logger pushes the handle to `recycle_from_logger`
+8. `IOWriter` drains all recycle SPSCs round-robin and returns the slot to `FramePool`
 
-This ownership flow is the main runtime data contract. If it changes, the surrounding docs should change with it.
+Frame recycling uses **per-producer SPSC + consumer fan-in** rather than a single shared recycle queue — every producer thread owns its own recycle SPSC. This ownership flow is the main runtime data contract. If it changes, the surrounding docs should change with it.

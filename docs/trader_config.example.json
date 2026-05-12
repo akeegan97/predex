@@ -78,11 +78,9 @@
   "oms_transport": {
     "enabled": false,
     "rest_endpoint": "https://api.elections.kalshi.com",
-    "private_ws_endpoint": "wss://api.elections.kalshi.com/trade-api/ws/v2",
-    "private_ws_channels": [
-      "user_orders"
-    ],
-    "max_session_loss_ticks": 0
+    "rest_worker_count": 4,
+    "available_capital_ticks": 0,
+    "startup_open_orders_policy": "refuse_if_present"
   },
   "local_risk": {
     "max_net_position_lots_per_market": 0,

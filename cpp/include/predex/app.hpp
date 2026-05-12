@@ -69,6 +69,20 @@ struct AuditConfig {
     std::string output_path{"logs/live/predex_audit.jsonl"};
 };
 
+// Policy applied at startup when the OMS finds (or refuses to look for) live
+// orders resting at the venue from a prior session. The strict default
+// (kRefuseIfPresent) matches the current discrete-session runtime: today no
+// configured strategy posts resting orders, so this fires zero times. The
+// non-default modes are scaffolded for the long-range strategy landing
+// (MM / soft-monotonic), where session-to-session order continuity becomes
+// load-bearing. See docs/oms_design.md and [[project_operational_modes]].
+enum class StartupOpenOrdersPolicy : std::uint8_t {
+    kIgnore = 0,          // skip REST reconciliation entirely (dev/loose mode)
+    kRefuseIfPresent = 1, // fetch; abort startup if any open order is found
+    kCancelAll = 2,       // fetch + cancel everything before going live
+    kAdopt = 3,           // fetch + seed configured-market orders into OMS
+};
+
 struct OmsTransportConfig {
     bool enabled{false};
     std::string rest_endpoint{"https://api.elections.kalshi.com"};
@@ -78,6 +92,7 @@ struct OmsTransportConfig {
     // 0 = no limit
     std::int64_t max_session_loss_ticks{0};
     std::int64_t available_capital_ticks{0};
+    StartupOpenOrdersPolicy startup_open_orders_policy{StartupOpenOrdersPolicy::kRefuseIfPresent};
 };
 
 struct LocalRiskConfig {

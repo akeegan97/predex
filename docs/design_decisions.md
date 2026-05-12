@@ -8,7 +8,9 @@ Each stage boundary uses a single-producer single-consumer lock-free queue rathe
 
 The SPSC constraint is strict: exactly one thread writes and one thread reads each queue during steady-state operation. Given that invariant, SPSC queues require no compare-and-swap, no contention, and no memory barriers beyond the acquire/release pair at head and tail. A mutex adds at minimum a kernel syscall on contention and a cache-line ownership transfer on every acquire. A general-purpose concurrent queue adds overhead even when there is provably only one producer and one consumer.
 
-The queue topology in `ownership_invariants.md` is designed so the SPSC invariant is always satisfied everywhere. The OMS transport path has two producers (REST thread and private WS thread) that both produce `OrderLifecycleEvent` back to the OMS coordinator. Rather than share one queue and break the SPSC invariant — which would introduce a data race on `tail_` — these are split into two queues: `oms_rest_update_queue` (written only by the REST thread) and `oms_ws_update_queue` (written only by the private WS thread). `ExecutionTransport::try_pop_lifecycle_event()` round-robins between them on each call so neither starves the other. This keeps every queue in the system strict SPSC with no locks or CAS on any path.
+The queue topology in `ownership_invariants.md` is designed so the SPSC invariant is always satisfied everywhere. The OMS transport path is designed to support two producers (the OMS Gateway thread and a future private-WS worker thread) feeding `KalshiToOmsEvent` back to the OMS coordinator. Rather than share one queue and break the SPSC invariant — which would introduce a data race on `tail_` — these are split into two distinct queues: `oms_rest_event_queue` (written only by the Gateway thread) and `ws_event_queue` (reserved for the private-WS worker). `ExecutionTransport::try_pop_event()` checks `ws_event_queue` first then round-robins across REST event queues, so neither starves the other when both are live. Today `ws_event_queue` is `nullptr` and only the REST path is wired, but the topology is already correct for the eventual second producer — adding it doesn't require a queue redesign.
+
+The same principle drives the recycle topology: rather than have logger, router, and each shard share one recycle queue (which would make it MPSC and require CAS or locks), each producer owns its own SPSC and the IO thread fans them in via round-robin. See [[feedback_spsc_producers]] for the rule: never add a second producer to an existing SPSC.
 
 ## Router as a Separate Thread
 
@@ -50,23 +52,34 @@ The halt mechanism uses two distinct levels (`HaltMode::kSoft` and `HaltMode::kH
 
 A single kill switch that immediately cancels all open orders would be harmful for strategies that hold complementary positions to settlement. For example, `MonotonicArbStrategy` may hold two opposite-side legs that are individually loss-making but net profitable at settlement. Canceling both legs on a drawdown threshold would crystallize the loss rather than letting the arb settle.
 
-`kSoft` halt (triggered by the drawdown circuit breaker) blocks new order submissions but leaves existing orders alive to fill or settle. The session's P&L continues to update from fills on surviving orders.
+`kSoft` halt is designed for the drawdown circuit breaker: block new submissions but leave existing orders alive to fill or settle. The breaker condition (`session_net_ticks_ < -max_session_loss_ticks_`) and the per-fill P&L accumulation aren't yet implemented; today `request_soft_halt()` exists but has no caller. The mechanism is in place for the long-range strategy landing.
 
-`kHard` halt (triggered by controlled shutdown via `App::stop()`) blocks new submissions and additionally cancels all live orders. This is the correct behavior on process exit: clean up all exchange state before the process terminates.
+`kHard` halt is designed for controlled shutdown via `App::stop()`: block new submissions and cancel all live orders before the process terminates. The mode flag is wired (and prevents new submissions during the shutdown drain) but the cancel-all sweep on the OMS thread is **not yet implemented** — `hard_halt_cancel_triggered_` reserves the trigger but no code path in `pump()` enqueues `CancelOrderCmd` for live orders on hard halt. Today's monotonic-arb runs leave no resting orders, so the gap is silent; it must close before any long-range strategy ships.
 
 `halt_mode_` is an `std::atomic<uint8_t>` so `is_halted()` is safe to query from the health-dump path without acquiring a lock.
 
-## Orphaned Order Adoption at Startup
+## Startup Reconciliation Policy
 
-On startup, the OMS REST API is queried for open orders from any prior session. Rather than canceling them (which would crystallize losses on positions intended to settle) or ignoring them (which would leave them invisible to the kill switch and excluded from session P&L), they are adopted into `OrderStore` with synthetic request IDs.
+Strategy lifetimes drive how the system should treat venue state across session boundaries:
 
-Adoption uses `next_oms_request_id_++` so synthetic IDs stay in-sequence with normal session orders and all three lookup indices are populated. `risk_engine_.on_intent_accepted()` is called with `live_qty_lots` so global event exposure counts are accurate from the first tick of the new session.
+- **Session-contained strategies** (today's monotonic arb, future hard CDF arb): trades resolve within the session, IOC-only, no resting orders by design. Config can be regenerated freely.
+- **Long-range strategies** (future MM, soft-monotonic): orders are expected to rest across sessions. Config stays static for long-range markets; only the session-contained universe regenerates.
 
-This means the kill switch can reach orphaned orders and their fills count against `session_net_ticks_` — both required for the drawdown circuit breaker to be meaningful after a restart.
+Rather than picking a single startup behavior that suits both, the OMS exposes `oms_transport.startup_open_orders_policy` with four named modes (`ignore`, `refuse_if_present`, `cancel_all`, `adopt`). The operator selects what to do with prior-session orders based on which mode they're running this session — see [[project_operational_modes]] for the framing.
+
+The default is **`refuse_if_present`**, which is consistent with the rest of the safe-by-default surface (`oms_transport.enabled=false`, `local_risk.trading_enabled=false`): if any open order is found at the venue at startup, abort and surface every order to the operator. Three reasons this is the right default:
+
+1. **Preserves the kill-switch invariant.** Every order that exists at the venue must be in `OrderStore` or not exist at all when the live loop begins. Refusing to start is the cheapest way to enforce that without trying to infer per-order intent from a REST snapshot.
+2. **Surfaces config drift.** A venue order whose market isn't in the current config means either the config is wrong for this session or there's a config-generation bug. Both deserve an abort, not a silent reconciliation.
+3. **Operational reality today.** Monotonic arb is IOC-only, so the abort branch never fires in practice. The strictness costs nothing while the system is session-loop-only, and the gate is already in place when long-range strategies start needing it.
+
+The `adopt` mode (seed prior-session orders into `OrderStore` via `Oms::seed_reconciled_order`) is scaffolded — the enum value is selectable, but selecting it aborts with a deferral message. The reason it's deferred rather than implemented: the `OpenOrderSnapshot → OrderState` mapping requires per-order `IntentContext` (strategy id, shard id, event id) that **cannot be recovered from a Kalshi REST snapshot alone**. Closing the gap requires either persisting `OrderStore` across sessions or encoding a strategy hint into `client_order_id`, both of which are bigger plumbing changes that should land alongside the first long-range strategy that actually needs them. Until then, attempting to adopt would mean populating context with placeholders and pretending we know the strategy provenance — which is exactly the kind of "shadow state" the project avoids.
+
+The escape hatch from "the operator can't restart cleanly because of the strict policy" is intended to be an out-of-band reconcile CLI (`predex-reconcile` or `trader_app --reconcile-only`), not a more permissive runtime mode. Strictness in the live loop plus tooling for operator recovery, rather than lenience in the live loop.
 
 ## OMS Coordinator as a Single Writer
 
-All order state mutations — insert, apply lifecycle, erase — go through the OMS coordinator thread. `OrderStore` and `RiskEngine` have no internal synchronization because they are single-writer by design.
+All order state mutations — insert, apply lifecycle, erase — go through the OMS coordinator thread. `OrderStore` and `GlobalRisk` have no internal synchronization because they are single-writer by design.
 
 The alternative (locking `OrderStore` so multiple threads can update it) would add contention on every fill event and every new order, which are already the latency-critical events the OMS is designed to process efficiently.
 

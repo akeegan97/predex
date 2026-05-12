@@ -74,6 +74,23 @@ std::string read_string(const nlohmann::json& parent, std::string_view key,
     return iterator->get<std::string>();
 }
 
+std::optional<predex::StartupOpenOrdersPolicy>
+parse_startup_open_orders_policy(std::string_view value) {
+    if (value == "ignore") {
+        return predex::StartupOpenOrdersPolicy::kIgnore;
+    }
+    if (value == "refuse_if_present" || value == "refuse-if-present") {
+        return predex::StartupOpenOrdersPolicy::kRefuseIfPresent;
+    }
+    if (value == "cancel_all" || value == "cancel-all") {
+        return predex::StartupOpenOrdersPolicy::kCancelAll;
+    }
+    if (value == "adopt") {
+        return predex::StartupOpenOrdersPolicy::kAdopt;
+    }
+    return std::nullopt;
+}
+
 std::optional<predex::internal::EventTopologyKind> parse_topology_kind(std::string_view value) {
     if (value == "monotonic_chain" || value == "monotonic-chain") {
         return predex::internal::EventTopologyKind::kMonotonicChain;
@@ -236,6 +253,17 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
             oms_transport, "max_session_loss_ticks", config.oms_transport.max_session_loss_ticks);
         config.oms_transport.available_capital_ticks = read_int64(
             oms_transport, "available_capital_ticks", config.oms_transport.available_capital_ticks);
+
+        const auto policy_value = read_string(oms_transport, "startup_open_orders_policy");
+        if (!policy_value.empty()) {
+            const auto policy = parse_startup_open_orders_policy(policy_value);
+            if (!policy.has_value()) {
+                error_out = "oms_transport.startup_open_orders_policy must be one of "
+                            "\"ignore\", \"refuse_if_present\", \"cancel_all\", \"adopt\"";
+                return std::nullopt;
+            }
+            config.oms_transport.startup_open_orders_policy = *policy;
+        }
     }
 
     const auto local_risk_it = root.find("local_risk");

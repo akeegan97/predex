@@ -22,27 +22,35 @@ The runtime is real. Some strategy logic is still experimental by design.
 
 ## Current Status
 
+Predex today is a discrete-session runtime: configs are typically regenerated per run, and the only live strategy (`MonotonicArbStrategy`) trades IOC-only with no orders resting between sessions. The OMS and reconciliation paths are designed for the eventual long-range strategy landing (MM, soft-monotonic) but several of those paths are intentionally scaffolded rather than wired.
+
 Working today:
 
 - `trader_app` connects to Kalshi, subscribes to configured public channels, maintains shard-local books, evaluates strategy signals, routes order intents through the OMS, and records raw inbound payloads to a binary tape
-- The OMS tracks full order lifecycle across request, client-order-id, and exchange-order-id lookups
-- Live order execution uses Kalshi REST for submit/cancel/modify and the private websocket for fills and lifecycle events
-- Startup reconciliation adopts prior-session open orders into `OrderStore` so kill-switch behavior and session accounting cover them
-- `MonotonicArbStrategy` now uses paired IOC limit selection with book-quality gating, continuity checks, and audit telemetry around visible frontier depth
+- The OMS tracks full order lifecycle across request, client-order-id, and exchange-order-id lookups; capital reservation is enforced by `GlobalRisk` against `oms_transport.available_capital_ticks`
+- Live order execution uses Kalshi REST for submit/cancel/modify, routed through a Gateway pipeline (command ingress → sequencer → batch planner → token-bucket rate limiter → session pool). Fill and lifecycle events currently come back on the REST response path
+- Startup runs a configurable `oms_transport.startup_open_orders_policy` against Kalshi REST. The default `refuse_if_present` aborts startup if any prior-session orders are present, preserving the kill-switch invariant. With today's IOC-only strategy this path fires zero times in practice but is the defensive gate for future long-range strategies
+- `MonotonicArbStrategy` uses paired IOC limit selection with book-quality gating, continuity checks, and audit telemetry around visible frontier depth
 - The Python discovery pipeline generates event-centric configs and handles safe subchain splitting for multi-entity numeric events
 - Replay tooling can summarize audit logs, export event timelines, and ingest a run into parquet datasets for offline analysis
 
+Scaffolded but not yet wired:
+
+- Kalshi private-websocket transport for fills/lifecycle events: adapter and worker exist, but the OMS `ws_event_queue` is always `nullptr` today
+- Startup `cancel_all` and `adopt` reconciliation policies: enum values defined and config-selectable, but the code paths fail-loud with a clear deferral message
+- Drawdown soft-halt on `oms_transport.max_session_loss_ticks`: `Oms::request_soft_halt()` exists but has no caller; session-level fill P&L accumulation is not yet implemented
+- Cancel-all-on-hard-halt: `Oms::request_hard_halt()` flips the mode flag but no cancel sweep runs from the OMS pump
+
 Still intentionally incomplete:
 
-- `CdfViolationStrategy`, `MarketMakingStrategy`, and `MeanReversionStrategy` remain stubs
-- REST rate limiting is not yet implemented
+- `CdfViolationStrategy`, `MarketMakingStrategy`, and `MeanReversionStrategy` are wired into the shard pipeline but emit no signals
 - Dynamic sizing is not yet enabled; the current focus is validating execution quality and reducing one-sided fills
-- Public websocket reconnect handling still needs resilience hardening for transient network resets
+- Public-websocket reconnect uses exponential backoff today; deeper resilience hardening (sequence-gap recovery, post-reconnect snapshot reconciliation) is pending
 
 ## Architecture At A Glance
 
 ```text
-Kalshi public WS -> IO thread -> Router -> Shards -> OMS -> REST/private WS
+Kalshi public WS -> IO thread -> Router -> Shards -> OMS -> REST (private WS scaffolded)
                                       |         |       |
                                       |         |       +-> Audit JSONL
                                       |         +----------> Order intents / lifecycle
@@ -108,6 +116,8 @@ Current CMake targets in [`cpp/CMakeLists.txt`](cpp/CMakeLists.txt):
 - `predex_core_pipeline`
 - `predex_app`
 - `trader_app`
+- `replay_app`
+- `parser_regression_test`, `kalshi_rest_adapter_boundary_test` (test executables)
 
 ## Quickstart
 
@@ -147,7 +157,7 @@ KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----...'
 ./build/dev/cpp/trader_app --config docs/trader_config.example.json
 ```
 
-The runtime prints a periodic health line to stdout:
+The runtime prints a periodic health line to stdout. The schema is wide (~35 fields including gateway latency stages, session-pool counters, and audit drop counts); see `App::Runtime::print_health_status` in `cpp/src/app.cpp` for the canonical format. Truncated example:
 
 ```text
 [timestamp UTC] STATUS | halted=false | live_orders=0 | oms_shard_requests=0 | ...
@@ -328,9 +338,11 @@ Key fields:
 - `audit.output_path` — JSONL audit log output path
 - `oms_transport.enabled` — enable live order submission
 - `oms_transport.rest_endpoint` — Kalshi REST API base URL
-- `oms_transport.private_ws_endpoint` — Kalshi private websocket URL for fills
-- `oms_transport.max_session_loss_ticks` — drawdown limit in ticks; `0` disables the circuit breaker
+- `oms_transport.private_ws_endpoint` — Kalshi private websocket URL for fills *(reserved; private-WS transport is not yet wired into the OMS)*
+- `oms_transport.max_session_loss_ticks` — drawdown limit in ticks *(reserved; soft-halt breaker is not yet wired)*
+- `oms_transport.available_capital_ticks` — capital reservation budget enforced by `GlobalRisk`; `0` disables capital gating
 - `oms_transport.rest_worker_count` — size of the async REST worker pool
+- `oms_transport.startup_open_orders_policy` — what to do with prior-session orders found at the venue at startup. One of `"ignore"`, `"refuse_if_present"` (default), `"cancel_all"`, `"adopt"`. Today only `"ignore"` and `"refuse_if_present"` are implemented; `"cancel_all"` and `"adopt"` are scaffolded and abort startup with a clear deferral message
 - `local_risk.max_net_position_lots_per_market` — max absolute net filled position per market; `0` disables
 - `local_risk.min_seconds_to_close` — reject intents for markets closing within this many seconds; `0` disables
 - `local_risk.trading_enabled` — master switch for strategy intent generation
@@ -363,8 +375,8 @@ If you are new here, the fastest path is:
 ## Near-Term Priorities
 
 - Validate whether dynamic sizing is justified after enough depth-aware soak data is collected
-- Harden public websocket reconnect behavior for transient network resets
-- Add REST rate limiting
+- Deepen public-websocket reconnect hardening: sequence-gap recovery and post-reconnect snapshot reconciliation
+- Wire the drawdown soft-halt (`max_session_loss_ticks`) once a strategy begins accumulating session P&L worth bounding
 - Continue repo cleanup so `main` can serve as the canonical branch and project front door
 
 ## Contributing

@@ -17,6 +17,7 @@ using predex::core::oms::kalshi::VenueOrderCanceled;
 using predex::core::oms::kalshi::VenueOrderFill;
 using predex::core::oms::kalshi::transport::HttpResponse;
 using predex::core::oms::kalshi::transport::KalshiRestAdapter;
+using predex::core::oms::kalshi::transport::MarketTickerMap;
 using predex::core::oms::kalshi::transport::PersistentHttpSession;
 using predex::core::oms::kalshi::transport::RestTraceInfo;
 using predex::internal::ExchangeId;
@@ -58,7 +59,6 @@ SubmitOrderCmd make_submit_command(MarketId market_id, Side side, Outcome outcom
         .time_in_force = OmsTimeInForce::kIoc,
         .intent_ts_ns = 1,
     };
-    command.market_ticker = market_id == 1 ? "TEST-YES" : "TEST-NO";
     return command;
 }
 
@@ -66,8 +66,14 @@ SubmitOrderCmd make_submit_command(MarketId market_id, Side side, Outcome outcom
 
 int main() {
     AuthSigner signer{Credentials{.key_id = "test", .private_key_pem = "test"}};
+    const MarketTickerMap tickers{
+        {MarketId{1}, "TEST-YES"},
+        {MarketId{2}, "TEST-NO"},
+        {MarketId{3}, "TEST-NO"},
+    };
     KalshiRestAdapter adapter{
-        PersistentHttpSession{std::move(signer), "https://api.elections.kalshi.com"}};
+        PersistentHttpSession{std::move(signer), "https://api.elections.kalshi.com"},
+        &tickers};
 
     const auto good = adapter.prepare_submit_order(
         make_submit_command(1, Side::kBuy, Outcome::kYes, 460, "cid-good"));

@@ -1,140 +1,112 @@
 # OMS Design
 
-This document describes the implemented OMS coordinator: its components, lifecycle, queues, risk controls, and halt behavior.
+This document describes the OMS coordinator: its components, lifecycle, queues, risk controls, and halt behavior. Several behaviors below are **designed-not-wired** and are called out inline — the document distinguishes "live" from "scaffolded but deferred" to keep the reader aligned with the current discrete-session runtime.
 
 ## Scope
 
 The OMS coordinator is the single writer to all order state. It runs on its own thread and is responsible for:
 
 - Draining shard intent queues (round-robin across shards)
-- Running global pre-trade risk checks on each intent
+- Running global pre-trade risk checks on each intent (`GlobalRisk`, capital-reservation model)
 - Maintaining `OrderStore` (all live and terminal order state)
-- Issuing submit, cancel, and modify commands to the OMS REST thread
-- Processing lifecycle events from `oms_transport_update_queue` (two producers: REST thread and private WS thread)
+- Issuing submit, cancel, and modify commands to the OMS Gateway thread via `oms_command_queue`
+- Processing lifecycle events from `oms_rest_event_queue` (the only producer today; `ws_event_queue` is reserved for a future Kalshi private-WS transport)
 - Fanning lifecycle events back to the originating shard
-- Tracking session P&L (net ticks) and enforcing the drawdown circuit breaker
-- At hard halt: cancelling all live orders via `cancel_all_live_orders()`
+- *(Designed, not wired)* Tracking session P&L and enforcing the drawdown soft-halt against `oms_transport.max_session_loss_ticks`
+- *(Designed, not wired)* At hard halt: cancelling all live orders before exit
 
 ## Key Types
 
-### `OrderIntent`
+Canonical definitions live in `cpp/include/predex/oms/oms_types.hpp` and `cpp/include/predex/oms/order_store.hpp`; this section summarises the shapes rather than restating every field, so the doc and code don't drift on minor renames.
 
-A request from a shard strategy to submit a new order. Fields:
+### `NewOrderIntent`
 
-- `origin` — `IntentOrigin`: shard_id, affinity_key, group_id, local_intent_id, leg_index, leg_count, signal_id, event_id, market_id, latency timestamps
-- `exchange` — currently always `kKalshi`
-- `side` — `kBuy` or `kSell`
-- `qty_lots`
-- `limit_price_ticks` — optional; absent means market order
-- `time_in_force` — `kGtc`, `kIoc`, or `kFok`
-- `intent_ts_ns`
+A request from a shard strategy to submit a new order. Carries an `IntentContext` (strategy id, shard id, event id, market id, signal id, intent latency timestamps), exchange selector, side / outcome, quantity in lots, optional limit price in ticks, time-in-force (`kGtc` / `kIoc` / `kFok`), and liquidity / order-type intent hints.
 
 ### `GroupOrderIntent`
 
-A multi-leg atomic or best-effort group of up to 4 `OrderIntent` legs. Used by `MonotonicArbStrategy` to submit both legs of an arb simultaneously.
+A multi-leg group of up to `kMaxGroupOrderLegs` `NewOrderIntent` legs. Used by `MonotonicArbStrategy` to submit both legs of an arb simultaneously. Carries a `GroupExecutionPolicy` (`kAbortRemainingOnReject` or `kBestEffort`).
 
-- `execution_policy` — `kAbortRemainingOnReject` or `kBestEffort`
+### `ShardOmsRequest`
 
-### `OmsSubmission`
+A variant of `NewOrderIntent` / `GroupOrderIntent` / `CancelOrderIntent` / `ModifyOrderIntent`, pushed to the per-shard request queue.
 
-A `std::variant<OrderIntent, GroupOrderIntent, CancelIntent, ModifyIntent>` pushed to the shard intent queue.
+### `OmsToShardDecision`
 
-### `IntentDecision`
+The OMS coordinator's response to a shard intent: accepted / rejected / modified, with the appropriate inner data carrier. Pushed to `oms_to_shard_decision_queue[i]`.
 
-The OMS coordinator's response to a shard: `kAccepted`, `kRejected`, or `kModified`. The inner data variant holds an `AcceptedIntent`, `RejectedIntent`, or `ModifiedIntent`. Pushed to `oms_to_shard_decision_queue[i]`.
+### `KalshiToOmsEvent`
 
-### `OrderLifecycleEvent`
-
-A transport-level event arriving from the exchange: ack, reject, partial fill, fill, cancel ack, cancel reject, replace ack, replace reject, or canceled. Produced by both the REST thread and the private WS thread and pushed to `oms_transport_update_queue`.
+A transport-level event arriving from the exchange: submit ack/reject, fill (partial or final), cancel ack/reject, replace ack/reject, or order-uncertain. Produced today by the OMS Gateway thread and pushed to `oms_rest_event_queue`. The `ws_event_queue` variant is reserved for the future private-WS transport.
 
 ### `OrderState`
 
-The per-order mutable state owned by `OrderStore`:
+The per-order mutable state owned by `OrderStore`. Key fields (see `order_store.hpp` for the canonical list):
 
-- `oms_request_id`, `client_order_id`, `exchange_order_id`
-- `status` (`kPendingSubmit` → `kLive` → `kPartiallyFilled` / `kFilled` / `kCanceled` etc.)
-- `original_qty_lots`, `live_qty_lots`, `cum_fill_qty_lots`
-- `live_limit_price_ticks`
-- Latency timestamps: `oms_decision_ts_ns`, `transport_submit_ts_ns`, `first_fill_recv_ns`, `terminal_recv_ns`
+- Identifiers: `oms_request_id`, `client_order_id`, `exchange_order_id`
+- Status: `OrderStatus` enum — `kPendingSubmit`, `kWorking`, `kPartiallyFilled`, `kFilled`, `kPendingCancel`, `kCanceled`, `kPendingReplace`, `kRejected`, `kUncertain`
+- Quantities: `initial_qty_lots`, `working_qty_lots`, `cumulative_filled_qty_lots`
+- Prices: `initial_limit_price_ticks`, `working_limit_price_ticks` (both optional)
+- TIF / liquidity / order type intents
+- Latency timestamps: `intent_ts_ns`, `oms_decision_ts_ns`, `venue_submit_ts_ns`, `venue_ack_ts_ns`, `first_fill_ts_ns`, `last_fill_ts_ns`, `terminal_ts_ns`, `last_update_ts_ns`
 
 ## OrderStore
 
-`OrderStore` owns all live order state and three lookup indices:
+`OrderStore` owns all live order state and three lookup indices keyed by `OmsRequestId`, `ClientOrderId`, and `ExchangeOrderId`. The three indices allow matching incoming lifecycle events that may arrive with only a `client_order_id` (REST response) or only an `exchange_order_id` (future private-WS lifecycle events). The OMS coordinator is the single writer.
 
-| Index | Key | Value |
-|---|---|---|
-| `orders_by_request_id_` | `OmsRequestId` | `OrderState` |
-| `request_by_client_order_id_` | `ClientOrderId` | `OmsRequestId` |
-| `request_by_exchange_order_id_` | `ExchangeOrderId` | `OmsRequestId` |
+`OrderStore::adopt_reconciled_order(state)` inserts into all three indices without assigning a new request ID. It is currently reachable only from `Oms::seed_reconciled_order(state)`, which is itself uncalled today — it is the future call site for the `adopt` mode of `oms_transport.startup_open_orders_policy` (see Startup Reconciliation below).
 
-The three indices allow matching incoming lifecycle events that may arrive with only a `client_order_id` (REST response) or only an `exchange_order_id` (private WS).
+## GlobalRisk
 
-`adopt_orphaned(OrderState)` inserts into all three indices without assigning a new request ID. Used exclusively by `seed_orphaned_order()` before the OMS thread starts.
+`GlobalRisk` is the global pre-trade gate. Single writer: OMS coordinator thread. Today it implements a **capital-reservation model** rather than per-event open-order / exposure counting:
 
-## RiskEngine
+- A budget of available capital is configured via `oms_transport.available_capital_ticks`.
+- On `on_new_order_accepted(intent, decision_ts)`, the cost (price × qty) of the order is reserved from the available budget.
+- Reservation is released on terminal lifecycle events (fill, cancel, reject) — partial fills convert the reserved capital into realised exposure.
+- If a new intent would exceed the available budget, it is rejected pre-submit.
 
-`RiskEngine` wraps `GlobalRiskManager` and owns mutable per-event risk state. Single writer: OMS coordinator thread.
-
-Per-event state:
-
-- `open_orders` — count of non-terminal orders for the event
-- `exposure_lots` — total open qty across all live orders for the event
-
-`evaluate(intent, oms_request_id, client_order_id, decision_ts_ns)` assembles the combined `GlobalRiskState` for `intent.origin.event_id` and delegates to `GlobalRiskManager::evaluate()`.
-
-`on_intent_accepted(AcceptedIntent)` increments open order count and exposure.
-`on_fill(event_id, fill_qty_lots)` decrements exposure.
-`on_order_terminal(event_id, remaining_open_qty_lots)` decrements open order count and clears the remaining exposure.
+Per-event open-order and exposure counters are *not* tracked here. Local risk (`LocalRiskManager`) handles per-market net-position bookkeeping on the shard thread; `GlobalRisk` is concerned only with global capital headroom. Earlier doc revisions described a `RiskEngine` wrapper with per-event state — that abstraction does not exist in code today and the `GlobalRisk` capital-reservation model is what actually runs.
 
 ## Halt Modes
 
 ```cpp
 enum class HaltMode : std::uint8_t {
     kNone = 0,
-    kSoft = 1,  // block new submissions; existing orders survive to fill/settle
-    kHard = 2,  // block new submissions + cancel-all (processed on OMS thread)
+    kSoft = 1,  // designed: block new submissions; existing orders survive to fill/settle
+    kHard = 2,  // designed: block new submissions + cancel-all (processed on OMS thread)
 };
 ```
 
-`halt_mode_` is an `std::atomic<std::uint8_t>` readable from any thread.
+`halt_mode_` is `std::atomic<std::uint8_t>` readable from any thread. The two-level split is deliberate (see `design_decisions.md`): drawdown signals should not cancel locked-in arb legs, while operator/shutdown signals should sweep everything.
 
-### Soft Halt
+### Soft Halt (designed, not yet wired)
 
-`request_soft_halt()` transitions `kNone → kSoft` via `compare_exchange_strong` (no-op if already soft or hard halted). New intent submissions are rejected with `IntentRejectReason::kHalted`. Existing orders are left alive to fill or settle — correct behavior for arb strategies that must hold legs to settlement.
+`Oms::request_soft_halt()` sets `halt_mode_` to `kSoft`. New intent submissions are rejected by the pump's halt check; existing orders are left alive to fill or settle. Intended trigger is the drawdown breaker (`session_net_ticks_ < -max_session_loss_ticks_`), but neither `session_net_ticks_` nor the breaker condition is implemented today — `request_soft_halt()` has no caller in the codebase. The mechanism is in place; the trigger is the gap.
 
-**Trigger**: drawdown circuit breaker — `session_net_ticks_ < -max_session_loss_ticks_` when `max_session_loss_ticks_ > 0`.
+### Hard Halt (partially wired)
 
-### Hard Halt
+`Oms::request_hard_halt()` sets `halt_mode_` to `kHard`. It is called by `App::Runtime::stop()` during shutdown. The mode flag prevents new submissions for the brief tail-drain window.
 
-`request_hard_halt()` sets `halt_mode_` to `kHard` unconditionally. At the top of the next `pump()` call on the OMS thread, `cancel_all_live_orders()` is called exactly once (guarded by `hard_halt_cancel_triggered_`). This enqueues a `CancelOrderCmd` for every order in `OrderStore`.
-
-**Trigger**: controlled shutdown via `App::stop()` → `oms->request_hard_halt()`.
+What is **not** yet wired: the cancel-all sweep on the OMS thread. The `hard_halt_cancel_triggered_` flag exists, but no code path in the current OMS pump enqueues `CancelOrderCmd` for every live order on hard halt. Today's monotonic-arb runs never leave resting orders, so the gap is silent in practice; it must close before any long-range strategy can run safely. See [[project_halt_modes]] for the design rationale.
 
 ## Startup Reconciliation
 
-`reconcile_open_orders_from_rest(is_startup=true)` is called before the OMS thread starts. It fetches open orders from the Kalshi REST API and for each:
+When `oms_transport.enabled` is true, `App::Runtime::reconcile_open_orders_from_rest()` runs before any worker threads start and dispatches on `oms_transport.startup_open_orders_policy`:
 
-1. Looks up the `market_ticker` in the market registry to resolve `market_id`, `event_id`, `shard_id`, `affinity_key`.
-2. Builds an `OrderState` with status `kLive`, `original_qty_lots` and `live_qty_lots` from `remaining_count`, `exchange_order_id` and `client_order_id` from the REST response.
-3. Calls `Oms::seed_orphaned_order(state, side, outcome)` which:
-   - Assigns a synthetic `oms_request_id` from `next_oms_request_id_++`
-   - Calls `risk_engine_.on_intent_accepted(...)` with `live_qty_lots` so event exposure counts are accurate
-   - Calls `order_store_.adopt_orphaned(state)`
+- **`refuse_if_present`** (default, live) — paginates `KalshiRestAdapter::fetch_open_orders`; on non-empty result, logs every order (ticker / status / side / action / qty / price / exchange_order_id) and aborts startup. Preserves the kill-switch invariant for the live loop.
+- **`ignore`** (live) — skips the REST fetch entirely. Intended for dev iteration when prior-session state is known clean.
+- **`cancel_all`** (scaffolded, deferred) — intended to fetch + REST-cancel everything before going live; selecting it currently aborts startup with a clear deferral message. Implementation is deferred until the operator interface (a `predex-reconcile` CLI or `--reconcile-only` flag) is firmed up alongside the first long-range strategy.
+- **`adopt`** (scaffolded, deferred) — intended to seed configured-market open orders into `OrderStore` via `Oms::seed_reconciled_order`. The `OpenOrderSnapshot → OrderState` mapping requires per-order `IntentContext` (strategy id, shard id, event id) that **cannot be recovered from a Kalshi REST snapshot alone**. Closing this gap requires either persisting `OrderStore` across sessions or encoding a strategy hint into `client_order_id`; both are out of scope until a strategy actually needs to rest orders across sessions.
 
-Adopted orders are fully tracked by the kill switch and their fills are counted in `session_net_ticks_`.
+The current operational reality is that no strategy rests orders today, so `refuse_if_present` passes with zero orders on every startup. The policy is the defensive gate for the long-range strategy landing, not a feature exercised by today's runs. See [[project_operational_modes]] for the operational-mode framing.
 
-## OMS WS Reconnect Reconciliation
+(There is no separate "WS reconnect reconciliation" path today because the private WS isn't wired. Once it is, post-disconnect reconciliation will need to REST-fetch fill history to recover events missed during the gap — see `project_kalshi_user_orders_protocol` in memory for the protocol detail.)
 
-`reconcile_open_orders_from_rest(is_startup=false)` is called after the private WS reconnects. It fetches current-session open orders by `client_order_id` and pushes a synthetic `kAck` `OrderLifecycleEvent` for each so the OMS can reconcile state without double-inserting.
+## Session P&L and Drawdown (designed, not yet wired)
 
-## Session P&L and Drawdown
+The intended drawdown mechanism is: accumulate signed tick P&L on every fill (`session_net_ticks_`), and after each transport update check whether `max_session_loss_ticks > 0 && session_net_ticks < -max_session_loss_ticks && halt_mode == kNone`; if so, call `request_soft_halt()`.
 
-`session_net_ticks_` accumulates signed tick P&L on every fill event:
-
-- `kBuy` fill: `session_net_ticks_ -= fill_qty_lots * fill_price_ticks`
-- `kSell` fill: `session_net_ticks_ += fill_qty_lots * fill_price_ticks`
-
-After each transport update, if `max_session_loss_ticks_ > 0` and `session_net_ticks_ < -max_session_loss_ticks_` and `halt_mode_ == kNone`, `request_soft_halt()` is called.
+Today neither `session_net_ticks_` nor the per-fill accumulation exists in the OMS, and `oms_transport.max_session_loss_ticks` is parsed from config but never read by any consumer. The mechanism is unblocked the moment a strategy starts producing fills worth bounding — `MonotonicArbStrategy`'s paired-IOC pattern makes the breaker irrelevant today (a single arb either lands flat or doesn't land at all).
 
 ## Transport Commands
 
@@ -143,57 +115,59 @@ The OMS coordinator pushes typed command variants to a single `oms_command_queue
 | Command | Queue | Trigger |
 |---|---|---|
 | `SubmitOrderCmd` | `oms_command_queue` | accepted intent |
-| `CancelOrderCmd` | `oms_command_queue` | cancel intent or `cancel_all_live_orders()` |
+| `CancelOrderCmd` | `oms_command_queue` | cancel intent (cancel-all-on-hard-halt is designed but not yet wired) |
 | `ModifyOrderCmd` | `oms_command_queue` | modify intent |
 
-`oms_command_queue` carries `OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>`. The Gateway thread routes commands through the 5-stage pipeline (`CommandIngress → OrderSequencer → BatchPlanner → RateLimiter → SessionPool`) and executes them via `AsyncRestConnection`. Results are pushed to `oms_rest_event_queue`; private WS events (when wired) arrive via `ws_event_queue`. The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`.
+`oms_command_queue` carries `OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>`. The Gateway thread routes commands through the 5-stage pipeline (`CommandIngress → OrderSequencer → BatchPlanner → RateLimiter → SessionPool`) and executes them via `AsyncRestConnection`. Results are pushed to `oms_rest_event_queue`; the `ws_event_queue` pointer is `nullptr` today and will carry private-WS events once that transport is wired. The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`.
 
 ## Pump Loop
 
-Each call to `pump(max_transport_updates, max_shard_intents)`:
+Each call to `pump(max_kalshi_events, max_shard_requests)`:
 
-1. If `halt_mode_ >= kHard` and `!hard_halt_cancel_triggered_`: call `cancel_all_live_orders()`, set `hard_halt_cancel_triggered_ = true`.
-2. Drain up to `max_transport_updates` events from `oms_transport_update_queue`.
-3. Drain up to `max_shard_intents` submissions from `shard_intent_queues_` (round-robin starting from `next_shard_index_`).
+1. Drain up to `max_kalshi_events` events from `oms_rest_event_queue` (and `ws_event_queue` once wired) via `ExecutionTransport::try_pop_event()`.
+2. Drain up to `max_shard_requests` submissions from the per-shard request queues (round-robin starting from `next_shard_index_`).
 
-Round-robin intent draining ensures no shard starves another under load.
+Round-robin intent draining ensures no shard starves another under load. The cancel-all-on-hard-halt step is reserved in the design — `hard_halt_cancel_triggered_` exists for this purpose — but is not yet implemented inside `pump()`.
 
 ## Lifecycle State Machine
 
 ```
 PendingSubmit
-  -> Live             (kAck from REST/WS)
-  -> Rejected         (kReject from REST/WS)
+  -> Working          (submit ack from venue)
+  -> Rejected         (submit reject from venue)
+  -> Uncertain        (transport-level uncertainty — e.g. write succeeded but ack lost)
 
-Live
-  -> PartiallyFilled  (kPartialFill)
-  -> Filled           (kFill — terminal, erased from OrderStore)
+Working
+  -> PartiallyFilled  (partial fill)
+  -> Filled           (terminal — erased from OrderStore)
   -> PendingCancel    (CancelOrderCmd enqueued)
-  -> PendingModify    (ModifyOrderCmd enqueued)
-  -> Canceled         (kCanceled — terminal, erased from OrderStore)
+  -> PendingReplace   (ModifyOrderCmd enqueued)
+  -> Canceled         (terminal — erased from OrderStore)
 
 PartiallyFilled
-  -> Filled           (kFill — terminal)
-  -> Canceled         (kCanceled — terminal)
+  -> Filled           (terminal)
+  -> Canceled         (terminal)
 
 PendingCancel
-  -> Canceled         (kCancelAck — terminal)
-  -> Live             (kCancelReject — reverts to Live)
+  -> Canceled         (cancel ack — terminal)
+  -> Working          (cancel reject — reverts to Working)
 
-PendingModify
-  -> Live (replaced)  (kReplaceAck)
-  -> Live (original)  (kReplaceReject)
+PendingReplace
+  -> Working          (replace ack — new working price/qty)
+  -> Working          (replace reject — original survives)
 ```
 
-Terminal states (Filled, Rejected, Canceled) cause the order to be erased from `OrderStore`. The OMS calls `risk_engine_.on_order_terminal()` and, on fills, `risk_engine_.on_fill()`.
+Terminal states (`Filled`, `Rejected`, `Canceled`) cause the order to be erased from `OrderStore`. The OMS releases the corresponding capital reservation in `GlobalRisk` on terminal events and converts reservation → realised on fills. `Uncertain` is a non-terminal limbo used when the transport layer cannot confirm whether a submit reached the venue; resolution comes from a post-write recovery REST fetch handled by the Gateway.
 
 ## Observability
 
-The OMS exposes the following counters via `App::run()` health dump:
+The OMS exposes the following counters via `App::Runtime::print_health_status` (see `cpp/src/app.cpp` for the canonical schema; the doc lists them by intent, not as a complete inventory):
 
+- `halted` — `Oms::is_halted()`
 - `live_orders` — `order_store_.live_order_count()`
-- `intents` — `processed_intent_count_`
-- `rejected` — `rejected_intent_count_`
-- `transport_updates` — `processed_transport_update_count_`
-- `pnl_ticks` — `session_net_ticks_`
-- `halted` — `is_halted()`
+- `oms_shard_requests` — processed shard request count
+- `oms_kalshi_events` — processed transport event count
+- `oms_emitted_decisions` / `oms_emitted_transport` / `oms_emitted_lifecycle` — outbound counters per direction
+- `oms_rejected_decisions` — pre-trade reject count
+
+`pnl_ticks` is reserved in the health-line vocabulary but not emitted today; it lands together with the drawdown breaker (see Session P&L section).

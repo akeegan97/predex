@@ -36,6 +36,7 @@ If you are new to the repo, start with the first group and ignore the rest until
 
 These are useful working notes, but they are not the best entry point for a new reader.
 
+- [planning/platform_evolution.md](planning/platform_evolution.md) — phased plan for evolving from discrete-session runner to always-on service
 - [planning/open_backlog.md](planning/open_backlog.md)
 - [planning/replay_matrix.md](planning/replay_matrix.md)
 

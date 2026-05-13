@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace predex::core::ingest::kalshi {
-constexpr std::size_t kMaxFrameBytes = 4096;
+constexpr std::size_t kMaxFrameBytes = 8192;
 constexpr std::size_t kSimdJsonPadding = simdjson::SIMDJSON_PADDING;
 struct KalshiFrame {
     std::uint64_t recv_ts_ns_;

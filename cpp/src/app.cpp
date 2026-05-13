@@ -529,7 +529,7 @@ bool App::Runtime::start() {
         log_public_ws_event("subscribe_ok", 0, channel.c_str());
     }
     for (const auto& channel : config.kalshi_ws.lifecycle_channels) {
-        if (!ws_session.subscribe(channel, {})) {
+        if (!ws_session.subscribe(channel, config.kalshi_ws.market_tickers)) {
             log_public_ws_event("subscribe_failed", 0, ws_session.last_error().c_str());
             ws_session.close();
             set_error(ws_session.last_error());
@@ -611,7 +611,7 @@ void App::Runtime::io_loop(const std::stop_token& stop_token) {
                 log_public_ws_event("resubscribe_ok", next_generation, channel.c_str());
             }
             for (const auto& channel : config.kalshi_ws.lifecycle_channels) {
-                if (!ws_session.subscribe(channel, {})) {
+                if (!ws_session.subscribe(channel, config.kalshi_ws.market_tickers)) {
                     log_public_ws_event("resubscribe_failed", next_generation,
                                         ws_session.last_error().c_str());
                     subscribe_ok = false;

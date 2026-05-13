@@ -66,7 +66,7 @@ Format: `### <title>` → **Where / Impact / Next step / Status**
   health-line dumps.
 - **Next step**: replace `++atomic_counter` style hot-path increments with
   `fetch_add(1, std::memory_order_relaxed)`.
-- **Status**: open
+- **Status**: done
 
 ### Revisit `FramePool` lifecycle overhead with measurement
 

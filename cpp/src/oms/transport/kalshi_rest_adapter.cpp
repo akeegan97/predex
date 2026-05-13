@@ -963,7 +963,7 @@ CommandResult KalshiRestAdapter::parse_modify_response_(const HttpResponse& resp
         .trace = std::move(trace),
     };
 }
-
+//NOLINTNEXTLINE -- refactor pending on separate branch
 OpenOrdersPage KalshiRestAdapter::parse_open_orders_response_(const HttpResponse& response) {
     if (!response.ok) {
         return {.ok = false, .error_message = response.error_message};
@@ -988,12 +988,6 @@ OpenOrdersPage KalshiRestAdapter::parse_open_orders_response_(const HttpResponse
                 }
             }
 
-                const auto& order_id_text = order_json["order_id"].get_ref<const std::string&>();
-                ExchangeOrderId exchange_id{};
-                if (exchange_id.assign_from(order_id_text)) {
-                    snapshot.order.exchange_order_id = exchange_id;
-                }
-
                 snapshot.ticker = order_json.value("ticker", std::string{});
                 snapshot.status = order_json.value("status", std::string{});
                 snapshot.side = order_json.value("side", std::string{});
@@ -1005,6 +999,13 @@ OpenOrdersPage KalshiRestAdapter::parse_open_orders_response_(const HttpResponse
                     order_json.value("initial_count_fp", std::string{"0.00"});
                 snapshot.yes_price_dollars = order_json.value("yes_price_dollars", std::string{});
                 snapshot.no_price_dollars = order_json.value("no_price_dollars", std::string{});
+
+                if(snapshot.status == "executed"){
+                    continue;
+                }
+                if (snapshot.remaining_count_fp == "0.00") {
+                    continue;
+                }
 
                 page.orders.push_back(std::move(snapshot));
             }

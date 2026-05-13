@@ -14,9 +14,9 @@ IOWriter::IOWriter(
       recycle_queues_(std::move(recycle_queues)) {}
 
 bool IOWriter::on_wire_message(std::span<const std::byte> payload) noexcept {
-    ++received_count_;
+    received_count_.fetch_add(1, std::memory_order_relaxed);
     if (payload.size() > predex::core::ingest::kalshi::kMaxFrameBytes) {
-        ++oversized_count_;
+        oversized_count_.fetch_add(1, std::memory_order_relaxed);
         return false; // drop frame if payload is too large to fit in a frame, could extend this to
                       // have a separate queue for oversized frames if we want to keep them for
                       // analysis
@@ -27,7 +27,7 @@ bool IOWriter::on_wire_message(std::span<const std::byte> payload) noexcept {
         // try and drain recycle pool to free up handles
         drain_recycled(max_batch_size_);
         if (!frame_pool_.try_acquire(handle)) {
-            ++dropped_count_;
+            dropped_count_.fetch_add(1, std::memory_order_relaxed);
             return false; // drop frame if we can't acquire a handle even after draining recycled
                           // frames,
         }
@@ -41,10 +41,10 @@ bool IOWriter::on_wire_message(std::span<const std::byte> payload) noexcept {
         // enqueue handle for router to process
         if (!router_queue_.try_push(handle)) {
             // if router queue is full, we return false, catastrophic backpressure must fail.
-            ++dropped_count_;
+            dropped_count_.fetch_add(1, std::memory_order_relaxed);
             // TODO would be to add retry/yield but for now we want to fail fast
             if (!frame_pool_.recycle(handle)) {
-                ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to
+                recycle_failed_count_.fetch_add(1, std::memory_order_relaxed); // failed to recycle frame back into pool, could be due to
                                          // invalid handle or double recycle, log this for analysis
             }
             return false;
@@ -52,10 +52,10 @@ bool IOWriter::on_wire_message(std::span<const std::byte> payload) noexcept {
         return true;
     }
     if (!frame_pool_.recycle(handle)) {
-        ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to invalid
-                                 // handle or double recycle, log this for analysis
+        recycle_failed_count_.fetch_add(1, std::memory_order_relaxed); // failed to recycle frame back into pool, could be due to invalid
+                                                                        // handle or double recycle, log this for analysis
     }
-    dropped_count_++;
+    dropped_count_.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
 
@@ -83,7 +83,7 @@ std::size_t IOWriter::drain_recycled(std::size_t max_batch_size) noexcept {
         if (frame_pool_.recycle(handle)) {
             ++recycled_count;
         } else {
-            ++recycle_failed_count_; // failed to recycle frame back into pool, could be due to
+            recycle_failed_count_.fetch_add(1, std::memory_order_relaxed); // failed to recycle frame back into pool, could be due to
                                      // invalid handle or double recycle, log this for analysis
         }
     }

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .audit import build_signal_bundles, load_audit_events
 from .config import load_config_index
+from .desync import inspect_desync
 from .ingest import ingest_run
 from .latency import DEFAULT_KINDS, export_latency_histograms
 from .soak import analyze_soak
@@ -54,6 +55,38 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_signal.add_argument("--tape", required=True, help="Binary tape emitted by trader_app.")
     inspect_signal.add_argument("--signal-id", required=True, type=int, help="Signal id to inspect.")
     inspect_signal.add_argument("--shard-id", required=True, type=int, help="Shard id for the signal.")
+
+    inspect_desync_parser = subparsers.add_parser(
+        "inspect-desync",
+        help="Replay one desync incident from raw tape and compare it with the audit trigger.",
+    )
+    inspect_desync_parser.add_argument("--config", required=True, help="Generated Predex config JSON.")
+    inspect_desync_parser.add_argument("--audit", required=True, help="Audit JSONL emitted by trader_app.")
+    inspect_desync_parser.add_argument("--tape", required=True, help="Binary tape emitted by trader_app.")
+    inspect_desync_parser.add_argument(
+        "--event-id",
+        type=int,
+        default=None,
+        help="Optional event id filter. Defaults to the earliest matching desync in the audit log.",
+    )
+    inspect_desync_parser.add_argument(
+        "--market-id",
+        type=int,
+        default=None,
+        help="Optional market id filter. Useful when one event has multiple affected markets.",
+    )
+    inspect_desync_parser.add_argument(
+        "--reason-code",
+        type=int,
+        default=6,
+        help="Shard desync reason code to target. Default: 6 (NegativeQuantity).",
+    )
+    inspect_desync_parser.add_argument(
+        "--context",
+        type=int,
+        default=8,
+        help="How many recent market events/raw payloads to include around the incident. Default: 8.",
+    )
 
     ingest = subparsers.add_parser(
         "ingest-run",
@@ -433,6 +466,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "inspect-signal":
         payload = _inspect_signal(args.config, args.audit, args.tape, args.shard_id, args.signal_id)
+    elif args.command == "inspect-desync":
+        payload = inspect_desync(
+            config_path=args.config,
+            audit_path=args.audit,
+            tape_path=args.tape,
+            event_id=args.event_id,
+            market_id=args.market_id,
+            reason_code=args.reason_code,
+            context=args.context,
+        )
     elif args.command == "latency-histograms":
         payload = export_latency_histograms(
             audit_path=args.audit,

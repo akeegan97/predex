@@ -25,6 +25,8 @@ struct MonotonicArbConfig {
     constexpr static std::int64_t kMaxHarderAggressionTicks = 30;
     constexpr static std::uint16_t kMinNearTopLevels = 2;
     constexpr static std::int64_t kTopDepthWindowTicks = 20;
+    constexpr static std::uint32_t kMinFrontierQtyBps = 15000;
+    constexpr static std::int64_t kMinEdgeCushionTicks = 10;
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
     bool bounded_harder_aggression_enabled{true};
@@ -40,6 +42,9 @@ struct MonotonicArbConfig {
     std::size_t max_harder_book_levels{3};
     bool require_full_easier_depth_for_qty{true};
     bool require_full_harder_depth_for_qty{true};
+    std::uint32_t min_frontier_qty_bps{kMinFrontierQtyBps};
+    internal::QtyLots min_frontier_extra_qty_lots{internal::kOneContractQtyLots};
+    std::int64_t min_edge_cushion_ticks{kMinEdgeCushionTicks};
     bool enabled{true};
 };
 
@@ -186,6 +191,24 @@ class MonotonicArbStrategy {
             taker_fee_ticks_(easier_buy_ticks, executable_qty) +
             taker_fee_ticks_(harder_sell_ticks, executable_qty);
         return gross_edge_ticks - total_fees_ticks;
+    }
+
+    [[nodiscard]] internal::QtyLots
+    min_required_frontier_qty_(internal::QtyLots executable_qty) const noexcept {
+        if (executable_qty <= 0) {
+            return 0;
+        }
+
+        const auto scaled_frontier_qty = static_cast<internal::QtyLots>(
+            (executable_qty * static_cast<internal::QtyLots>(config_.min_frontier_qty_bps) + 9999) /
+            10000);
+        const auto extra_frontier_qty =
+            executable_qty + std::max<internal::QtyLots>(0, config_.min_frontier_extra_qty_lots);
+        return std::max(executable_qty, std::max(scaled_frontier_qty, extra_frontier_qty));
+    }
+
+    [[nodiscard]] std::int64_t min_required_net_edge_ticks_() const noexcept {
+        return config_.min_net_edge_ticks + std::max<std::int64_t>(0, config_.min_edge_cushion_ticks);
     }
 
     template <std::size_t Depth>
@@ -406,24 +429,43 @@ class MonotonicArbStrategy {
 
         std::optional<std::pair<LegSelection, LegSelection>> best_selection;
         internal::PriceTicks best_net_edge_ticks = std::numeric_limits<internal::PriceTicks>::min();
+        internal::QtyLots best_frontier_qty_lots = 0;
         std::uint32_t best_depth_score = 0;
+        const internal::QtyLots min_frontier_qty_lots = min_required_frontier_qty_(executable_qty);
+        const auto min_required_edge_ticks = min_required_net_edge_ticks_();
 
         for (const auto& easier_selection : easier_candidates) {
             for (const auto& harder_selection : harder_candidates) {
+                const internal::QtyLots frontier_qty_lots =
+                    std::min(easier_selection.cumulative_qty_lots,
+                             harder_selection.cumulative_qty_lots);
+                if (frontier_qty_lots < min_frontier_qty_lots) {
+                    continue;
+                }
                 const internal::PriceTicks candidate_net_edge_ticks =
                     net_edge_ticks_for_pair_(easier_selection.chosen_limit_ticks,
                                              harder_selection.chosen_limit_ticks, executable_qty);
-                if (candidate_net_edge_ticks < config_.min_net_edge_ticks) {
+                if (candidate_net_edge_ticks < min_required_edge_ticks) {
                     continue;
                 }
 
                 const std::uint32_t depth_score =
                     static_cast<std::uint32_t>(easier_selection.scanned_levels) +
                     static_cast<std::uint32_t>(harder_selection.scanned_levels);
-                if (!best_selection.has_value() || depth_score > best_depth_score ||
-                    (depth_score == best_depth_score &&
+                if (!best_selection.has_value() || frontier_qty_lots > best_frontier_qty_lots ||
+                    (frontier_qty_lots == best_frontier_qty_lots &&
                      candidate_net_edge_ticks > best_net_edge_ticks)) {
                     best_selection = std::make_pair(easier_selection, harder_selection);
+                    best_frontier_qty_lots = frontier_qty_lots;
+                    best_depth_score = depth_score;
+                    best_net_edge_ticks = candidate_net_edge_ticks;
+                    continue;
+                }
+                if (frontier_qty_lots == best_frontier_qty_lots &&
+                    candidate_net_edge_ticks == best_net_edge_ticks &&
+                    depth_score > best_depth_score) {
+                    best_selection = std::make_pair(easier_selection, harder_selection);
+                    best_frontier_qty_lots = frontier_qty_lots;
                     best_depth_score = depth_score;
                     best_net_edge_ticks = candidate_net_edge_ticks;
                 }
@@ -472,9 +514,11 @@ class MonotonicArbStrategy {
         const internal::PriceTicks net_edge_ticks =
             net_edge_ticks_for_pair_(easier_selection.chosen_limit_ticks,
                                      harder_selection.chosen_limit_ticks, executable_qty);
-        if (net_edge_ticks < config_.min_net_edge_ticks) {
+        if (net_edge_ticks < min_required_net_edge_ticks_()) {
             return std::nullopt;
         }
+        const internal::QtyLots selected_frontier_qty_lots =
+            std::min(easier_selection.cumulative_qty_lots, harder_selection.cumulative_qty_lots);
 
         GroupSignal signal{};
         signal.signal_id = next_signal_id_++;
@@ -490,8 +534,7 @@ class MonotonicArbStrategy {
         signal.aux_reference_depth_levels = harder_near_top_levels;
         signal.reference_depth_qty_lots = easier_near_top_qty_lots;
         signal.aux_reference_depth_qty_lots = harder_near_top_qty_lots;
-        signal.paired_frontier_qty_lots =
-            std::min(easier_near_top_qty_lots, harder_near_top_qty_lots);
+        signal.paired_frontier_qty_lots = selected_frontier_qty_lots;
         signal.signal_ts_ns = update.update.meta.recv_ns;
         signal.edge_ticks = net_edge_ticks;
         signal.score = net_edge_ticks;

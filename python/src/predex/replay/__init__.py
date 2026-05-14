@@ -1,6 +1,7 @@
 from .audit import AuditEvent, SignalBundle, build_signal_bundles, load_audit_events
 from .books import ReplayBookStore
 from .config import ConfigIndex, EventRoute, MarketRoute, load_config_index
+from .desync import inspect_desync
 from .ingest import IngestedRun, load_ingested_run
 from .soft_monotonic import (
     ChainMarketSnapshot,
@@ -69,5 +70,6 @@ __all__ = [
     "load_ingested_run",
     "load_audit_events",
     "load_config_index",
+    "inspect_desync",
     "verify_signal_bundle",
 ]

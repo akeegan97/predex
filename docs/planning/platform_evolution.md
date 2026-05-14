@@ -67,6 +67,8 @@ Goal: state is durable across crashes, restarts, and venue disconnects.
 - in replayed − venue → market said order is gone; REST fill-history fetch to recover missed fills (blocks on private-WS being wired, see `open_backlog.md`)
 - in venue − replayed → loud abort; operator must reconcile out-of-band
 
+A subtle Phase-4-driven requirement on Phase 1c: if a one-sided arb fill happened pre-crash but the residual handler hadn't acted yet, restoring OrderStore alone isn't sufficient — the residual handler needs to be *told* "you have a stranded position, react." Phase 1c should emit "stranded position discovered" lifecycle events on completion of reconcile so Phase 4b's residual handler picks up unmanaged positions automatically. Designing this in now is cheap; retrofitting later is annoying.
+
 **Phase 1d — Four lifecycle modes.** Make `App::Runtime::stop()` and signal handling explicit about which mode is firing:
 
 | Mode | Trigger | Behavior |
@@ -122,18 +124,29 @@ The state machine adds a `kRefreshing` state with internal sub-steps. The refres
 
 ---
 
-### Phase 4 — Long-Range Strategy Landing
+### Phase 4 — Resting-Order Strategy Landing
 
-Goal: prove the platform with a strategy that actually rests orders across sessions.
+Goal: prove the platform with a strategy that actually rests orders across sessions. Pure continuous MM is explicitly out of scope — Kalshi's 10 req/sec REST rate limit makes pure MM uncompetitive on quote freshness. Target strategies are slow-cycle resting orders: soft-monotonic, mean-reversion fading, event-driven CDF arb.
 
-Implement MM, soft-monotonic, or another long-range strategy. This phase is what *forces* Phase 1–3 to be correct, because resting-order semantics can't be validated without resting orders. Likely sub-pieces:
+Likely sub-pieces:
 
 - Per-strategy capital allocation (today `GlobalRisk` is a single capital pool)
-- Per-strategy adoption policy (MM wants `adopt` mode; arb stays `refuse_if_present`)
+- Per-strategy adoption policy on startup (resting strategies want `adopt` mode; IOC arb stays `refuse_if_present`)
 - Strategy identity encoded into `client_order_id` so adopted orders carry provenance (resolves the deferred gap in `oms_design.md::Startup Reconciliation`)
 - Strategy-aware reconcile semantics during Phase 1c three-way compare
+- Partial-fill semantics in `apply_venue_event` — current code treats every fill as terminal; GTC resting orders require leaving `kPartiallyFilled` orders working until they fully resolve
 
 This phase is where the deferred startup policy modes (`cancel_all`, `adopt`) finally get wired beyond their current "fail-loud deferred" scaffolding.
+
+**Phase 4b — Residual-fill handler.** A separate but Phase 4-adjacent capability: live-trading data shows one-sided fills (cancel/fill or fill/cancel outcomes from non-atomic batched submits) account for ~10% of signals but ~50% of PnL drawdown, with a microstructural adverse-selection mechanism — the move that breaks the arb leaves you positioned against it. Kalshi has no group-atomic execution, so statistical mitigation (the frontier-qty and edge-cushion knobs in `MonotonicArbStrategy`) plus *behavioral* mitigation (a residual handler) are the two viable defenses.
+
+Architecture (Shape C): per-shard residual handler running on the shard thread (only the shard has book state for price-aware exit timing), emitting `ShardOmsRequest` variants on a dedicated `shard_to_oms_residual_queue[i]` that OMS drains *before* the normal intent queue every pump. Priority separation solves the "exits compete with entries for queue space" concern at the cost of one additional SPSC per shard. Residual policy is per-strategy (arb wants fast exit, soft-arb may want bounded wait).
+
+Load-bearing dependencies:
+- `OmsToShardLifecycleEvent` must carry group-level resolution (which legs filled/canceled, with qty and price) so the handler can decide per-group, not just per-order
+- Phase 1 (persistence) must surface stranded positions on startup reconcile — after a crash with an unmanaged one-sided fill, the residual handler needs to be told "react to this stranded position" via a lifecycle event, not silently restored to OrderStore and forgotten
+
+Even an imperfect handler caps tail risk: status-quo stranded legs have unbounded loss in principle; handler-managed stranded legs are bounded to "current spread + a few ticks slippage." Projected impact: 50% → 20-30% drawdown contribution from one-sided fills.
 
 ---
 

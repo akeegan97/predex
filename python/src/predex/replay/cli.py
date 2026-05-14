@@ -87,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=8,
         help="How many recent market events/raw payloads to include around the incident. Default: 8.",
     )
+    inspect_desync_parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Emit only the compact diagnosis fields and omit large event history arrays.",
+    )
 
     ingest = subparsers.add_parser(
         "ingest-run",
@@ -475,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             market_id=args.market_id,
             reason_code=args.reason_code,
             context=args.context,
+            summary_only=args.summary_only,
         )
     elif args.command == "latency-histograms":
         payload = export_latency_histograms(

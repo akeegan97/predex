@@ -25,8 +25,8 @@ struct MonotonicArbConfig {
     constexpr static std::int64_t kMaxHarderAggressionTicks = 30;
     constexpr static std::uint16_t kMinNearTopLevels = 2;
     constexpr static std::int64_t kTopDepthWindowTicks = 20;
-    constexpr static std::uint32_t kMinFrontierQtyBps = 15000;
-    constexpr static std::int64_t kMinEdgeCushionTicks = 10;
+    constexpr static std::uint32_t kMinFrontierQtyBps = 12500;
+    constexpr static std::int64_t kMinEdgeCushionTicks = 5;
     std::int64_t min_net_edge_ticks{kMinEdgeTicks};
     internal::QtyLots default_order_qty_lots{internal::kOneContractQtyLots};
     bool bounded_harder_aggression_enabled{true};
@@ -43,7 +43,7 @@ struct MonotonicArbConfig {
     bool require_full_easier_depth_for_qty{true};
     bool require_full_harder_depth_for_qty{true};
     std::uint32_t min_frontier_qty_bps{kMinFrontierQtyBps};
-    internal::QtyLots min_frontier_extra_qty_lots{internal::kOneContractQtyLots};
+    internal::QtyLots min_frontier_extra_qty_lots{internal::kOneContractQtyLots / 2};
     std::int64_t min_edge_cushion_ticks{kMinEdgeCushionTicks};
     bool enabled{true};
 };

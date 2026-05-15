@@ -38,11 +38,20 @@ class AuditEvent:
     exchange: int
     event_id: int
     market_id: int
+    aux_market_id: int
     side: int
+    aux_side: int
     leg_index: int
     leg_count: int
+    reference_depth_levels: int
+    aux_reference_depth_levels: int
     qty_lots: int
     aux_qty_lots: int
+    reference_depth_qty_lots: int
+    aux_reference_depth_qty_lots: int
+    paired_frontier_qty_lots: int
+    reference_price_ticks: int
+    aux_reference_price_ticks: int
     price_ticks: int
     aux_price_ticks: int
     edge_ticks: int
@@ -89,11 +98,20 @@ class AuditEvent:
             exchange=int(payload.get("exchange", 0)),
             event_id=int(payload.get("event_id", 0)),
             market_id=int(payload.get("market_id", 0)),
+            aux_market_id=int(payload.get("aux_market_id", 0)),
             side=int(payload.get("side", 0)),
+            aux_side=int(payload.get("aux_side", 0)),
             leg_index=int(payload.get("leg_index", 0)),
             leg_count=int(payload.get("leg_count", 0)),
+            reference_depth_levels=int(payload.get("reference_depth_levels", 0)),
+            aux_reference_depth_levels=int(payload.get("aux_reference_depth_levels", 0)),
             qty_lots=int(payload.get("qty_lots", 0)),
             aux_qty_lots=int(payload.get("aux_qty_lots", 0)),
+            reference_depth_qty_lots=int(payload.get("reference_depth_qty_lots", 0)),
+            aux_reference_depth_qty_lots=int(payload.get("aux_reference_depth_qty_lots", 0)),
+            paired_frontier_qty_lots=int(payload.get("paired_frontier_qty_lots", 0)),
+            reference_price_ticks=int(payload.get("reference_price_ticks", 0)),
+            aux_reference_price_ticks=int(payload.get("aux_reference_price_ticks", 0)),
             price_ticks=int(payload.get("price_ticks", 0)),
             aux_price_ticks=int(payload.get("aux_price_ticks", 0)),
             edge_ticks=int(payload.get("edge_ticks", 0)),

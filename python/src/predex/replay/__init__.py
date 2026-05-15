@@ -3,6 +3,7 @@ from .books import ReplayBookStore
 from .config import ConfigIndex, EventRoute, MarketRoute, load_config_index
 from .desync import inspect_desync
 from .ingest import IngestedRun, load_ingested_run
+from .rubric_search import search_rubric_grid
 from .soft_monotonic import (
     ChainMarketSnapshot,
     MonotonicChainSnapshot,
@@ -71,5 +72,6 @@ __all__ = [
     "load_audit_events",
     "load_config_index",
     "inspect_desync",
+    "search_rubric_grid",
     "verify_signal_bundle",
 ]

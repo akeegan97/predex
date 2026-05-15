@@ -10,6 +10,12 @@ from .config import load_config_index
 from .desync import inspect_desync
 from .ingest import ingest_run
 from .latency import DEFAULT_KINDS, export_latency_histograms
+from .rubric_search import (
+    DEFAULT_EDGE_CUSHIONS,
+    DEFAULT_FRONTIER_BPS,
+    DEFAULT_FRONTIER_EXTRA_LOTS,
+    search_rubric_grid,
+)
 from .soak import analyze_soak
 from .timeline import (
     build_event_timeline,
@@ -273,6 +279,79 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Max number of signal verification mismatches to include. Default: 10.",
     )
+
+    rubric_search = subparsers.add_parser(
+        "soak-grid-search",
+        help="Sweep monotonic arb rubric thresholds across one or more soak audit logs.",
+    )
+    rubric_search.add_argument(
+        "--audit",
+        action="append",
+        default=None,
+        help="Audit JSONL to include. Repeat to score multiple soaks together.",
+    )
+    rubric_search.add_argument(
+        "--audit-root",
+        action="append",
+        default=None,
+        help="Root to scan recursively for predex_audit*.jsonl. Repeatable.",
+    )
+    rubric_search.add_argument(
+        "--output-json",
+        default="logs/replay/soak_grid_search.json",
+        help="Optional JSON summary output path. Default: logs/replay/soak_grid_search.json",
+    )
+    rubric_search.add_argument(
+        "--edge-cushions",
+        default=",".join(str(value) for value in DEFAULT_EDGE_CUSHIONS),
+        help="Comma-separated edge cushion ticks to test.",
+    )
+    rubric_search.add_argument(
+        "--frontier-bps",
+        default=",".join(str(value) for value in DEFAULT_FRONTIER_BPS),
+        help="Comma-separated frontier bps thresholds to test.",
+    )
+    rubric_search.add_argument(
+        "--frontier-extra-lots",
+        default=",".join(str(value) for value in DEFAULT_FRONTIER_EXTRA_LOTS),
+        help="Comma-separated extra frontier lots to test.",
+    )
+    rubric_search.add_argument(
+        "--base-min-net-edge-ticks",
+        type=int,
+        default=20,
+        help="Base edge floor before cushion. Default: 20",
+    )
+    rubric_search.add_argument(
+        "--one-leg-fill-penalty",
+        type=float,
+        default=2.0,
+        help="Score penalty per one-leg-fill signal kept. Default: 2.0",
+    )
+    rubric_search.add_argument(
+        "--mixed-fill-cancel-penalty",
+        type=float,
+        default=3.0,
+        help="Score penalty per mixed fill/cancel signal kept. Default: 3.0",
+    )
+    rubric_search.add_argument(
+        "--venue-reject-penalty",
+        type=float,
+        default=1.0,
+        help="Score penalty per venue-rejected signal kept. Default: 1.0",
+    )
+    rubric_search.add_argument(
+        "--transported-bonus",
+        type=float,
+        default=0.1,
+        help="Small score bonus per transported signal kept. Default: 0.1",
+    )
+    rubric_search.add_argument(
+        "--top-k",
+        type=int,
+        default=10,
+        help="Number of top candidates to include. Default: 10",
+    )
     return parser
 
 
@@ -517,6 +596,29 @@ def main(argv: list[str] | None = None) -> int:
             tape_path=args.tape,
             output_json=args.output_json,
             mismatch_limit=args.mismatch_limit,
+        )
+    elif args.command == "soak-grid-search":
+        payload = search_rubric_grid(
+            audit_paths=args.audit,
+            audit_roots=args.audit_root,
+            output_json=args.output_json,
+            edge_cushions=tuple(
+                int(value.strip()) for value in args.edge_cushions.split(",") if value.strip()
+            ),
+            frontier_bps_values=tuple(
+                int(value.strip()) for value in args.frontier_bps.split(",") if value.strip()
+            ),
+            frontier_extra_lots_values=tuple(
+                int(value.strip())
+                for value in args.frontier_extra_lots.split(",")
+                if value.strip()
+            ),
+            base_min_net_edge_ticks=args.base_min_net_edge_ticks,
+            one_leg_fill_penalty=args.one_leg_fill_penalty,
+            mixed_fill_cancel_penalty=args.mixed_fill_cancel_penalty,
+            venue_reject_penalty=args.venue_reject_penalty,
+            transported_bonus=args.transported_bonus,
+            top_k=args.top_k,
         )
     else:
         payload = _export_event_timeline(

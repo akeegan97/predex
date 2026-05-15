@@ -52,7 +52,7 @@ class OrderSequencer {
             .state = DispatchItemState::kPending,
             .ingress_ts_ns = envelope.ingress_ts_ns,
             .sequenced_ts_ns = 0,
-            .command = std::move(envelope.command),
+            .command = envelope.command,
         };
 
         const auto lineage_id = item.lineage_id;
@@ -60,7 +60,7 @@ class OrderSequencer {
         if (lineage_blocked_.contains(lineage_id)) {
             pending_by_lineage_[lineage_id].push_back(PendingSequencedItem{
                 .dispatch_class = dispatch_class,
-                .item = std::move(item),
+                .item = item,
             });
 
             ++telemetry_.blocked_items;
@@ -70,7 +70,7 @@ class OrderSequencer {
         if (!emit_ready_item(dispatch_class, item)) {
             pending_by_lineage_[lineage_id].push_front(PendingSequencedItem{
                 .dispatch_class = dispatch_class,
-                .item = std::move(item),
+                .item = item,
             });
 
             ++telemetry_.output_backpressure;
@@ -96,7 +96,7 @@ class OrderSequencer {
             return;
         }
 
-        PendingSequencedItem pending = std::move(pending_it->second.front());
+        PendingSequencedItem pending = pending_it->second.front();
         pending_it->second.pop_front();
         if (pending_it->second.empty()) {
             pending_by_lineage_.erase(pending_it);
@@ -108,7 +108,7 @@ class OrderSequencer {
             return;
         }
 
-        pending_by_lineage_[lineage_id].push_front(std::move(pending));
+        pending_by_lineage_[lineage_id].push_front(pending);
         ++telemetry_.output_backpressure;
     }
 
@@ -150,7 +150,7 @@ class OrderSequencer {
             return false;
         }
         item.sequenced_ts_ns = gateway_now_ns();
-        return queue->try_push(std::move(item));
+        return queue->try_push(item);
     }
 
     [[nodiscard]] utils::SPSCQueue<DispatchItem>*

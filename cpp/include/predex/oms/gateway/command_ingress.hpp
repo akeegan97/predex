@@ -1,7 +1,6 @@
 #pragma once
 #include <cstdint>
 #include <type_traits>
-#include <utility>
 
 
 #include "predex/oms/gateway/gateway_types.hpp"
@@ -61,10 +60,10 @@ class CommandIngress {
             .operation = operation_for_command(command),
             .dispatch_class = config_.default_dispatch_class,
             .ingress_ts_ns = ingress_timestamp_for(command),
-            .command = std::move(command),
+            .command = command,
         };
 
-        return emit_envelope(std::move(envelope));
+        return emit_envelope(envelope);
     }
 
     [[nodiscard]] const CommandIngressTelemetry& telemetry() const noexcept { return telemetry_; }
@@ -102,7 +101,7 @@ class CommandIngress {
             ++telemetry_.rejected_no_queue;
             return false;
         }
-        if (!target_queue->try_push(std::move(envelope))) {
+        if (!target_queue->try_push(envelope)) {
             ++telemetry_.backpressured_emits;
             return false;
         }

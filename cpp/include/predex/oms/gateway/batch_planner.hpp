@@ -64,10 +64,10 @@ class BatchPlanner {
         }
 
         if (item.batch_group.has_value() && item.operation == DispatchOperation::kSubmit) {
-            return buffer_group_item(std::move(item));
+            return buffer_group_item((item));
         }
 
-        return emit_or_buffer(make_singleton_request(std::move(item)));
+        return emit_or_buffer(make_singleton_request((item)));
     }
 
     [[nodiscard]] const BatchPlannerTelemetry& telemetry() const noexcept { return telemetry_; }
@@ -150,13 +150,13 @@ class BatchPlanner {
     [[nodiscard]] bool buffer_group_item(DispatchItem item) {
         if (!item.batch_group.has_value()) {
             ++telemetry_.invalid_group_items;
-            return emit_or_buffer(make_singleton_request(std::move(item)));
+            return emit_or_buffer(make_singleton_request((item)));
         }
         const auto& batch_group = *item.batch_group;
         if (!batch_group.valid() ||
             batch_group.group_key.expected_leg_count > config_.max_group_legs) {
             ++telemetry_.invalid_group_items;
-            return emit_or_buffer(make_singleton_request(std::move(item)));
+            return emit_or_buffer(make_singleton_request((item)));
         }
 
         const GroupIntentId group_id = batch_group.group_key.group_intent_id;
@@ -173,7 +173,7 @@ class BatchPlanner {
                    pending.dispatch_class != item.dispatch_class ||
                    batch_group.leg_index >= pending.legs.size()) {
             ++telemetry_.invalid_group_items;
-            return emit_or_buffer(make_singleton_request(std::move(item)));
+            return emit_or_buffer(make_singleton_request((item)));
         }
 
         pending.earliest_ingress_ts_ns =
@@ -184,7 +184,7 @@ class BatchPlanner {
         if (!pending.legs[batch_group.leg_index].has_value()) {
             ++pending.filled_legs;
         }
-        pending.legs[batch_group.leg_index] = std::move(item);
+        pending.legs[batch_group.leg_index] = (item);
         ++telemetry_.buffered_group_items;
 
         if (pending.filled_legs != pending.legs.size()) {
@@ -218,7 +218,7 @@ class BatchPlanner {
                 pending_groups_.erase(group_id);
                 return false;
             }
-            request.items.push_back(std::move(*leg));
+            request.items.push_back(( *leg));
         }
         pending_groups_.erase(group_id);
         return emit_or_buffer(std::move(request));
@@ -244,7 +244,7 @@ class BatchPlanner {
                                  })
                                : std::nullopt,
         };
-        request.items.push_back(std::move(item));
+        request.items.push_back((item));
         return request;
     }
 

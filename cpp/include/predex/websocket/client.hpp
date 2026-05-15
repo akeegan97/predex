@@ -24,7 +24,7 @@ enum class RecvStatus : std::uint8_t {
 
 struct RecvResult {
     RecvStatus status{RecvStatus::kError};
-    std::span<const std::byte> payload{}; // converting from std::string to span to avoid unnecessary std::string allocation on every message
+    std::span<const std::byte> payload; // converting from std::string to span to avoid unnecessary std::string allocation on every message
     // Payload is valid until the next recv_text call, which is acceptable in current design as io_writer->on_wire_message immediately memcpy's to framepool. 
 };
 

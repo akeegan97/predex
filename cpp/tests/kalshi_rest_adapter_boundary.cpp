@@ -34,6 +34,7 @@ int fail(std::string_view message) {
 SubmitOrderCmd make_submit_command(MarketId market_id, Side side, Outcome outcome,
                                    std::int64_t price_ticks, std::string client_order_id) {
     SubmitOrderCmd command{};
+    command.market_id = market_id;
     command.intent.context = IntentContext{
         .shard_id = 1,
         .affinity_key = 1,

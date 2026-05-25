@@ -619,6 +619,10 @@ def _trace_order_fields() -> list[tuple[str, str]]:
         ("no_price_dollars", "double"),
         ("taker_fees_dollars", "double"),
         ("taker_fill_cost_dollars", "double"),
+        ("maker_fees_dollars", "double"),
+        ("maker_fill_cost_dollars", "double"),
+        ("initial_count_fp", "double"),
+        ("outcome_side", "string"),
         ("created_time", "string"),
         ("last_update_time", "string"),
     ]
@@ -740,6 +744,10 @@ def _write_trace_tables(output_dir: Path, trace_paths: Sequence[Path], fmt: str)
                             "no_price_dollars": _decimal_to_float(response_order.get("no_price_dollars")),
                             "taker_fees_dollars": _decimal_to_float(response_order.get("taker_fees_dollars")),
                             "taker_fill_cost_dollars": _decimal_to_float(response_order.get("taker_fill_cost_dollars")),
+                            "maker_fees_dollars": _decimal_to_float(response_order.get("maker_fees_dollars")),
+                            "maker_fill_cost_dollars": _decimal_to_float(response_order.get("maker_fill_cost_dollars")),
+                            "initial_count_fp": _decimal_to_float(response_order.get("initial_count_fp")),
+                            "outcome_side": str(response_order.get("outcome_side", "")),
                             "created_time": str(response_order.get("created_time", "")),
                             "last_update_time": str(response_order.get("last_update_time", "")),
                         }

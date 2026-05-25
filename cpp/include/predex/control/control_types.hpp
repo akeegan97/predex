@@ -11,37 +11,53 @@ namespace predex::core::control{
     Operator -> ControlPlane
     ControlPlane -> Operator 
 */
-
-    enum class ControlPlaneState: std::uint8_t {
-        kInitializing,
-        kRunning,
-        kShuttingDown
+//process state
+    enum class ProcessStatus : std::uint8_t{
+        kBooting,
+        kWaitingForIo,
+        kIoConnected,
+        kReady,//ready to start trading but not live yet
+        kLive, //live trading
+        kShuttingDown,
+        kStopped,
+        kFaulted, // other transition states later if needed
     };
 
-    enum class OperatorCommandType: std::uint8_t{
-        kStart,
+    struct ProcessState{
+        ProcessStatus status{ProcessStatus::kBooting};
+    };
+
+
+//IO types 
+
+    enum class ControlIoCommandType : std::uint8_t{
         kRefresh,
-        kPause,
-        kStop
+        kReconnect,
+        kDisconnect
     };
-    struct OperatorCommand{
-        OperatorCommandType type{OperatorCommandType::kStart};
-    };
-
-    enum class ShardToControlEventType: std::uint8_t{
-        kWorking,
-        kDesync,
-        kStopped
+    struct ControlIoCommand{
+        ControlIoCommandType type;
     };
 
-    struct ShardToControlEvent{
-        ShardToControlEventType type{ShardToControlEventType::kWorking};
-        std::uint32_t shard_id{0};
+    enum class IoControlStatusType : std::uint8_t{
+        kDisconnected,
+        kConnected
+    };
+    struct IoControlStatus{
+        IoControlStatusType type;
     };
 
-    enum class OmsToControlEventType: std::uint8_t{
+    enum class IoControlStateType : std::uint8_t{
+        kDisconnected,
+        kConnected,
+        kReconnecting
     };
-
+    struct IoControlState{
+        IoControlStateType current_state{IoControlStateType::kDisconnected};
+        IoControlStateType target_state{IoControlStateType::kDisconnected};
+        ControlIoCommandType last_cmd_sent{ControlIoCommandType::kDisconnect};
+        bool transition_in_flight{false};
+    };
 
 
 

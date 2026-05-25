@@ -9,6 +9,7 @@ from .audit import build_signal_bundles, load_audit_events
 from .config import load_config_index
 from .desync import inspect_desync
 from .ingest import ingest_run
+from .pnl import pnl_attribution
 from .latency import DEFAULT_KINDS, export_latency_histograms
 from .rubric_search import (
     DEFAULT_EDGE_CUSHIONS,
@@ -352,6 +353,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Number of top candidates to include. Default: 10",
     )
+
+    pnl = subparsers.add_parser(
+        "pnl-attribution",
+        help="Compute PnL attribution and fill rate from an ingested run's trace_orders table.",
+    )
+    pnl.add_argument(
+        "--run",
+        required=True,
+        help="Path to an ingested run directory (or its manifest.json).",
+    )
     return parser
 
 
@@ -597,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
             output_json=args.output_json,
             mismatch_limit=args.mismatch_limit,
         )
+    elif args.command == "pnl-attribution":
+        payload = pnl_attribution(args.run)
     elif args.command == "soak-grid-search":
         payload = search_rubric_grid(
             audit_paths=args.audit,

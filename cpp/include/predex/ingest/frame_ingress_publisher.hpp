@@ -8,12 +8,17 @@
 
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/utils/spsc_queue.hpp"
-#include "predex/control/control_types.hpp"
+
 
 namespace predex::core::ingest::kalshi {
 constexpr std::size_t kMaxBatchSize =
     64; // max number of frames to process in one batch, can be tuned for performance
-
+struct IngestionTelemetry{
+    std::size_t received_count{0};
+    std::size_t dropped_count{0};
+    std::size_t oversized_count{0};
+    std::uint64_t recycle_failed_count{0};
+};
 
 class FrameIngressPublisher {
   public:
@@ -29,6 +34,15 @@ class FrameIngressPublisher {
 
     [[nodiscard]] bool on_wire_message(std::span<const std::byte> payload) noexcept;
 
+    [[nodiscard]] IngestionTelemetry get_telemetry() const noexcept {
+        return IngestionTelemetry{
+            .received_count = received_count_.load(std::memory_order_relaxed),
+            .dropped_count = dropped_count_.load(std::memory_order_relaxed),
+            .oversized_count = oversized_count_.load(std::memory_order_relaxed),
+            .recycle_failed_count = recycle_failed_count_.load(std::memory_order_relaxed),
+        };
+    }
+
   private:
     predex::core::ingest::kalshi::FramePool& frame_pool_;
     predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>&
@@ -36,10 +50,13 @@ class FrameIngressPublisher {
     std::vector<predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>*>
         recycle_queues_;                // per-producer SPSC fan-in, FrameIngressPublisher consumer
     std::size_t next_recycle_queue_{0}; // round-robin cursor across recycle_queues_
+
     std::atomic<std::size_t> received_count_{0};
     std::atomic<std::size_t> dropped_count_{0};
     std::atomic<std::size_t> oversized_count_{0};
     std::atomic<std::uint64_t> recycle_failed_count_{0};
+
+
     std::size_t max_batch_size_{kMaxBatchSize};
 
     std::size_t

@@ -8,7 +8,7 @@
 #include "predex/websocket/kalshi/auth_signer.hpp"
 #include "predex/websocket/kalshi/ws_adapter.hpp"
 #include "predex/websocket/session.hpp"
-#include "predex/websocket/ws_adapter.hpp"
+
 
 #include <string>
 #include <utility>
@@ -58,7 +58,6 @@ public:
         : config_(std::move(config))
         , control_to_io_queue_(deps.command_queues.control_to_io_queue)
         , io_to_control_status_queue_(deps.command_queues.io_to_control_status_queue)
-        , transport_()
         , adapter_(
               predex::websocket::kalshi::AuthSigner{
                   predex::websocket::kalshi::Credentials{
@@ -75,6 +74,24 @@ public:
               std::move(deps.incoming_queues.recycle_queues)
           )
     {}
+
+    void run(const std::stop_token& stop_token);
+
+    [[nodiscard]] const std::string& last_error() const { return session_.last_error(); }
+          
+    [[nodiscard]] bool pop_control_command(predex::core::control::ControlIoCommand& cmd_out) noexcept {
+        return control_to_io_queue_.try_pop(cmd_out);
+    }
+
+    [[nodiscard]] bool send_control_status(const predex::core::control::IoControlStatus& status) noexcept {
+        return io_to_control_status_queue_.try_push(status);
+    }
+
+    [[nodiscard]] IngestionTelemetry get_telemetry() const noexcept {
+        return publisher_.get_telemetry();
+    }
+
+
 
 private:
     KalshiWireSessionConfig config_;

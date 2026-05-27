@@ -35,7 +35,33 @@ bool WsSession::connect() {
     return true;
 }
 
-bool WsSession::subscribe(std::string_view channel,
+bool WsSession::subscribe(std::string_view channel, const std::string& market_ticker){
+    try{
+        last_subscribe_payload_ = adapter_.build_subscribe_message(channel, {market_ticker});
+    }catch (const std::exception& exception){
+        last_error_ = exception.what();
+        return false;
+    }catch (...){
+        last_error_ = "Unknown exception while building websocket subscribe payload";
+        return false;
+    }
+    if(!transport_.send_text(last_subscribe_payload_)){
+        if(const auto transport_error = transport_.last_error(); !transport_error.empty()){
+            last_error_.assign(transport_error);
+        }else{
+            last_error_ = "Websocket transport send failed";
+        }
+        return false;
+    }
+    last_error_.clear();
+    return true;
+}
+
+bool WsSession::unsubscribe(std::string_view channel, const std::string& market_ticker){
+    
+}
+
+bool WsSession::subscribe_universe(std::string_view channel,
                           const std::vector<std::string>& market_tickers) {
     try {
         last_subscribe_payload_ = adapter_.build_subscribe_message(channel, market_tickers);

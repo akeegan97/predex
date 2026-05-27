@@ -19,7 +19,7 @@ class WsAdapter final : public adapter::IExchangeWsAdapter {
     [[nodiscard]] std::string
     build_subscribe_message(std::string_view channel,
                             const std::vector<std::string>& market_tickers) const override;
-
+    [[nodiscard]] std::string build_update_message(std::string_view channel, const std::string& market_ticker, const std::string& action) const override;
   private:
     AuthSigner signer_;
     std::string endpoint_;

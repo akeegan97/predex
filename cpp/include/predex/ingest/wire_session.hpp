@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_set>
 
 /*
 Composer of the public venue feed session for market data ingestion,
@@ -21,6 +22,16 @@ separate from REST and private WebSocket sessions used for order management.
 
 namespace predex::core::ingest::kalshi {
 
+enum class KalshiChannel : std::uint8_t{
+    kOrderbookUpdates,
+    kTrades,
+    kLifeCycleEvents,
+};
+struct ActiveSubscription{
+        KalshiChannel channel;
+        std::optional<std::int64_t> sid;
+        std::unordered_set<internal::MarketId> market_ids;
+};
 struct KalshiWireSessionConfig {
     std::string key_id;
     std::string private_key_pem;

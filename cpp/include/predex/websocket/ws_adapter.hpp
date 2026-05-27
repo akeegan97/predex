@@ -23,6 +23,8 @@ class IExchangeWsAdapter {
     [[nodiscard]] virtual std::string
     build_subscribe_message(std::string_view channel,
                             const std::vector<std::string>& market_tickers) const = 0;
-};
+
+    [[nodiscard]] virtual std::string build_update_message(std::string_view channel, const std::string& market_ticker, const std::string& action) const = 0;
+  };
 
 } // namespace predex::websocket::adapter

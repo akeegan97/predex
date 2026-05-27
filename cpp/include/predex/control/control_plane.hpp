@@ -1,5 +1,12 @@
 #pragma once 
 
+#include <unordered_map>
+#include <unordered_set>
+#include <optional>
+#include <array>
+#include <string>
+#include <cstdint>
+
 #include "predex/utils/spsc_queue.hpp"
 #include "predex/control/control_types.hpp"
 
@@ -16,6 +23,19 @@ namespace predex::core::control::kalshi{
         utils::SPSCQueue<ControlIoCommand>& control_io_queue;
         utils::SPSCQueue<IoControlStatus>& io_control_status;
     };
+
+
+    struct MarketTickerMap{
+        std::uint64_t version{0};
+
+        std::unordered_map<internal::MarketId, std::string> id_to_ticker;
+        std::unordered_map<std::string, internal::MarketId> ticker_to_id;
+    };
+
+
+
+     
+
     class ControlPlane{
         public: 
             ControlPlane(IoQueues queues): control_io_queue_(queues.control_io_queue), io_control_status_queue_(queues.io_control_status){
@@ -83,6 +103,8 @@ namespace predex::core::control::kalshi{
                             io_state_.target_state = IoControlStateType::kDisconnected;
                             break;
                         case ControlIoCommandType::kReconnect:
+                        case ControlIoCommandType::kRecoverMarket://no state difference for kRecoverMarket 
+                            break;
                         case ControlIoCommandType::kRefresh:
                             io_state_.target_state = IoControlStateType::kConnected;
                             io_state_.current_state = IoControlStateType::kReconnecting;
@@ -93,14 +115,34 @@ namespace predex::core::control::kalshi{
                 return false;
             }
 
+            [[nodiscard]] std::uint64_t update_market_ticker_map(MarketTickerMap new_map){
+                new_map.version = market_ticker_map_.version + 1;
+                market_ticker_map_ = std::move(new_map);
+                return market_ticker_map_.version;
+            }  
+
+            [[nodiscard]] UniverseSnapshot make_universe_snapshot() const{
+                UniverseSnapshot snapshot;
+                snapshot.version = market_ticker_map_.version;
+                snapshot.markets.reserve(market_ticker_map_.id_to_ticker.size());
+                for(const auto& [id, ticker]: market_ticker_map_.id_to_ticker){
+                    snapshot.markets.push_back(UniverseMarket{
+                        .id = id,
+                        .kalshi_ticker = ticker
+                    });
+                }
+                return snapshot;
+            }
+
 
         private:
             ProcessState process_state_;
-
             IoControlState io_state_;
 
             utils::SPSCQueue<ControlIoCommand>& control_io_queue_;
             utils::SPSCQueue<IoControlStatus>& io_control_status_queue_;
+
+            MarketTickerMap market_ticker_map_;
 
     };
 

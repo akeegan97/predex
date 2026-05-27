@@ -53,4 +53,8 @@ WsAdapter::build_subscribe_message(std::string_view channel,
     return payload.dump();
 }
 
+std::string WsAdapter::build_update_message(std::string_view channel, const std::string& market_ticker, const std::string& action)const{
+    nlohmann::json params{{""}}
+}
+
 } // namespace predex::websocket::kalshi

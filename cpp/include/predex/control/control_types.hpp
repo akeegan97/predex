@@ -1,64 +1,103 @@
-#pragma once 
+#pragma once
+
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
-namespace predex::core::control{
-    // types used to communicate to and from control plane. 
-/*
-    Shard -> ControlPlane
-    OMS -> ControlPlane 
-    ControlPlane -> OMS 
-    ControlPlane -> WS Client 
-    Operator -> ControlPlane
-    ControlPlane -> Operator 
-*/
-//process state
-    enum class ProcessStatus : std::uint8_t{
-        kBooting,
-        kWaitingForIo,
-        kIoConnected,
-        kReady,//ready to start trading but not live yet
-        kLive, //live trading
-        kShuttingDown,
-        kStopped,
-        kFaulted, // other transition states later if needed
-    };
+#include "predex/internal/market_types.hpp"
 
-    struct ProcessState{
-        ProcessStatus status{ProcessStatus::kBooting};
-    };
+namespace predex::core::control {
 
+enum class ProcessStatus : std::uint8_t {
+    kBooting,
+    kWaitingForIo,
+    kIoConnected,
+    kReady,
+    kLive,
+    kShuttingDown,
+    kStopped,
+    kFaulted,
+};
 
-//IO types 
+struct ProcessState {
+    ProcessStatus status{ProcessStatus::kBooting};
+};
 
-    enum class ControlIoCommandType : std::uint8_t{
-        kRefresh,
-        kReconnect,
-        kDisconnect
-    };
-    struct ControlIoCommand{
-        ControlIoCommandType type;
-    };
+struct UniverseMarket {
+    internal::MarketId id{};
+    std::string kalshi_ticker;
+};
 
-    enum class IoControlStatusType : std::uint8_t{
-        kDisconnected,
-        kConnected
-    };
-    struct IoControlStatus{
-        IoControlStatusType type;
-    };
+struct UniverseSnapshot {
+    std::uint64_t version{0};
+    std::vector<UniverseMarket> markets;
+};
 
-    enum class IoControlStateType : std::uint8_t{
-        kDisconnected,
-        kConnected,
-        kReconnecting
-    };
-    struct IoControlState{
-        IoControlStateType current_state{IoControlStateType::kDisconnected};
-        IoControlStateType target_state{IoControlStateType::kDisconnected};
-        ControlIoCommandType last_cmd_sent{ControlIoCommandType::kDisconnect};
-        bool transition_in_flight{false};
-    };
+enum class ControlIoCommandType : std::uint8_t {
+    kRefresh,
+    kReconnect,
+    kDisconnect,
+    kRecoverMarket,
+    kApplyUniverseSnapshot,
+};
 
+struct ControlIoCommand {
+    ControlIoCommandType type{ControlIoCommandType::kDisconnect};
 
+    std::optional<internal::MarketId> market_id;
+    std::optional<UniverseSnapshot> universe_snapshot;
 
-}
+    static ControlIoCommand disconnect() {
+        return {.type = ControlIoCommandType::kDisconnect};
+    }
+
+    static ControlIoCommand reconnect() {
+        return {.type = ControlIoCommandType::kReconnect};
+    }
+
+    static ControlIoCommand apply_universe_snapshot(UniverseSnapshot snapshot) {
+        ControlIoCommand cmd{};
+        cmd.type = ControlIoCommandType::kApplyUniverseSnapshot;
+        cmd.universe_snapshot = std::move(snapshot);
+        return cmd;
+    }
+
+    static ControlIoCommand recover_market(internal::MarketId id) {
+        ControlIoCommand cmd{};
+        cmd.type = ControlIoCommandType::kRecoverMarket;
+        cmd.market_id = id;
+        return cmd;
+    }
+};
+
+enum class IoControlStatusType : std::uint8_t {
+    kDisconnected,
+    kConnected,
+    kUniverseSnapshotReceived,
+    kSubscriptionStarted,
+    kSubscriptionReady,
+    kSubscriptionFailed,
+    kUniverseApplied,
+};
+
+struct IoControlStatus {
+    IoControlStatusType type{IoControlStatusType::kDisconnected};
+    std::uint64_t universe_version{0};
+};
+
+enum class IoControlStateType : std::uint8_t {
+    kDisconnected,
+    kConnected,
+    kReconnecting
+};
+
+struct IoControlState {
+    IoControlStateType current_state{IoControlStateType::kDisconnected};
+    IoControlStateType target_state{IoControlStateType::kDisconnected};
+    ControlIoCommandType last_cmd_sent{ControlIoCommandType::kDisconnect};
+    bool transition_in_flight{false};
+};
+
+} // namespace predex::core::control

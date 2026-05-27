@@ -15,8 +15,12 @@ class WsSession {
     WsSession(IWsTransport& transport, const adapter::IExchangeWsAdapter& adapter);
 
     [[nodiscard]] bool connect();
-    [[nodiscard]] bool subscribe(std::string_view channel,
+    [[nodiscard]] bool subscribe_universe(std::string_view channel,
                                  const std::vector<std::string>& market_tickers = {});
+    //methods for single market recovery use cases
+    [[nodiscard]] bool unsubscribe(std::string_view channel, const std::string& market_ticker);
+    [[nodiscard]] bool subscribe(std::string_view channel, const std::string& market_ticker);
+
     [[nodiscard]] RecvResult recv_text(std::chrono::milliseconds timeout);
     void close();
 

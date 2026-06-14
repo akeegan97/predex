@@ -233,6 +233,22 @@ std::optional<predex::AppConfig> build_app_config(const nlohmann::json& root,
         config.audit.output_path = read_string(*audit_it, "output_path", config.audit.output_path);
     }
 
+    const auto operator_admin_it = root.find("operator_admin");
+    if (operator_admin_it != root.end() && operator_admin_it->is_object()) {
+        const auto& operator_admin = *operator_admin_it;
+        config.operator_admin.enabled =
+            read_bool(operator_admin, "enabled", config.operator_admin.enabled);
+        config.operator_admin.socket_path =
+            read_string(operator_admin, "socket_path", config.operator_admin.socket_path);
+        config.operator_admin.listen_backlog = static_cast<int>(
+            read_size(operator_admin, "listen_backlog",
+                      static_cast<std::size_t>(config.operator_admin.listen_backlog)));
+        config.operator_admin.accept_timeout_ms = static_cast<std::uint32_t>(
+            read_size(operator_admin, "accept_timeout_ms", config.operator_admin.accept_timeout_ms));
+        config.operator_admin.max_request_bytes =
+            read_size(operator_admin, "max_request_bytes", config.operator_admin.max_request_bytes);
+    }
+
     const auto oms_transport_it = root.find("oms_transport");
     if (oms_transport_it != root.end() && oms_transport_it->is_object()) {
         const auto& oms_transport = *oms_transport_it;

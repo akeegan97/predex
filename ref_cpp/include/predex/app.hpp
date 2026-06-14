@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "predex/internal/event_topology.hpp"
+#include "predex/operator/operator_commands.hpp"
+#include "predex/operator/unix_socket_admin.hpp"
 
 // might make each a separate constant but for now just using a single global default capacity
 namespace predex {
@@ -69,6 +71,8 @@ struct AuditConfig {
     std::string output_path{"logs/live/predex_audit.jsonl"};
 };
 
+using OperatorAdminConfig = operator_admin::UnixSocketAdminConfig;
+
 // Policy applied at startup when the OMS finds (or refuses to look for) live
 // orders resting at the venue from a prior session. The strict default
 // (kRefuseIfPresent) matches the current discrete-session runtime: today no
@@ -108,6 +112,7 @@ struct AppConfig {
     PipelineConfig pipeline;
     TapeConfig tape;
     AuditConfig audit;
+    OperatorAdminConfig operator_admin;
     OmsTransportConfig oms_transport;
     LocalRiskConfig local_risk;
     std::vector<MarketRouteConfig> market_routes;
@@ -127,6 +132,11 @@ class App {
     [[nodiscard]] bool start();
     void run();
     void stop();
+    [[nodiscard]] bool submit_operator_command(
+        core::operator_commands::OperatorCommand command) noexcept;
+    [[nodiscard]] bool try_pop_operator_response(
+        core::operator_commands::OperatorResponse& response_out) noexcept;
+    [[nodiscard]] core::operator_commands::OperatorStatusSnapshot operator_status() const;
     [[nodiscard]] std::string last_error() const noexcept;
 
   private:

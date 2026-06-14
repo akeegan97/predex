@@ -114,6 +114,10 @@ private:
     predex::websocket::kalshi::WsAdapter adapter_;
     predex::websocket::WsSession session_;
     FrameIngressPublisher publisher_;
+
+
+    std::shared_ptr<const control::IoSubscriptionUniverse> io_subscription_universe_ptr_;
+
 };
 
 } // namespace predex::core::ingest::kalshi

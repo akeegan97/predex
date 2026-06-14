@@ -1,5 +1,6 @@
 #include "predex/app.hpp"
 #include "predex/audit/audit_logger.hpp"
+#include "predex/control/control_plane.hpp"
 #include "predex/ingest/frame_pool.hpp"
 #include "predex/ingest/io_writer.hpp"
 #include "predex/oms/gateway/async_rest_connection.hpp"
@@ -85,6 +86,105 @@ void log_public_ws_event(const char* phase, std::uint64_t generation,
     return std::string{base_path.substr(0, dot_pos)} + ".worker" + std::to_string(worker_index) +
            std::string{base_path.substr(dot_pos)};
 }
+
+[[nodiscard]] const char* operator_command_name(
+    predex::core::operator_commands::OperatorCommandType type) noexcept {
+    using CommandType = predex::core::operator_commands::OperatorCommandType;
+    switch (type) {
+    case CommandType::kStatus:
+        return "status";
+    case CommandType::kLoadUniverse:
+        return "load_universe";
+    case CommandType::kRefreshUniverse:
+        return "refresh_universe";
+    case CommandType::kSetTradingEnabled:
+        return "set_trading_enabled";
+    case CommandType::kBeginShutdown:
+        return "shutdown";
+    case CommandType::kHaltTrading:
+        return "halt_trading";
+    case CommandType::kResumeTrading:
+        return "resume_trading";
+    case CommandType::kExitAll:
+        return "exit_all";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] const char* operator_response_name(
+    predex::core::operator_commands::OperatorResponseType type) noexcept {
+    using ResponseType = predex::core::operator_commands::OperatorResponseType;
+    switch (type) {
+    case ResponseType::kAccepted:
+        return "accepted";
+    case ResponseType::kRejected:
+        return "rejected";
+    case ResponseType::kInProgress:
+        return "in_progress";
+    case ResponseType::kCompleted:
+        return "completed";
+    case ResponseType::kFaulted:
+        return "faulted";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] const char* process_status_name(
+    predex::core::control::ProcessStatus status) noexcept {
+    using ProcessStatus = predex::core::control::ProcessStatus;
+    switch (status) {
+    case ProcessStatus::kBooting:
+        return "booting";
+    case ProcessStatus::kWaitingForIo:
+        return "waiting_for_io";
+    case ProcessStatus::kIoConnected:
+        return "io_connected";
+    case ProcessStatus::kReady:
+        return "ready";
+    case ProcessStatus::kLive:
+        return "live";
+    case ProcessStatus::kShuttingDown:
+        return "shutting_down";
+    case ProcessStatus::kStopped:
+        return "stopped";
+    case ProcessStatus::kFaulted:
+        return "faulted";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string format_operator_response(
+    const predex::core::operator_commands::OperatorResponse& response) {
+    std::string formatted = "request_id=" + std::to_string(response.request_id);
+    formatted += " command=";
+    formatted += operator_command_name(response.command_type);
+    formatted += " result=";
+    formatted += operator_response_name(response.type);
+    if (!response.message.empty()) {
+        formatted += " message=\"";
+        formatted += response.message;
+        formatted += "\"";
+    }
+    if (response.status_snapshot.has_value()) {
+        const auto& snapshot = *response.status_snapshot;
+        formatted += " process_status=";
+        formatted += process_status_name(snapshot.process_state.status);
+        formatted += " app_running=";
+        formatted += snapshot.app_running ? "true" : "false";
+        formatted += " trading_halted=";
+        formatted += snapshot.trading_halted ? "true" : "false";
+        formatted += " live_orders=";
+        formatted += std::to_string(snapshot.live_orders);
+        formatted += " public_ws_generation=";
+        formatted += std::to_string(snapshot.public_ws_generation);
+        if (!snapshot.last_error.empty()) {
+            formatted += " last_error=\"";
+            formatted += snapshot.last_error;
+            formatted += "\"";
+        }
+    }
+    return formatted;
+}
 } // namespace
 
 struct App::Runtime {
@@ -110,6 +210,14 @@ struct App::Runtime {
     using KalshiEventQueue = predex::utils::SPSCQueue<predex::core::oms::kalshi::KalshiToOmsEvent>;
     using OmsGateway = predex::core::oms::kalshi::gateway::Gateway;
     using AuditLogger = predex::core::audit::AuditLogger;
+    using ControlIoQueue = predex::utils::SPSCQueue<predex::core::control::ControlIoCommand>;
+    using IoStatusQueue = predex::utils::SPSCQueue<predex::core::control::IoControlStatus>;
+    using OperatorCommandQueue =
+        predex::utils::SPSCQueue<predex::core::operator_commands::OperatorCommand>;
+    using OperatorResponseQueue =
+        predex::utils::SPSCQueue<predex::core::operator_commands::OperatorResponse>;
+    using ControlPlane = predex::core::control::kalshi::ControlPlane;
+    using UnixSocketAdminServer = predex::operator_admin::UnixSocketAdminServer;
 
     explicit Runtime(AppConfig config_in);
 
@@ -241,6 +349,10 @@ struct App::Runtime {
     std::unique_ptr<OmsCommandQueue> oms_command_queue;
     std::unique_ptr<KalshiEventQueue> oms_rest_event_queue;
     std::unique_ptr<AuditQueue> oms_audit_queue;
+    std::unique_ptr<ControlIoQueue> control_to_io_queue;
+    std::unique_ptr<IoStatusQueue> io_to_control_status_queue;
+    std::unique_ptr<OperatorCommandQueue> operator_command_queue;
+    std::unique_ptr<OperatorResponseQueue> operator_response_queue;
 
     core::routing::kalshi::MarketRegistry market_registry;
     std::vector<FrameQueue*> shard_input_queue_ptrs;
@@ -256,9 +368,13 @@ struct App::Runtime {
     std::unique_ptr<core::tape::kalshi::Logger> tape_logger;
     std::unique_ptr<AuditLogger> audit_logger;
     std::unique_ptr<Oms> oms;
+    std::unique_ptr<ControlPlane> control_plane;
+    std::unique_ptr<UnixSocketAdminServer> admin_server;
 
     std::vector<core::shards::kalshi::EventStore> event_stores;
     std::vector<std::unique_ptr<Shard>> shards;
+    std::jthread admin_thread;
+    std::jthread control_thread;
     std::jthread io_thread;
     std::jthread router_thread;
     std::vector<std::jthread>
@@ -268,11 +384,22 @@ struct App::Runtime {
     std::jthread logger_thread;
     std::jthread audit_thread;
     std::atomic<std::uint64_t> public_ws_generation_{0};
+    std::atomic<core::operator_commands::OperatorRequestId> next_operator_request_id_{1};
 
     bool start();
     void run();
     void stop();
+    [[nodiscard]] bool submit_operator_command(
+        core::operator_commands::OperatorCommand command) noexcept;
+    [[nodiscard]] bool try_pop_operator_response(
+        core::operator_commands::OperatorResponse& response_out) noexcept;
+    [[nodiscard]] core::operator_commands::OperatorStatusSnapshot
+    build_operator_status_snapshot() const;
+    [[nodiscard]] core::operator_commands::OperatorResponse
+    handle_admin_request(const operator_admin::AdminWireCommand& request);
 
+    void admin_loop(const std::stop_token& stop_token);
+    void control_loop(const std::stop_token& stop_token);
     void io_loop(const std::stop_token& stop_token);
     void oms_gateway_loop(const std::stop_token& stop_token);
     [[nodiscard]] bool reconcile_open_orders_from_rest(bool is_startup);
@@ -282,7 +409,7 @@ struct App::Runtime {
     void logger_loop(const std::stop_token& stop_token) const;
     void audit_loop(const std::stop_token& stop_token) const;
     void set_error(std::string message);
-    std::string_view last_error_view() const noexcept;
+    [[nodiscard]] std::string last_error_copy() const;
     void print_health_status() const noexcept;
 };
 App::Runtime::Runtime(AppConfig config_in)
@@ -345,6 +472,10 @@ App::Runtime::Runtime(AppConfig config_in)
     oms_rest_event_queue = std::make_unique<KalshiEventQueue>(config.pipeline.shard_input_capacity);
     oms_audit_queue = std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
     router_audit_queue = std::make_unique<AuditQueue>(config.pipeline.shard_input_capacity);
+    control_to_io_queue = std::make_unique<ControlIoQueue>(kDefaultCapacity);
+    io_to_control_status_queue = std::make_unique<IoStatusQueue>(kDefaultCapacity);
+    operator_command_queue = std::make_unique<OperatorCommandQueue>(kDefaultCapacity);
+    operator_response_queue = std::make_unique<OperatorResponseQueue>(kDefaultCapacity);
 
     std::vector<std::vector<core::shards::kalshi::EventDefinition>> event_definitions_by_shard;
     std::string event_definition_error;
@@ -497,10 +628,124 @@ App::Runtime::Runtime(AppConfig config_in)
                                                      MeanReversionStrategy{},
                                                  }));
     }
+
+    control_plane = std::make_unique<ControlPlane>(
+        predex::core::control::kalshi::IoQueues{
+            .control_io_queue = *control_to_io_queue,
+            .io_control_status = *io_to_control_status_queue,
+        },
+        predex::core::control::kalshi::OperatorQueues{
+            .operator_command_queue = *operator_command_queue,
+            .operator_response_queue = *operator_response_queue,
+        },
+        [this]() { return build_operator_status_snapshot(); });
+    admin_server = std::make_unique<UnixSocketAdminServer>(config.operator_admin);
 }
 void App::Runtime::set_error(std::string message) {
     std::lock_guard lock(error_mutex);
     last_error = std::move(message);
+}
+
+std::string App::Runtime::last_error_copy() const {
+    std::lock_guard lock(error_mutex);
+    return last_error;
+}
+
+bool App::Runtime::submit_operator_command(
+    core::operator_commands::OperatorCommand command) noexcept {
+    return operator_command_queue != nullptr && operator_command_queue->try_push(std::move(command));
+}
+
+bool App::Runtime::try_pop_operator_response(
+    core::operator_commands::OperatorResponse& response_out) noexcept {
+    return operator_response_queue != nullptr && operator_response_queue->try_pop(response_out);
+}
+
+core::operator_commands::OperatorStatusSnapshot App::Runtime::build_operator_status_snapshot() const {
+    core::operator_commands::OperatorStatusSnapshot snapshot{};
+    snapshot.process_state = control_plane != nullptr
+                                 ? control_plane->process_state()
+                                 : core::control::ProcessState{};
+    snapshot.app_running = running.load(std::memory_order_acquire);
+    snapshot.trading_halted = oms != nullptr && oms->is_halted();
+    snapshot.live_orders = oms != nullptr ? oms->live_order_count() : 0;
+    snapshot.public_ws_generation = public_ws_generation_.load(std::memory_order_acquire);
+    snapshot.last_error = last_error_copy();
+    return snapshot;
+}
+
+core::operator_commands::OperatorResponse App::Runtime::handle_admin_request(
+    const operator_admin::AdminWireCommand& request) {
+    using CommandType = core::operator_commands::OperatorCommandType;
+    const auto request_id =
+        next_operator_request_id_.fetch_add(1, std::memory_order_relaxed);
+
+    core::operator_commands::OperatorCommand command{};
+    switch (request.type) {
+    case operator_admin::AdminWireCommandType::kStatus:
+        command = core::operator_commands::OperatorCommand::status(request_id);
+        break;
+    case operator_admin::AdminWireCommandType::kShutdown:
+        command = core::operator_commands::OperatorCommand::begin_shutdown(request_id);
+        break;
+    case operator_admin::AdminWireCommandType::kUnknown:
+        return core::operator_commands::OperatorResponse::rejected(
+            CommandType::kStatus, request_id, "unknown admin command");
+    }
+
+    if (!submit_operator_command(command)) {
+        return core::operator_commands::OperatorResponse::rejected(
+            command.type, request_id, "operator command queue is full");
+    }
+
+    core::operator_commands::OperatorResponse response{};
+    constexpr std::uint32_t kMaxPollAttempts = 200;
+    for (std::uint32_t attempt = 0; attempt < kMaxPollAttempts; ++attempt) {
+        if (try_pop_operator_response(response) && response.request_id == request_id) {
+            return response;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+
+    return core::operator_commands::OperatorResponse::rejected(
+        command.type, request_id, "timed out waiting for control-plane response");
+}
+
+void App::Runtime::admin_loop(const std::stop_token& stop_token) {
+    if (admin_server == nullptr || !config.operator_admin.enabled) {
+        return;
+    }
+
+    std::string error;
+    while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
+        const bool ok = admin_server->serve_one(
+            stop_token,
+            [this](const operator_admin::AdminWireCommand& request) {
+                const auto response = handle_admin_request(request);
+                return operator_admin::AdminWireResponse{
+                    .ok = response.type != core::operator_commands::OperatorResponseType::kRejected &&
+                          response.type != core::operator_commands::OperatorResponseType::kFaulted,
+                    .body = format_operator_response(response),
+                };
+            },
+            error);
+        if (!ok) {
+            set_error("operator admin server: " + error);
+            break;
+        }
+    }
+}
+
+void App::Runtime::control_loop(const std::stop_token& stop_token) {
+    while (running.load(std::memory_order_acquire) && !stop_token.stop_requested()) {
+        const std::size_t processed_commands =
+            control_plane != nullptr ? control_plane->pump_operator_commands() : 0;
+        const std::size_t processed_io_status =
+            control_plane != nullptr ? control_plane->pump_io_status() : 0;
+        if (processed_commands == 0U && processed_io_status == 0U) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
 }
 
 bool App::Runtime::start() {
@@ -545,10 +790,29 @@ bool App::Runtime::start() {
             return false;
         }
     }
+
+    if (config.operator_admin.enabled && admin_server != nullptr) {
+        std::string admin_error;
+        if (!admin_server->start(admin_error)) {
+            ws_session.close();
+            set_error("Failed to start operator admin server: " + admin_error);
+            return false;
+        }
+    }
+
     set_error("");
     public_ws_generation_.store(0, std::memory_order_release);
     running.store(true, std::memory_order_release);
+    if (control_plane != nullptr) {
+        control_plane->set_process_state({core::control::ProcessStatus::kLive});
+    }
 
+    if (config.operator_admin.enabled && admin_server != nullptr) {
+        admin_thread =
+            std::jthread([this](const std::stop_token& stop_token) { admin_loop(stop_token); });
+    }
+    control_thread =
+        std::jthread([this](const std::stop_token& stop_token) { control_loop(stop_token); });
     io_thread = std::jthread([this](const std::stop_token& stop_token) { io_loop(stop_token); });
     router_thread =
         std::jthread([this](const std::stop_token& stop_token) { router_loop(stop_token); });
@@ -926,6 +1190,11 @@ void App::Runtime::run() {
         30'000; // every 30 seconds for diagnostics while live trading
     std::int64_t ms_since_last_dump = kHealthDumpIntervalMs; // dump immediately on start
     while (running.load(std::memory_order_acquire)) {
+        if (control_plane != nullptr &&
+            control_plane->process_state().status == core::control::ProcessStatus::kShuttingDown) {
+            stop();
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(kDefaultSleepMs));
         ms_since_last_dump += kDefaultSleepMs;
         if (ms_since_last_dump >= kHealthDumpIntervalMs) {
@@ -1041,10 +1310,27 @@ void App::Runtime::print_health_status() const noexcept {
 
 void App::Runtime::stop() {
     // Hard halt: blocks new submission and schedules cancel-all on the OMS thread.
+    if (control_plane != nullptr &&
+        control_plane->process_state().status != core::control::ProcessStatus::kStopped) {
+        control_plane->set_process_state({core::control::ProcessStatus::kShuttingDown});
+    }
     if (oms) {
         oms->request_hard_halt();
     }
     running.store(false, std::memory_order_release);
+
+    if (admin_server != nullptr) {
+        admin_server->stop();
+    }
+    if (admin_thread.joinable()) {
+        admin_thread.request_stop();
+        admin_thread.join();
+    }
+
+    if (control_thread.joinable()) {
+        control_thread.request_stop();
+        control_thread.join();
+    }
 
     // Stop inbound data flow.
     if (io_thread.joinable()) {
@@ -1106,6 +1392,10 @@ void App::Runtime::stop() {
         while (audit_logger->pump(config.pipeline.router_to_logger_capacity) > 0) {
         }
     }
+
+    if (control_plane != nullptr) {
+        control_plane->set_process_state({core::control::ProcessStatus::kStopped});
+    }
 }
 
 App::App(AppConfig config) : runtime_(std::make_unique<Runtime>(std::move(config))) {}
@@ -1116,6 +1406,19 @@ bool App::start() { return runtime_->start(); }
 void App::run() { runtime_->run(); }
 
 void App::stop() { runtime_->stop(); }
+
+bool App::submit_operator_command(core::operator_commands::OperatorCommand command) noexcept {
+    return runtime_->submit_operator_command(std::move(command));
+}
+
+bool App::try_pop_operator_response(
+    core::operator_commands::OperatorResponse& response_out) noexcept {
+    return runtime_->try_pop_operator_response(response_out);
+}
+
+core::operator_commands::OperatorStatusSnapshot App::operator_status() const {
+    return runtime_->build_operator_status_snapshot();
+}
 
 std::string App::last_error() const noexcept {
     std::scoped_lock lock(runtime_->error_mutex);

@@ -66,6 +66,7 @@ target_link_libraries(
 
 add_library(
   predex_app
+  src/operator/unix_socket_admin.cpp
   src/app.cpp
 )
 
@@ -133,5 +134,35 @@ if(BUILD_TESTING)
   add_test(
     NAME KalshiRestAdapterBoundaryTest.RejectsNonCentInternalTicks
     COMMAND kalshi_rest_adapter_boundary_test
+  )
+
+  add_executable(
+    control_plane_operator_test
+    tests/control_plane_operator_test.cpp
+  )
+
+  target_include_directories(control_plane_operator_test PRIVATE include)
+
+  add_test(
+    NAME ControlPlaneOperatorTest.StatusAndShutdown
+    COMMAND control_plane_operator_test
+  )
+
+  add_executable(
+    unix_socket_admin_test
+    src/operator/unix_socket_admin.cpp
+    tests/unix_socket_admin_test.cpp
+  )
+
+  target_include_directories(unix_socket_admin_test PRIVATE include)
+
+  target_link_libraries(
+    unix_socket_admin_test
+    PRIVATE Threads::Threads
+  )
+
+  add_test(
+    NAME UnixSocketAdminTest.AcceptsStatusAndShutdown
+    COMMAND unix_socket_admin_test
   )
 endif()

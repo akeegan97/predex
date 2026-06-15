@@ -5,7 +5,11 @@
   "clangd.arguments": [
     "--compile-commands-dir=/home/andrew/code/trading/build/dev"
   ],
-    "search.exclude": {
+  "clangd.fallbackFlags": [
+    "-std=c++20",
+    "-I/home/andrew/code/trading/cpp/include"
+  ],
+  "search.exclude": {
     "**/ref_cpp": true
   },
   "files.watcherExclude": {

@@ -12,4 +12,5 @@ find_package(nlohmann_json CONFIG REQUIRED)
 add_executable(predexctl 
   apps/predexctl/main.cpp
 )
+target_include_directories(predexctl PRIVATE include)
 target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)

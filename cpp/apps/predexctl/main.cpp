@@ -15,11 +15,17 @@ namespace predexctl{
 namespace{
 
     constexpr std::uint32_t kBUFFERSIZE = 1024;
+    constexpr std::uint32_t kCMD_ID_SHIFT = 16;
+    constexpr std::uint64_t kCMD_ID_MASK = (1ULL << kCMD_ID_SHIFT) - 1;
+
     std::string make_cmd_id(){
-        const auto now = std::chrono::steady_clock::now().time_since_epoch();
-        const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+
+        std::uint64_t packed_id = (static_cast<std::uint64_t>(now) << kCMD_ID_SHIFT) | 
+                                    (static_cast<std::uint64_t>(::getpid()) & kCMD_ID_MASK);
         
-        return std::to_string(::getpid()) + "-" + std::to_string(nanos);
+        return std::to_string(packed_id);
     }
 
     void usage(){
@@ -106,6 +112,8 @@ int main(int argc, char** argv){
             type = "status";
         }else if(command == "shutdown-graceful" || command == "shutdown_graceful"){
             type = "shutdown-graceful";
+        }else if(command == "shutdown-forceful" || command == "shutdown_forceful"){
+            type = "shutdown-forceful";
         }else{
             predexctl::usage();
             return static_cast<int>(predexctl::SocketExitCode::kInvalidArgs);

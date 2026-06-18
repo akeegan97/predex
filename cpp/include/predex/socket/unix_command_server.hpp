@@ -26,7 +26,7 @@ namespace predex::socket{
     class UnixCommandServer{
         public:
             explicit UnixCommandServer(OperatorSocketConfig config,
-                                      operator_admin::ICommandHandler* command_handler);
+                                      ICommandHandler* command_handler);
             ~UnixCommandServer();
 
             UnixCommandServer(const UnixCommandServer&) = delete;
@@ -41,7 +41,7 @@ namespace predex::socket{
             [[nodiscard]] const OperatorSocketConfig& config() const noexcept;
 
         private:
-            operator_admin::ICommandHandler* command_handler_{nullptr};
+            ICommandHandler* command_handler_{nullptr};
             OperatorSocketConfig config_;
             int listen_fd_{-1};
     };

@@ -1,9 +1,9 @@
 CompileFlags:
   CompilationDatabase: /home/andrew/code/trading/build/dev
-  Add: [-std=c++20]
+  Add: [-std=c++20, -I/home/andrew/code/trading/cpp/include]
 If:
   PathMatch: (^|.*/)ref_cpp/.*
 Index:
   Background: Skip
 Diagnostics:
-  Suppress: '*
+  Suppress: '*'

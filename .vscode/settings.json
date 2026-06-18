@@ -2,6 +2,9 @@
   "cmake.useCMakePresets": "always",
   "cmake.configureOnOpen": true,
   "cmake.defaultConfigurePreset": "dev-vcpkg",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/dev/compile_commands.json",
+  "C_Cpp.default.cppStandard": "c++20",
+  "C_Cpp.default.intelliSenseMode": "linux-clang-x64",
   "clangd.arguments": [
     "--compile-commands-dir=/home/andrew/code/trading/build/dev"
   ],

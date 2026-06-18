@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace predex::operator_admin {
+namespace predex::socket {
     struct CommandResponse {
         bool ok{false};
         std::string body;

@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
 
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(simdjson CONFIG REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
 
 add_executable(predexctl 
   apps/predexctl/main.cpp
@@ -28,3 +30,4 @@ target_include_directories(predexctl PRIVATE include)
 target_include_directories(predex PRIVATE include)
 target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(predex PRIVATE )

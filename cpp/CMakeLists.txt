@@ -11,9 +11,13 @@ find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(predexctl 
   apps/predexctl/main.cpp
-  include/predex/control/control_plane.hpp
-  include/predex/control/control_types.hpp
+)
+
+add_executable(predex
+  apps/predex/main.cpp
   src/control/control_plane.cpp
+  src/operator/operator_command_handler.cpp
+  src/socket/unix_command_server.cpp
 )
 
 add_executable(smoke 
@@ -21,4 +25,6 @@ add_executable(smoke
 )
 target_include_directories(smoke PRIVATE include)
 target_include_directories(predexctl PRIVATE include)
+target_include_directories(predex PRIVATE include)
 target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)

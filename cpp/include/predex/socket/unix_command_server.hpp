@@ -23,6 +23,24 @@ namespace predex::socket{
         std::size_t max_request_bytes{kDEFAULT_MAX_REQUEST_BYTES};
     };
 
+    enum class WaitResult : std::uint8_t{
+        kREADY = 0,
+        kSTOPPED = 1,
+        kERROR = 2,
+    };
+
+    enum class ReadRequestStatus : std::uint8_t{
+        kOK = 0,
+        kCLOSED = 1,
+        kTOO_LARGE = 2,
+        kREAD_ERROR = 3,
+    };
+
+    struct ReadRequestResult{
+        ReadRequestStatus status{ReadRequestStatus::kOK};
+        std::string request;
+    };
+
     class UnixCommandServer{
         public:
             explicit UnixCommandServer(OperatorSocketConfig config,
@@ -44,7 +62,14 @@ namespace predex::socket{
             ICommandHandler* command_handler_{nullptr};
             OperatorSocketConfig config_;
             int listen_fd_{-1};
+
+            bool open_listen_socket(std::string& error_out);
+            void close_listen_socket() noexcept;
+            WaitResult wait_for_client(const std::stop_token& stop_token, std::string& error_out) const;
+            void handle_one_client(int client_fd);
+            [[nodiscard]] ReadRequestResult read_request(int client_fd) const;
+            bool write_response(int client_fd, std::string_view response);
     };
 
 
-}
+} 

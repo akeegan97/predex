@@ -1,10 +1,11 @@
+
 #include "predex/exchange/kalshi/adapters/market_data_handler.hpp"
+
+#include <nlohmann/json.hpp>
 #include <string>
 
 
-namespace {
-    std::string 
-} // anonymous
+
 
 namespace predex::exchange::kalshi{
 
@@ -27,8 +28,18 @@ namespace predex::exchange::kalshi{
         };
     }
 
-    std::string KalshiMarketDataHandler::build_subscribe_message(std::span<const std::string> tickers) const{}
-    
+    std::string KalshiMarketDataHandler::build_subscribe_message(std::span<const std::string> tickers) const{
+        nlohmann::json params{{"channels",{"orderbook_delta"},{"trade"}}};
+        if(!tickers.empty()){
+            params["market_tickers"] = tickers;
+        }
+        const nlohmann::json payload{
+            {"id", 1},
+            {"cmd", "subscribe"},
+            {"params", std::move(params)},
+        };
+        return payload.dump();
+    }
 
 
 

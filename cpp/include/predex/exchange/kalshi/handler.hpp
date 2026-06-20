@@ -2,7 +2,7 @@
 
 #include <map>
 #include <string>
-#include <span>
+
 
 namespace predex::exchange::kalshi {
 
@@ -19,8 +19,6 @@ class IWsAdapter {
 
     [[nodiscard]] virtual std::string name() const = 0;
     [[nodiscard]] virtual WsConnectRequest build_connect_request() const = 0;
-    [[nodiscard]] virtual std::string build_subscribe_message(std::span<const std::string> tickers) const = 0;
-    [[nodiscard]] virtual std::string build_unsubscribe_message(std::span<const std::string> tickers) const = 0;
 };
 
 }  // namespace predex::exchange::kalshi

@@ -16,6 +16,7 @@
 #include "predex/exchange/kalshi/websocket_session.hpp"
 #include "predex/exchange/kalshi/adapters/market_data_handler.hpp"
 #include "predex/control/control_types.hpp"
+#include "predex/exchange/kalshi/market_data_protocol.hpp"
 
 namespace predex::ingest::kalshi::market_data{
 
@@ -42,12 +43,6 @@ namespace predex::ingest::kalshi::market_data{
         exchange::kalshi::KalshiMarketDataHandler market_data_handler;
     };
 
-    enum class KalshiMarketDataChannel : std::uint8_t {
-        kORDERBOOK_DELTA = 1,
-        kTRADE = 2,
-        kMARKET_LIFECYCLE = 3,
-    };
-
     enum class SubscriptionPhase : std::uint8_t {
         kIDLE = 0,
         kSUBSCRIBE_PENDING = 1,
@@ -66,7 +61,7 @@ namespace predex::ingest::kalshi::market_data{
     };
 
     struct ActiveSubscription{
-        KalshiMarketDataChannel channel{};
+        exchange::kalshi::KalshiMarketDataChannel channel{};
         SubscriptionPhase phase{SubscriptionPhase::kIDLE};
         std::optional<std::int64_t> sid;
         std::unordered_set<core::control::MarketId> market_ids;
@@ -76,7 +71,7 @@ namespace predex::ingest::kalshi::market_data{
     struct PendingWsCommand{
         std::uint64_t ws_command_id{};
         WsCommandKind kind{};
-        KalshiMarketDataChannel channel{};
+        exchange::kalshi::KalshiMarketDataChannel channel{};
         std::vector<core::control::MarketId> market_ids;
     };
 
@@ -114,11 +109,11 @@ namespace predex::ingest::kalshi::market_data{
             std::unordered_map<std::string, core::control::UniverseMarketRoute> market_route_by_ticker_;
             std::unordered_map<core::control::MarketId, core::control::UniverseMarketRoute> market_route_by_id_;
 
-            std::vector<KalshiMarketDataChannel> desired_channels_{
-                KalshiMarketDataChannel::kORDERBOOK_DELTA,
-                KalshiMarketDataChannel::kTRADE,
+            std::vector<exchange::kalshi::KalshiMarketDataChannel> desired_channels_{
+                exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA,
+                exchange::kalshi::KalshiMarketDataChannel::kTRADE,
             };
-            std::unordered_map<KalshiMarketDataChannel, ActiveSubscription> active_subscriptions_;
+            std::unordered_map<exchange::kalshi::KalshiMarketDataChannel, ActiveSubscription> active_subscriptions_;
             std::unordered_map<std::uint64_t, PendingWsCommand> pending_ws_commands_;
 
             std::uint64_t next_ws_command_id_{1};
@@ -135,15 +130,15 @@ namespace predex::ingest::kalshi::market_data{
             void disconnect(std::string reason = {});
 
             [[nodiscard]] bool subscribe_active_universe();
-            [[nodiscard]] bool subscribe_channel(KalshiMarketDataChannel channel,
+            [[nodiscard]] bool subscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel,
                                                  std::span<const std::string> tickers);
-            [[nodiscard]] bool add_markets(KalshiMarketDataChannel channel,
+            [[nodiscard]] bool add_markets(exchange::kalshi::KalshiMarketDataChannel channel,
                                            std::span<const std::string> tickers);
-            [[nodiscard]] bool delete_markets(KalshiMarketDataChannel channel,
+            [[nodiscard]] bool delete_markets(exchange::kalshi::KalshiMarketDataChannel channel,
                                               std::span<const std::string> tickers);
-            [[nodiscard]] bool request_snapshots(KalshiMarketDataChannel channel,
+            [[nodiscard]] bool request_snapshots(exchange::kalshi::KalshiMarketDataChannel channel,
                                                  std::span<const std::string> tickers);
-            [[nodiscard]] bool unsubscribe_channel(KalshiMarketDataChannel channel);
+            [[nodiscard]] bool unsubscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel);
 
             [[nodiscard]] bool push_control_status(core::control::IoToControlStatus status) noexcept;
 

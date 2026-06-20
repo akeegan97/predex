@@ -20,6 +20,7 @@ add_executable(predex
   src/control/control_plane.cpp
   src/operator/operator_command_handler.cpp
   src/socket/unix_command_server.cpp
+  include/predex/ingest/kalshi/market_data/frame_pool.hpp
 )
 
 add_executable(smoke 
@@ -30,4 +31,5 @@ target_include_directories(predexctl PRIVATE include)
 target_include_directories(predex PRIVATE include)
 target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
-target_link_libraries(predex PRIVATE )
+target_link_libraries(predex PRIVATE simdjson::simdjson)
+target_link_libraries(smoke PRIVATE simdjson::simdjson)

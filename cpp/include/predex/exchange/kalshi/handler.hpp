@@ -1,9 +1,8 @@
 #pragma once
 
-#include <cstddef>
 #include <map>
-#include <span>
 #include <string>
+#include <span>
 
 namespace predex::exchange::kalshi {
 
@@ -20,11 +19,8 @@ class IWsAdapter {
 
     [[nodiscard]] virtual std::string name() const = 0;
     [[nodiscard]] virtual WsConnectRequest build_connect_request() const = 0;
-
-    virtual void on_connected(WebSocketSession& session) = 0;
-    virtual void on_text(std::span<const std::byte> payload,
-                         WebSocketSession& session) = 0;
-    virtual void on_disconnected() = 0;
+    [[nodiscard]] virtual std::string build_subscribe_message(std::span<const std::string> tickers) const = 0;
+    [[nodiscard]] virtual std::string build_unsubscribe_message(std::span<const std::string> tickers) const = 0;
 };
 
 }  // namespace predex::exchange::kalshi

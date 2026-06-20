@@ -55,7 +55,8 @@ class WebSocketSession {
 
     [[nodiscard]] bool connect();
     [[nodiscard]] bool send_text(std::string_view message);
-    void run(std::chrono::milliseconds recv_timeout);
+    [[nodiscard]] ReadResult recv_text(std::chrono::milliseconds timeout);
+    
     void close();
 
     [[nodiscard]] const WsConnectRequest& connect_request() const noexcept;
@@ -65,8 +66,6 @@ class WebSocketSession {
     using WsStream =
         boost::beast::websocket::stream<
             boost::beast::ssl_stream<boost::beast::tcp_stream>>;
-
-    [[nodiscard]] ReadResult recv_text(std::chrono::milliseconds timeout);
 
     void reset_stream() {
         ws_stream_ = std::make_unique<WsStream>(io_context_, ssl_context_);

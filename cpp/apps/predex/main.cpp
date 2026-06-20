@@ -32,17 +32,25 @@ int main() {
         server_to_control_queue{kOperatorQueueCapacity};
     predex::utils::SPSCQueue<predex::operator_admin::OperatorResponse>
         control_to_server_queue{kOperatorQueueCapacity};
+    predex::utils::SPSCQueue<predex::core::control::ControlToIoCommand>
+        control_to_io_queue{kOperatorQueueCapacity};
+    predex::utils::SPSCQueue<predex::core::control::IoToControlStatus>
+        io_to_control_status_queue{kOperatorQueueCapacity};
 
     predex::core::control::OperatorQueues control_queues{
         .operator_command_queue = server_to_control_queue,
         .operator_response_queue = control_to_server_queue,
+    };
+    predex::core::control::ControlIoQueues io_queues{
+        .control_to_io_queue = control_to_io_queue,
+        .io_to_control_status_queue = io_to_control_status_queue,
     };
     predex::operator_admin::ControlQueues handler_queues{
         .server_to_control_queue = server_to_control_queue,
         .control_to_server_queue = control_to_server_queue,
     };
 
-    predex::core::control::ControlPlane control_plane{control_queues};
+    predex::core::control::ControlPlane control_plane{control_queues, io_queues};
     predex::operator_admin::OperatorCommandHandler command_handler{
         handler_queues};
     predex::socket::UnixCommandServer server{
@@ -64,6 +72,7 @@ int main() {
 
     while (!g_signal_stop_requested.load()) {
         const auto pump_result = control_plane.process_operator_commands();
+        (void)control_plane.process_io_status();
         const auto process_state = control_plane.process_state();
 
         if (server_failed.load()) {

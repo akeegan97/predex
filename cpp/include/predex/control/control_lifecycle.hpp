@@ -11,6 +11,7 @@ namespace predex::core::control{
         kLIVE_TRADING = 4,
         kSHUTTING_DOWN = 5, 
         kSTOPPED = 6,
+        kREFRESHING = 7,
     };
 
 }

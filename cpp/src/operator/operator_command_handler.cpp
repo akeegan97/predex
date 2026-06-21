@@ -44,6 +44,10 @@ namespace {
                 return "shutting_down";
             case predex::core::control::LifecyclePhase::kSTOPPED:
                 return "stopped";
+            case predex::core::control::LifecyclePhase::kREFRESHING:
+                return "refreshing";
+            case predex::core::control::LifecyclePhase::kFAULTED:
+                return "faulted";
             default:
                 return "unknown";
         }

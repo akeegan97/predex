@@ -12,6 +12,7 @@ namespace predex::core::control{
         kSHUTTING_DOWN = 5, 
         kSTOPPED = 6,
         kREFRESHING = 7,
+        kFAULTED = 8,
     };
 
 }

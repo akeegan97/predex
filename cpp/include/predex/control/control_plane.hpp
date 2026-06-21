@@ -5,6 +5,7 @@
 #include "predex/operator/operator_commands.hpp"
 #include "predex/utils/spsc.hpp"
 #include "predex/control/control_types.hpp"
+#include "predex/router/router_types.hpp"
 
 
 namespace predex::core::control{
@@ -19,6 +20,10 @@ namespace predex::core::control{
         utils::SPSCQueue<IoToControlStatus>& io_to_control_status_queue;
     };
 
+    struct RouterQueue{
+        utils::SPSCQueue<router::RouterToControl>& router_to_control_queue;
+    };
+
     struct OperatorPumpResult{
         std::size_t commands_processed{0};
         std::size_t responses_pushed_success{0};
@@ -31,10 +36,11 @@ namespace predex::core::control{
         std::size_t commands_pushed_failure{0};
     };
 
+
     class ControlPlane{
         public: 
-            ControlPlane(OperatorQueues queues, ControlIoQueues io_queues)
-                : queues_(queues), io_queues_(io_queues) {}
+            ControlPlane(OperatorQueues queues, ControlIoQueues io_queues, RouterQueue router_queue)
+                : queues_(queues), io_queues_(io_queues), router_queue_(router_queue) {}
         
             [[nodiscard]] OperatorPumpResult process_operator_commands();
 
@@ -59,6 +65,11 @@ namespace predex::core::control{
             [[nodiscard]] std::uint64_t install_universe(UniverseSnapshot snapshot);
             [[nodiscard]] bool send_active_universe_to_io();
 
+            [[nodiscard]] bool process_one_router_message() noexcept;
+
+            [[nodiscard]] bool process_router_messages() noexcept;
+
+
         private:
             OperatorQueues queues_;
             ControlIoQueues io_queues_;
@@ -69,6 +80,7 @@ namespace predex::core::control{
 
             std::shared_ptr<const UniverseSnapshot> active_universe_;
             std::uint64_t next_universe_version_{1};
+            RouterQueue router_queue_;
     };
 
 }

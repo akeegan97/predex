@@ -27,7 +27,19 @@ namespace predex::core::control {
         std::uint64_t subscribed_universe_version{0};
         std::string last_error;
     };
+    struct RouterTelemetrySnapshot{
+        std::size_t total_frames_seen{0};
+        std::size_t frames_to_shards{0};
+        std::size_t frames_to_logger{0};
+        std::size_t frames_recycled{0};
+        std::size_t leaked_handles{0};
+    };
 
+    struct RouterComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        std::string last_error;
+        RouterTelemetrySnapshot telemetry;
+    };
 
     struct ProcessState {
         LifecyclePhase lifecycle{LifecyclePhase::kBOOTING};
@@ -38,6 +50,7 @@ namespace predex::core::control {
         std::uint64_t active_universe_version{0}; // the universe version that is currently active in the process (i.e. has been installed and subscribed to by IO)
 
         IoComponentState io_component_state;
+        RouterComponentState router_component_state;
     };
 
     using MarketId = std::uint32_t;

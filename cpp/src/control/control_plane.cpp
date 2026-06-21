@@ -121,6 +121,13 @@ namespace predex::core::control{
             return;
         }
 
+        if(process_state_.io_component_state.status == ComponentStatus::kFAULTED ||
+           process_state_.router_component_state.status == ComponentStatus::kFAULTED){
+            process_state_.lifecycle = LifecyclePhase::kFAULTED;
+            process_state_.trading_enabled = false;
+            return;
+        }
+
         switch(process_state_.io_component_state.status){
             case ComponentStatus::kUNKNOWN:
             case ComponentStatus::kSTOPPED:
@@ -136,7 +143,7 @@ namespace predex::core::control{
                 process_state_.lifecycle = LifecyclePhase::kREADY;
                 break;
             case ComponentStatus::kFAULTED:
-                process_state_.lifecycle = LifecyclePhase::kWAITING_FOR_IO;
+                process_state_.lifecycle = LifecyclePhase::kFAULTED;
                 break;
         }
     }
@@ -155,4 +162,43 @@ namespace predex::core::control{
         }
         return push_io_command(ApplyUniverseSnapshotIo{.snapshot = active_universe_});
     }
+
+    bool ControlPlane::process_one_router_message() noexcept{
+        router::RouterToControl msg{};
+
+        if (router_queue_.router_to_control_queue.try_pop(msg)){
+            std::visit([&](auto&& m){//NOLINT
+                using T = std::decay_t<decltype(m)>;
+                if constexpr(std::is_same_v<T, router::RouterTelemetry>){
+                    process_state_.router_component_state.telemetry.total_frames_seen = m.total_frames_seen;
+                    process_state_.router_component_state.telemetry.frames_to_shards = m.frames_to_shards;
+                    process_state_.router_component_state.telemetry.frames_to_logger = m.frames_to_logger;
+                    process_state_.router_component_state.telemetry.frames_recycled = m.frames_recycled;
+                }
+                if constexpr(std::is_same_v<T, router::ShardBackpressure>){
+                    //probably here want to update that shard's status 
+                }
+                if constexpr(std::is_same_v<T, router::OutOfSequenceFrame>){
+                    process_state_.router_component_state.last_error = "Out of sequence frame detected: sid "+ std::to_string(m.sid) + " sequence " + std::to_string(m.sequence);
+                }
+                if constexpr(std::is_same_v<T, router::RouterHandleLeak>){
+                    process_state_.router_component_state.telemetry.leaked_handles++;
+                    process_state_.router_component_state.last_error = "Handle leak detected for universe version " + std::to_string(m.universe_version) + " shard index " + std::to_string(m.shard_index);
+                    process_state_.router_component_state.status = ComponentStatus::kFAULTED;//major issue, needs attention
+                }
+            }, msg);
+            recompute_process_state();
+            return true;
+        }
+        return false;
+    }
+
+    bool ControlPlane::process_router_messages() noexcept{
+        bool processed_any = false;
+        while(process_one_router_message()){
+            processed_any = true;
+        }
+        return processed_any;
+    }
+
 }

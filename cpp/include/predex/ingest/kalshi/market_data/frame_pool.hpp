@@ -22,8 +22,9 @@ namespace predex::ingest::kalshi{
         kORDERBOOK_DELTA = 2,
         kTRADE = 3,
         kSUBSCRIPTION_ACK = 4,
-        kLIFECYCLE = 5,
-        kHEARTBEAT = 6,
+        kUNSUBSCRIBED = 5,
+        kLIFECYCLE = 6,
+        kHEARTBEAT = 7,
     };
 
     struct KalshiFrame {

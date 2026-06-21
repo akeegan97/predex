@@ -47,8 +47,8 @@ class WebSocketSession {
     explicit WebSocketSession(const IWsAdapter& adapter);
     ~WebSocketSession();
 
-    WebSocketSession(WebSocketSession&&) noexcept;
-    WebSocketSession& operator=(WebSocketSession&&) noexcept;
+    WebSocketSession(WebSocketSession&&) = delete;
+    WebSocketSession& operator=(WebSocketSession&&) = delete;
 
     WebSocketSession(const WebSocketSession&) = delete;
     WebSocketSession& operator=(const WebSocketSession&) = delete;
@@ -87,8 +87,6 @@ class WebSocketSession {
     boost::asio::ip::tcp::resolver resolver_{io_context_};
     std::unique_ptr<WsStream> ws_stream_;
     boost::beast::flat_buffer read_buffer_;
-
-
 
 };
 

@@ -10,6 +10,7 @@
 #include <span>
 #include <optional>
 #include <cstdint>
+#include <simdjson.h>
 
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/utils/spsc.hpp"
@@ -19,6 +20,8 @@
 #include "predex/exchange/kalshi/market_data_protocol.hpp"
 
 namespace predex::ingest::kalshi::market_data{
+
+    inline constexpr std::size_t kMAX_RECYCLE_BATCH_SIZE = 64;
 
     using RouterQueue = predex::utils::SPSCQueue<FrameHandle>;
 
@@ -56,8 +59,14 @@ namespace predex::ingest::kalshi::market_data{
         kSUBSCRIBE = 1,
         kADD_MARKETS = 2,
         kDELETE_MARKETS = 3,
-        kGET_SNAPSHOT = 4,
-        kUNSUBSCRIBE = 5,
+        kUNSUBSCRIBE = 4,
+    };
+
+    enum class IncomingMessageKind : std::uint8_t {
+        kCONTROL_RESPONSE = 1,
+        kMARKET_DATA = 2,
+        kIGNORE = 3,
+        kMALFORMED = 4,
     };
 
     struct ActiveSubscription{
@@ -73,6 +82,13 @@ namespace predex::ingest::kalshi::market_data{
         WsCommandKind kind{};
         exchange::kalshi::KalshiMarketDataChannel channel{};
         std::vector<core::control::MarketId> market_ids;
+    };
+
+    struct MarketDataEnvelope {
+        FrameKind kind{FrameKind::kUNKNOWN};
+        std::uint32_t sid{};
+        std::uint64_t sequence{};
+        std::string_view market_ticker;
     };
 
     class KalshiWireSession {
@@ -115,6 +131,12 @@ namespace predex::ingest::kalshi::market_data{
             };
             std::unordered_map<exchange::kalshi::KalshiMarketDataChannel, ActiveSubscription> active_subscriptions_;
             std::unordered_map<std::uint64_t, PendingWsCommand> pending_ws_commands_;
+            simdjson::ondemand::parser message_classifier_parser_;
+            simdjson::ondemand::parser market_data_envelope_parser_;
+            simdjson::ondemand::parser control_response_parser_;
+
+            std::size_t max_recycle_batch_size_{kMAX_RECYCLE_BATCH_SIZE};
+            std::size_t next_recycle_queue_idx_{0};
 
             std::uint64_t next_ws_command_id_{1};
 
@@ -128,6 +150,7 @@ namespace predex::ingest::kalshi::market_data{
             void apply_universe_snapshot(const std::shared_ptr<const core::control::UniverseSnapshot>& snapshot);
             [[nodiscard]] bool connect();
             void disconnect(std::string reason = {});
+            void clear_transport_subscription_state();
 
             [[nodiscard]] bool subscribe_active_universe();
             [[nodiscard]] bool subscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel,
@@ -136,15 +159,20 @@ namespace predex::ingest::kalshi::market_data{
                                            std::span<const std::string> tickers);
             [[nodiscard]] bool delete_markets(exchange::kalshi::KalshiMarketDataChannel channel,
                                               std::span<const std::string> tickers);
-            [[nodiscard]] bool request_snapshots(exchange::kalshi::KalshiMarketDataChannel channel,
-                                                 std::span<const std::string> tickers);
             [[nodiscard]] bool unsubscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel);
 
             [[nodiscard]] bool push_control_status(core::control::IoToControlStatus status) noexcept;
 
             void drain_recycle_queues();
             void pump_socket_once();
-            void publish_frame(std::span<const std::byte> payload);
+            
+            [[nodiscard]] IncomingMessageKind classify_incoming_message(std::span<const std::byte> payload);
+            [[nodiscard]] bool parse_market_data_envelope(const KalshiFrame& frame,
+                                                          MarketDataEnvelope& envelope_out);
+            [[nodiscard]] bool stamp_handle_from_envelope(FrameHandle& handle,
+                                                          const MarketDataEnvelope& envelope);
+            [[nodiscard]] bool is_active_sid(std::uint32_t sid) const noexcept;
+            void publish_market_data_frame(std::span<const std::byte> payload);
             void handle_ws_control_response(std::span<const std::byte> payload);
 
             void report_fault(std::string error_message);

@@ -46,6 +46,9 @@ namespace predex::ingest::kalshi{
         predex::core::control::EventId event_id{};
         predex::core::control::AffinityKey affinity_key{};
         predex::core::control::EventTopology topology{predex::core::control::EventTopology::kUNKNOWN};
+        std::uint32_t shard_index{};
+        std::uint32_t shard_event_index{};
+        std::uint32_t event_market_index{};
 
         FrameKind kind{FrameKind::kUNKNOWN};
     };

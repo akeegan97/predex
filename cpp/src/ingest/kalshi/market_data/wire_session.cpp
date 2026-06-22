@@ -654,6 +654,9 @@ namespace predex::ingest::kalshi::market_data{
         handle.event_id = route.event_id;
         handle.affinity_key = route.affinity_key;
         handle.topology = route.topology;
+        handle.shard_index = route.shard_index;
+        handle.shard_event_index = route.shard_event_index;
+        handle.event_market_index = route.event_market_index;
         handle.kind = envelope.kind;
 
         return true;

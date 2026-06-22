@@ -27,6 +27,7 @@ namespace predex::core::control {
         std::uint64_t subscribed_universe_version{0};
         std::string last_error;
     };
+    
     struct RouterTelemetrySnapshot{
         std::size_t total_frames_seen{0};
         std::size_t frames_to_shards{0};
@@ -87,6 +88,9 @@ namespace predex::core::control {
         EventId event_id{};
         AffinityKey affinity_key{};
         EventTopology topology{EventTopology::kUNKNOWN};
+        std::uint32_t shard_index{};
+        std::uint32_t shard_event_index{};
+        std::uint32_t event_market_index{};
         bool tradeable{false};
     };
 

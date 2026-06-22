@@ -28,6 +28,7 @@ add_executable(predex
   src/ingest/kalshi/market_data/wire_session.cpp
   include/predex/router/router_types.hpp
   src/router/router.cpp
+  include/predex/shard/event.hpp
 )
 
 add_executable(smoke 

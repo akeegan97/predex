@@ -29,6 +29,7 @@ add_executable(predex
   include/predex/router/router_types.hpp
   src/router/router.cpp
   include/predex/shard/event.hpp
+  include/predex/shard/event_store.hpp
 )
 
 add_executable(smoke 

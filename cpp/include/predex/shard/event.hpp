@@ -46,7 +46,7 @@ namespace predex::shard{
     class Event{
         public:
             explicit Event(KalshiEvent state);
-            
+
             [[nodiscard]] EventId event_id() const noexcept;
             [[nodiscard]] EventTopology event_topology() const noexcept;
             [[nodiscard]] std::uint32_t shard_event_index() const noexcept;
@@ -69,6 +69,5 @@ namespace predex::shard{
 
             void update_derived_state_after_market_update(std::uint32_t event_market_index);
             void mark_desynced(EventDesyncReason reason);
-
     };
 }

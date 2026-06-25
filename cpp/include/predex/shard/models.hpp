@@ -16,7 +16,9 @@ namespace predex::shard{
     using EventTopology = predex::core::control::EventTopology;
     
     using PriceTicks = std::uint64_t;
-    using QtyLots = std::int64_t;
+    using QtyLots = std::uint64_t;
+
+    using DeltaQtyLots = std::int64_t;
 
     enum class Side : std::uint8_t{
         kUNKNOWN = 0,
@@ -25,8 +27,8 @@ namespace predex::shard{
     };
 
     struct KalshiBook{
-        std::array<std::uint64_t, kMAX_TICKS + 1> bids{};
-        std::array<std::uint64_t, kMAX_TICKS + 1> asks{};
+        std::array<QtyLots, kMAX_TICKS + 1> bids{};
+        std::array<QtyLots, kMAX_TICKS + 1> asks{};
 
         bool has_snapshot{false};
         bool desynced{false};
@@ -62,7 +64,7 @@ namespace predex::shard{
         QtyLots qty_lots{0};
     };
 
-    struct KalshiSnapShotEvent{
+    struct KalshiSnapshotEvent{
         std::vector<Level> bids;
         std::vector<Level> asks;
     };
@@ -75,14 +77,14 @@ namespace predex::shard{
 
     struct KalshiTradeData{
         PriceTicks price_ticks{0};
-        QtyLots qty_lots{0};
+        DeltaQtyLots qty_lots{0};
         Side aggressor{Side::kUNKNOWN};
         Side book_side{Side::kUNKNOWN};
     };
 
     struct KalshiLifecycleData{};
 
-    using KalshiEventData = std::variant<std::monostate, KalshiSnapShotEvent, KalshiDeltaData, KalshiTradeData, KalshiLifecycleData>;
+    using KalshiEventData = std::variant<std::monostate, KalshiSnapshotEvent, KalshiDeltaData, KalshiTradeData, KalshiLifecycleData>;
 
     enum class KalshiEventType : std::uint8_t{
         kUNKNOWN = 0,

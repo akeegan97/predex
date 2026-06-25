@@ -72,30 +72,18 @@ namespace predex::shard{
     struct KalshiDeltaData{
         Side side{Side::kUNKNOWN};
         PriceTicks price_ticks{0};
-        QtyLots delta_qty_lots{0};
+        DeltaQtyLots delta_qty_lots{0};
     };
 
     struct KalshiTradeData{
         PriceTicks price_ticks{0};
-        DeltaQtyLots qty_lots{0};
+        QtyLots qty_lots{0};
         Side aggressor{Side::kUNKNOWN};
         Side book_side{Side::kUNKNOWN};
     };
 
     struct KalshiLifecycleData{};
 
-    using KalshiEventData = std::variant<std::monostate, KalshiSnapshotEvent, KalshiDeltaData, KalshiTradeData, KalshiLifecycleData>;
-
-    enum class KalshiEventType : std::uint8_t{
-        kUNKNOWN = 0,
-        kSNAPSHOT = 1,
-        kDELTA = 2,
-        kTRADE = 3,
-        kLIFECYCLE = 4
-    };
-    struct KalshiParsedEvent{
-        KalshiEventType type{KalshiEventType::kUNKNOWN};
-        KalshiEventData data;
-    };
+    using KalshiParsedEvent = std::variant<std::monostate, KalshiSnapshotEvent, KalshiDeltaData, KalshiTradeData, KalshiLifecycleData>;
 
 }

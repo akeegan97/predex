@@ -62,7 +62,7 @@ namespace predex::shard{
 
             [[nodiscard]] MarketApplyResult apply_to_market(KalshiMarket& market, const KalshiParsedEvent& parsed_event) noexcept;
 
-            [[nodiscard]] MarketApplyResult apply_snapshot(KalshiMarket& market, const KalshiSnapShotEvent& parsed_event) noexcept;
+            [[nodiscard]] MarketApplyResult apply_snapshot(KalshiMarket& market, const KalshiSnapshotEvent& parsed_event) noexcept;
             [[nodiscard]] MarketApplyResult apply_delta(KalshiMarket& market, const KalshiDeltaData& parsed_event) noexcept;
             [[nodiscard]] MarketApplyResult apply_trade(KalshiMarket& market, const KalshiTradeData& parsed_event) noexcept;
             [[nodiscard]] MarketApplyResult apply_lifecycle(KalshiMarket& market, const KalshiLifecycleData& parsed_event) noexcept;

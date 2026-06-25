@@ -30,6 +30,12 @@ add_executable(predex
   src/router/router.cpp
   include/predex/shard/event.hpp
   include/predex/shard/event_store.hpp
+  include/predex/shard/market_parser.hpp
+  include/predex/shard/shard.hpp
+  src/shard/event_store.cpp
+  src/shard/event.cpp
+  src/shard/shard.cpp
+  src/shard/market_parser.cpp
 )
 
 add_executable(smoke 

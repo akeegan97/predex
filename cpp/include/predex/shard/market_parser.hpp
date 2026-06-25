@@ -1,7 +1,7 @@
 #pragma once 
 
 #include <cstdint>
-
+#include <simdjson.h>
 #include "predex/shard/models.hpp"
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 
@@ -24,6 +24,9 @@ namespace predex::shard{
     class MarketParser{
         public:
             [[nodiscard]] ParseResult parse(const ingest::kalshi::FrameHandle& handle, const ingest::kalshi::KalshiFrame& frame, KalshiParsedEvent& parsed_event) noexcept;
+    
+        private:
+            simdjson::ondemand::parser parser_;
     };
 
 }

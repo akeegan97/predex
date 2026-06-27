@@ -5,6 +5,7 @@
 namespace predex::shard{
 
     bool EventStore::initialize(std::vector<KalshiEvent> events){
+        events_.clear();
         events_.reserve(events.size());
         for(auto& event : events){
             events_.emplace_back(std::move(event));

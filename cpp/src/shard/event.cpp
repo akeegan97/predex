@@ -64,17 +64,105 @@ namespace predex::shard{
     }
 
     MarketApplyResult Event::apply_snapshot(KalshiMarket& market, const KalshiSnapshotEvent& parsed_event) noexcept{
-        //stub: apply snapshot logic here, also check that snapshot is valid & update market state accordingly
+        market.book.set_index_grid();
+        for(const auto& bid : parsed_event.bids){
+            if(bid.price_ticks >= market.book.index_by_tick.size()){
+                market.book.has_snapshot = false;
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            auto index_opt = market.book.get_index(bid.price_ticks);
+            if(!index_opt.has_value()){
+                market.book.has_snapshot = false;
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            std::size_t index = index_opt.value();
+            if(index >= market.book.bids.size()){
+                market.book.has_snapshot = false;
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            market.book.bids[index] = bid.qty_lots;
+        }
+        for(const auto& ask : parsed_event.asks){
+            if(ask.price_ticks >= market.book.index_by_tick.size()){
+                market.book.has_snapshot = false;
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            auto index_opt = market.book.get_index(ask.price_ticks);
+            if(!index_opt.has_value()){
+                market.book.has_snapshot = false;
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            std::size_t index = index_opt.value();
+            if(index >= market.book.asks.size()){
+                market.book.has_snapshot = false;
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            market.book.asks[index] = ask.qty_lots;
+        }
+
+        market.book.has_snapshot = true;
+        market.book.desynced = false;
+
         return MarketApplyResult{MarketApplyCode::kAPPLIED, MarketRejectReason::kNONE};
     }
 
     MarketApplyResult Event::apply_delta(KalshiMarket& market, const KalshiDeltaData& parsed_event) noexcept{
-        //stub: apply delta logic here, also check that snapshot is present & that delta doesn't cause qty <0
+        if(!market.book.has_snapshot){
+            return MarketApplyResult{MarketApplyCode::kREJECTED, MarketRejectReason::kMISSING_SNAPSHOT};
+        }
+        auto index_opt = market.book.get_index(parsed_event.price_ticks);
+        if(!index_opt.has_value()){
+            market.book.desynced = true;
+            return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+        }
+        std::size_t index = index_opt.value();
+        if(parsed_event.side == Side::kBID){
+            if(index >= market.book.bids.size()){
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            auto& level = market.book.bids[index];
+            if(parsed_event.delta_qty_lots < 0){
+                const auto remove_qty = static_cast<QtyLots>(-(parsed_event.delta_qty_lots + 1)) + 1; // handle case where delta_qty_lots is INT64_MIN, which would overflow if negated 
+                if(level < remove_qty){
+                    market.book.desynced = true;
+                    return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kNEGATIVE_LEVEL};
+                }
+                level -= remove_qty;
+            }else{
+                level += static_cast<predex::shard::QtyLots>(parsed_event.delta_qty_lots);
+            }
+        }else if(parsed_event.side == Side::kASK){
+            if(index >= market.book.asks.size()){
+                market.book.desynced = true;
+                return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kINVALID_PRICE};
+            }
+            auto& level = market.book.asks[index];
+            if(parsed_event.delta_qty_lots < 0){
+                const auto remove_qty = static_cast<QtyLots>(-(parsed_event.delta_qty_lots + 1)) + 1; // handle case where delta_qty_lots is INT64_MIN, which would overflow if negated 
+                if(level < remove_qty){
+                    market.book.desynced = true;
+                    return MarketApplyResult{MarketApplyCode::kDESYNCED, MarketRejectReason::kNEGATIVE_LEVEL};
+                }
+                level -= remove_qty;
+            }else{
+                level += static_cast<predex::shard::QtyLots>(parsed_event.delta_qty_lots);
+            }
+        }else{
+            return MarketApplyResult{MarketApplyCode::kREJECTED, MarketRejectReason::kINVALID_SIDE};
+        }
         return MarketApplyResult{MarketApplyCode::kAPPLIED, MarketRejectReason::kNONE};
     }
 
     MarketApplyResult Event::apply_trade(KalshiMarket& market, const KalshiTradeData& parsed_event) noexcept{
-        // apply trade logic here : used for tracking aggressor side, rolling trade metrics, etc
+        // Trades do not mutate book depth. Keep this stubbed until the event metrics bundle
+        // owns trade-derived features such as OBI/VPIN/flow stats.
         return MarketApplyResult{MarketApplyCode::kAPPLIED, MarketRejectReason::kNONE};
     }
 

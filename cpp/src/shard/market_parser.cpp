@@ -85,13 +85,13 @@ namespace {
         if (integer_part.empty() || fractional_part.size() > decimal_places) {
             return false;
         }
-
+//NOLINTNEXTLINE -
         for (const char c : integer_part) {
             if (c < '0' || c > '9') {
                 return false;
             }
         }
-
+//NOLINTNEXTLINE -
         for (const char c : fractional_part) {
             if (c < '0' || c > '9') {
                 return false;
@@ -107,6 +107,7 @@ namespace {
         constexpr std::uint64_t kMultiplier = 10;
 
         std::uint64_t fractional = 0;
+        //NOLINTNEXTLINE -
         for (const char c : fractional_part) {
             fractional = fractional * kMultiplier + static_cast<std::uint64_t>(c - '0');
         }

@@ -42,6 +42,27 @@ namespace predex::core::control {
         RouterTelemetrySnapshot telemetry;
     };
 
+    struct ShardTelemetrySnapshot{
+        std::uint64_t frames_seen{0};
+        std::uint64_t frames_applied{0};
+        std::uint64_t parse_rejects{0};
+        std::uint64_t event_rejects{0};
+        std::uint64_t event_desyncs{0};
+        std::uint64_t frames_to_logger{0};
+        std::uint64_t frames_recycled{0};
+        std::uint64_t leaked_handles{0};
+        std::uint64_t missed_frames_to_logger{0};
+    };
+
+    struct ShardComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        std::uint64_t installed_universe_version{0};
+        std::uint64_t safe_to_stop_universe_version{0};
+        std::uint64_t drained_universe_version{0};
+        std::string last_error;
+        ShardTelemetrySnapshot telemetry;
+    };
+
     struct ProcessState {
         LifecyclePhase lifecycle{LifecyclePhase::kBOOTING};
         bool trading_enabled{false};
@@ -52,6 +73,7 @@ namespace predex::core::control {
 
         IoComponentState io_component_state;
         RouterComponentState router_component_state;
+        std::vector<ShardComponentState> shard_component_states;
     };
 
     using MarketId = std::uint32_t;
@@ -68,11 +90,19 @@ namespace predex::core::control {
         kSINGLE_MARKET = 5,
         //other topologies as needed
     };
+
+    enum class PriceLevelStructure : std::uint8_t{
+        kUNKNOWN = 0,
+        kLINEAR_CENT = 1,
+        kTAPERED_DECI_CENT = 2,
+        kDECI_CENT = 3,
+    };
     
     struct UniverseMarket {
         MarketId market_id{};
         std::string kalshi_ticker;
         bool tradeable{false};
+        PriceLevelStructure price_level_structure{PriceLevelStructure::kLINEAR_CENT};
     };
 
     struct UniverseEvent {
@@ -92,6 +122,7 @@ namespace predex::core::control {
         std::uint32_t shard_event_index{};
         std::uint32_t event_market_index{};
         bool tradeable{false};
+        PriceLevelStructure price_level_structure{PriceLevelStructure::kLINEAR_CENT};
     };
 
     struct IoMarketSubscription{

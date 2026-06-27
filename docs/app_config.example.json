@@ -1,0 +1,59 @@
+{
+  "runtime": {
+    "shard_count": 4,
+    "shard_queue_capacity": 8192,
+    "router_queue_capacity": 8192,
+    "frame_pool_capacity": 8192,
+    "operator_queue_capacity": 64,
+    "operator_socket_path": "/tmp/predex_operator.sock"
+  },
+  "kalshi": {
+    "auth": {
+      "key_id_env": "KALSHI_KEY_ID",
+      "private_key_pem_env": "KALSHI_PRIVATE_KEY_PEM"
+    },
+    "market_data": {
+      "enable_market_data": false,
+      "channels": [
+        "orderbook_delta",
+        "trade"
+      ]
+    }
+  },
+  "universe": {
+    "events": [
+      {
+        "event_id": 88422102,
+        "affinity_key": 17041,
+        "topology": "monotonic_chain",
+        "markets": [
+          {
+            "market_id": 124830991,
+            "kalshi_ticker": "KXPGATOUR-VATO26-JSPA",
+            "tradeable": true,
+            "price_level_structure": "linear_cent"
+          },
+          {
+            "market_id": 287230110,
+            "kalshi_ticker": "KXPGATOUR-VATO26-HOVL",
+            "tradeable": true,
+            "price_level_structure": "linear_cent"
+          }
+        ]
+      },
+      {
+        "event_id": 55110021,
+        "affinity_key": 2890,
+        "topology": "single_market",
+        "markets": [
+          {
+            "market_id": 74100103,
+            "kalshi_ticker": "KXWMARMAD-26-UCLA",
+            "tradeable": true,
+            "price_level_structure": "tapered_deci_cent"
+          }
+        ]
+      }
+    ]
+  }
+}

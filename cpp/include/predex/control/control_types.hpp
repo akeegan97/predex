@@ -20,26 +20,19 @@ namespace predex::core::control {
         kFAULTED = 7,
     };
 
-    struct IoComponentState{
-        ComponentStatus status{ComponentStatus::kUNKNOWN};
-        bool connected{false};
-        std::uint64_t installed_universe_version{0};
-        std::uint64_t subscribed_universe_version{0};
-        std::string last_error;
-    };
-    
-    struct RouterTelemetrySnapshot{
-        std::size_t total_frames_seen{0};
-        std::size_t frames_to_shards{0};
-        std::size_t frames_to_logger{0};
-        std::size_t frames_recycled{0};
-        std::size_t leaked_handles{0};
+    struct IoTelemetrySnapshot{
+        std::uint64_t frames_received{0};
+        std::uint64_t frames_published{0};
+        std::uint64_t frames_dropped{0};
+        std::uint64_t recycle_failures{0};
     };
 
-    struct RouterComponentState{
-        ComponentStatus status{ComponentStatus::kUNKNOWN};
-        std::string last_error;
-        RouterTelemetrySnapshot telemetry;
+    struct RouterTelemetrySnapshot{
+        std::uint64_t total_frames_seen{0};
+        std::uint64_t frames_to_shards{0};
+        std::uint64_t frames_to_logger{0};
+        std::uint64_t frames_recycled{0};
+        std::uint64_t leaked_handles{0};
     };
 
     struct ShardTelemetrySnapshot{
@@ -54,6 +47,28 @@ namespace predex::core::control {
         std::uint64_t missed_frames_to_logger{0};
     };
 
+    struct LoggerTelemetrySnapshot{
+        std::uint64_t records_written{0};
+        std::uint64_t bytes_written{0};
+        std::uint64_t write_failures{0};
+        std::uint64_t recycle_failures{0};
+    };
+
+    struct IoComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        bool connected{false};
+        std::uint64_t installed_universe_version{0};
+        std::uint64_t subscribed_universe_version{0};
+        IoTelemetrySnapshot telemetry;
+        std::string last_error;
+    };
+
+    struct RouterComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        std::string last_error;
+        RouterTelemetrySnapshot telemetry;
+    };
+
     struct ShardComponentState{
         ComponentStatus status{ComponentStatus::kUNKNOWN};
         std::uint64_t installed_universe_version{0};
@@ -61,6 +76,13 @@ namespace predex::core::control {
         std::uint64_t drained_universe_version{0};
         std::string last_error;
         ShardTelemetrySnapshot telemetry;
+    };
+
+    struct LoggerComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        std::string output_file_path;
+        std::string last_error;
+        LoggerTelemetrySnapshot telemetry;
     };
 
     struct ProcessState {
@@ -73,6 +95,7 @@ namespace predex::core::control {
 
         IoComponentState io_component_state;
         RouterComponentState router_component_state;
+        LoggerComponentState logger_component_state;
         std::vector<ShardComponentState> shard_component_states;
     };
 
@@ -164,8 +187,30 @@ namespace predex::core::control {
     struct IoFaulted{
         std::string error_message;
     };
+    struct IoTelemetry{
+        IoTelemetrySnapshot telemetry;
+    };
 
-    using IoToControlStatus = std::variant<IoConnected, IoDisconnected, IoUniverseSnapshotApplied, IoSubscriptionReady, IoFaulted>;
+    using IoToControlStatus = std::variant<
+        IoConnected,
+        IoDisconnected,
+        IoUniverseSnapshotApplied,
+        IoSubscriptionReady,
+        IoFaulted,
+        IoTelemetry
+    >;
+
+    struct LoggerStarted{
+        std::string output_file_path;
+    };
+    struct LoggerFaulted{
+        std::string error_message;
+    };
+    struct LoggerTelemetry{
+        LoggerTelemetrySnapshot telemetry;
+    };
+
+    using LoggerToControlStatus = std::variant<LoggerStarted, LoggerFaulted, LoggerTelemetry>;
 
 
 

@@ -21,6 +21,8 @@ namespace {
             cmd.type = predex::operator_admin::OperatorCommandType::kSHUTDOWN_GRACEFUL;
         } else if(type_str == "shutdown-forceful"){
             cmd.type = predex::operator_admin::OperatorCommandType::kSHUTDOWN_FORCEFUL;
+        } else if(type_str == "counterstats"){
+            cmd.type = predex::operator_admin::OperatorCommandType::kCOUNTERSTATS;
         } else {
             cmd.type = predex::operator_admin::OperatorCommandType::kUNKNOWN;
         }
@@ -61,6 +63,8 @@ namespace {
                 return "error";
             case predex::operator_admin::OperatorResponseType::kSTATUS:
                 return "status";
+            case predex::operator_admin::OperatorResponseType::kCOUNTERSTATS:
+                return "counterstats";
             default:
                 return "unknown";
         }
@@ -87,6 +91,59 @@ namespace {
                     {"trading_enabled", payload.trading_enabled},
                     {"shutdown_requested", payload.shutdown_requested},
                 };
+            }
+            else if constexpr (std::is_same_v<T, predex::operator_admin::OperatorCounterStatsSnapshot>){
+                nlohmann::json shard_stats_json = nlohmann::json::array();
+                for(const auto& shard_stat : payload.shard_stats){
+                    shard_stats_json.push_back({
+                        {"shard_index", shard_stat.shard_index},
+                        {"frames_seen", shard_stat.frames_seen},
+                        {"frames_applied", shard_stat.frames_applied},
+                        {"parse_rejects", shard_stat.parse_rejects},
+                        {"event_rejects", shard_stat.event_rejects},
+                        {"event_desyncs", shard_stat.event_desyncs},
+                        {"frames_to_logger", shard_stat.frames_to_logger},
+                        {"frames_recycled", shard_stat.frames_recycled},
+                        {"leaked_handles", shard_stat.leaked_handles},
+                        {"missed_frames_to_logger", shard_stat.missed_frames_to_logger},
+                    });
+                }
+
+                json_response["payload"] = {
+                    {"status_snapshot", {
+                        {"lifecycle", lifecycle_to_string(payload.status_snapshot.lifecycle)},
+                        {"trading_enabled", payload.status_snapshot.trading_enabled},
+                        {"shutdown_requested", payload.status_snapshot.shutdown_requested},
+                    }},
+                    {"io_stats", {
+                        {"io_connected", payload.io_stats.io_connected},
+                        {"installed_universe_version", payload.io_stats.installed_universe_version},
+                        {"subscribed_universe_version", payload.io_stats.subscribed_universe_version},
+                        {"frames_received", payload.io_stats.frames_received},
+                        {"frames_published", payload.io_stats.frames_published},
+                        {"frames_dropped", payload.io_stats.frames_dropped},
+                        {"recycle_failures", payload.io_stats.recycle_failures},
+                        {"last_error", payload.io_stats.last_error},
+                    }},
+                    {"router_stats", {
+                        {"frames_seen", payload.router_stats.frames_seen},
+                        {"frames_to_shards", payload.router_stats.frames_to_shards},
+                        {"frames_to_logger", payload.router_stats.frames_to_logger},
+                        {"frames_recycled", payload.router_stats.frames_recycled},
+                        {"leaked_handles", payload.router_stats.leaked_handles},
+                    }},
+                    {"shard_stats", shard_stats_json},
+                    {"logger_stats", {
+                        {"output_file_path", payload.logger_stats.output_file_path},
+                        {"records_written", payload.logger_stats.records_written},
+                        {"bytes_written", payload.logger_stats.bytes_written},
+                        {"write_failures", payload.logger_stats.write_failures},
+                        {"recycle_failures", payload.logger_stats.recycle_failures},
+                    }},
+                };
+            }
+            else{
+                json_response["payload"] = {{"message","unknown"}};
             }
         }, response.payload);
         return json_response;

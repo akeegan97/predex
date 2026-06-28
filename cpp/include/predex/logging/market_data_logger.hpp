@@ -1,21 +1,27 @@
 #pragma once 
+#include "predex/control/control_types.hpp"
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/utils/spsc.hpp"
 #include <cstddef>
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace predex::logging{
+
+    inline constexpr std::chrono::milliseconds kLOGGER_TELEMETRY_INTERVAL{250};
 
     struct MarketDataLoggerDeps{
         std::vector<predex::utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>*> input_queues;
         predex::ingest::kalshi::FramePool& frame_pool;
         predex::utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>& recycle_queue;
+        predex::utils::SPSCQueue<predex::core::control::LoggerToControlStatus>* logger_to_control_status_queue{nullptr};
         std::string_view output_file_path;
     };
 
@@ -45,7 +51,9 @@ namespace predex::logging{
             explicit MarketDataLogger(const MarketDataLoggerDeps& deps)
                 : input_queues_(deps.input_queues),
                   frame_pool_(deps.frame_pool),
-                  recycle_queue_(deps.recycle_queue) {
+                  recycle_queue_(deps.recycle_queue),
+                  logger_to_control_status_queue_(deps.logger_to_control_status_queue),
+                  output_file_path_(deps.output_file_path) {
                     const std::filesystem::path output_path{std::string{deps.output_file_path}};
                     if(output_path.has_parent_path()){
                         std::filesystem::create_directories(output_path.parent_path());
@@ -57,10 +65,16 @@ namespace predex::logging{
                     output_file_.write(BinaryHeader::kTAPEMAGIC, sizeof(BinaryHeader::kTAPEMAGIC));
                     output_file_.write(reinterpret_cast<const char*>(&BinaryHeader::kTAPEVERSION), sizeof(BinaryHeader::kTAPEVERSION));
                     output_file_.write(reinterpret_cast<const char*>(&BinaryHeader::kTAPEFLAGS), sizeof(BinaryHeader::kTAPEFLAGS));
+                    bytes_written_ = sizeof(BinaryHeader::kTAPEMAGIC) +
+                                     sizeof(BinaryHeader::kTAPEVERSION) +
+                                     sizeof(BinaryHeader::kTAPEFLAGS);
                     output_file_.flush();
                     if(output_file_.fail()){
                         throw std::runtime_error("Failed to write tape header: " + std::string(deps.output_file_path));
                     }
+                    push_control_status(predex::core::control::LoggerStarted{
+                        .output_file_path = output_file_path_,
+                    });
 
                   }
 //NOLINTNEXTLINE
@@ -106,6 +120,7 @@ namespace predex::logging{
                             output_file_.write(reinterpret_cast<const char*>(frame->payload.data()), frame->len);
                             if(output_file_.fail()){
                                 ++write_failed_count_;
+                                report_fault_once("Failed to write market data tape record");
                                 if(!recycle_queue_.try_push(handle)){
                                     ++recycle_failed_count_;
                                 }
@@ -114,6 +129,7 @@ namespace predex::logging{
                             }
                             ++logged;
                             ++logged_count_;
+                            bytes_written_ += sizeof(record_header) + frame->len;
                         }
                         if(!recycle_queue_.try_push(handle)){
                             ++recycle_failed_count_;
@@ -121,17 +137,56 @@ namespace predex::logging{
                     }
                     next_input_queue_ = (next_input_queue_ + 1) % input_queues_.size();
                 }
+                maybe_send_telemetry();
                 return logged;
             }
         
         private:
+            bool push_control_status(predex::core::control::LoggerToControlStatus status) noexcept{
+                if(logger_to_control_status_queue_ == nullptr){
+                    return false;
+                }
+                return logger_to_control_status_queue_->try_push(std::move(status));
+            }
+
+            void maybe_send_telemetry() noexcept{
+                const auto now = std::chrono::steady_clock::now();
+                if(now < next_telemetry_send_){
+                    return;
+                }
+                (void)push_control_status(predex::core::control::LoggerTelemetry{
+                    .telemetry = predex::core::control::LoggerTelemetrySnapshot{
+                        .records_written = logged_count_,
+                        .bytes_written = bytes_written_,
+                        .write_failures = write_failed_count_,
+                        .recycle_failures = recycle_failed_count_,
+                    },
+                });
+                next_telemetry_send_ = now + kLOGGER_TELEMETRY_INTERVAL;
+            }
+
+            void report_fault_once(std::string error_message) noexcept{
+                if(fault_reported_){
+                    return;
+                }
+                fault_reported_ = true;
+                (void)push_control_status(predex::core::control::LoggerFaulted{
+                    .error_message = std::move(error_message),
+                });
+            }
+
             std::vector<predex::utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>*> input_queues_;
             predex::ingest::kalshi::FramePool& frame_pool_;
             predex::utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>& recycle_queue_;
+            predex::utils::SPSCQueue<predex::core::control::LoggerToControlStatus>* logger_to_control_status_queue_{nullptr};
+            std::string output_file_path_;
             std::ofstream output_file_;
             std::uint64_t logged_count_{0};
+            std::uint64_t bytes_written_{0};
             std::uint64_t recycle_failed_count_{0};
             std::uint64_t write_failed_count_{0};
+            bool fault_reported_{false};
             std::size_t next_input_queue_{0}; 
+            std::chrono::steady_clock::time_point next_telemetry_send_{std::chrono::steady_clock::now() + kLOGGER_TELEMETRY_INTERVAL};
     };
 }

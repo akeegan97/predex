@@ -36,6 +36,7 @@ namespace{
         std::cerr 
             <<"usage:\n"
             <<" predexctl [--socket PATH] status\n"
+            <<" predexctl [--socket PATH] counterstats\n"
             <<" predexctl [--socket PATH] shutdown-graceful\n";
             
     }
@@ -110,6 +111,8 @@ int main(int argc, char** argv){
 
         if(command == "status"){
             type = "status";
+        }else if(command == "counterstats" || command == "stats"){
+            type = "counterstats";
         }else if(command == "shutdown-graceful" || command == "shutdown_graceful"){
             type = "shutdown-graceful";
         }else if(command == "shutdown-forceful" || command == "shutdown_forceful"){

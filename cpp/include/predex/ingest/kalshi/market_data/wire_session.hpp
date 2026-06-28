@@ -10,6 +10,7 @@
 #include <span>
 #include <optional>
 #include <cstdint>
+#include <chrono>
 #include <simdjson.h>
 
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
@@ -22,6 +23,7 @@
 namespace predex::ingest::kalshi::market_data{
 
     inline constexpr std::size_t kMAX_RECYCLE_BATCH_SIZE = 64;
+    inline constexpr std::chrono::milliseconds kIO_TELEMETRY_INTERVAL{250};
 
     using RouterQueue = predex::utils::SPSCQueue<FrameHandle>;
 
@@ -158,6 +160,8 @@ namespace predex::ingest::kalshi::market_data{
 
             std::size_t max_recycle_batch_size_{kMAX_RECYCLE_BATCH_SIZE};
             std::size_t next_recycle_queue_idx_{0};
+            core::control::IoTelemetrySnapshot telemetry_;
+            std::chrono::steady_clock::time_point next_telemetry_send_{std::chrono::steady_clock::now() + kIO_TELEMETRY_INTERVAL};
 
             std::uint64_t next_ws_command_id_{1};
 
@@ -183,6 +187,8 @@ namespace predex::ingest::kalshi::market_data{
             [[nodiscard]] bool unsubscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel);
 
             [[nodiscard]] bool push_control_status(core::control::IoToControlStatus status) noexcept;
+            void maybe_send_telemetry() noexcept;
+            void recycle_handle(FrameHandle handle) noexcept;
 
             void drain_recycle_queues();
             void pump_socket_once();

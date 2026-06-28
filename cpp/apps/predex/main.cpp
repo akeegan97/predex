@@ -54,6 +54,7 @@ using OperatorCommandQueue = utils::SPSCQueue<operator_admin::OperatorCommand>;
 using OperatorResponseQueue = utils::SPSCQueue<operator_admin::OperatorResponse>;
 using ControlToIoQueue = utils::SPSCQueue<control::ControlToIoCommand>;
 using IoToControlStatusQueue = utils::SPSCQueue<control::IoToControlStatus>;
+using LoggerToControlStatusQueue = utils::SPSCQueue<control::LoggerToControlStatus>;
 using RouterToControlQueue = utils::SPSCQueue<router::RouterToControl>;
 using ControlToShardQueue = utils::SPSCQueue<shard::ControlToShardCommand>;
 using ShardToControlQueue = utils::SPSCQueue<shard::ShardToControlMessage>;
@@ -110,6 +111,7 @@ struct AppQueues {
           control_to_server(runtime_config.operator_queue_capacity),
           control_to_io(runtime_config.operator_queue_capacity),
           io_to_control_status(runtime_config.operator_queue_capacity),
+          logger_to_control_status(runtime_config.operator_queue_capacity),
           router_to_control(runtime_config.operator_queue_capacity),
           wire_to_router(runtime_config.router_queue_capacity),
           router_to_logger(runtime_config.router_queue_capacity),
@@ -135,6 +137,7 @@ struct AppQueues {
     OperatorResponseQueue control_to_server;
     ControlToIoQueue control_to_io;
     IoToControlStatusQueue io_to_control_status;
+    LoggerToControlStatusQueue logger_to_control_status;
     RouterToControlQueue router_to_control;
     FrameHandleQueue wire_to_router;
     FrameHandleQueue router_to_logger;
@@ -167,6 +170,12 @@ control::ControlIoQueues make_io_queues(AppQueues& queues) {
 control::RouterQueue make_router_queue(AppQueues& queues) {
     return control::RouterQueue{
         .router_to_control_queue = queues.router_to_control,
+    };
+}
+
+control::ControlLoggerQueue make_logger_queue(AppQueues& queues) {
+    return control::ControlLoggerQueue{
+        .logger_to_control_status_queue = &queues.logger_to_control_status,
     };
 }
 
@@ -307,11 +316,13 @@ bool pump_control_plane_once(control::ControlPlane& control_plane) {
     const auto io_result = control_plane.process_io_status();
     const bool processed_router_messages = control_plane.process_router_messages();
     const bool processed_shard_messages = control_plane.process_shard_messages();
+    const bool processed_logger_messages = control_plane.process_logger_messages();
 
     return operator_result.commands_processed > 0 ||
            io_result.statuses_processed > 0 ||
            processed_router_messages ||
-           processed_shard_messages;
+           processed_shard_messages ||
+           processed_logger_messages;
 }
 
 }  // namespace
@@ -342,10 +353,11 @@ int main(int argc, char** argv) {
     auto io_queues = make_io_queues(app_queues);
     auto router_queue = make_router_queue(app_queues);
     auto shard_queues = make_shard_queues(app_queues);
+    auto logger_queue = make_logger_queue(app_queues);
     auto handler_queues = make_operator_handler_queues(app_queues);
     auto router_queues = make_router_queues(app_queues);
 
-    control::ControlPlane control_plane{operator_queues, io_queues, router_queue, shard_queues};
+    control::ControlPlane control_plane{operator_queues, io_queues, router_queue, shard_queues, logger_queue};
     operator_admin::OperatorCommandHandler command_handler{handler_queues};
     socket::OperatorSocketConfig socket_config{};
     socket_config.socket_path = app_config.runtime.operator_socket_path;
@@ -392,6 +404,7 @@ int main(int argc, char** argv) {
             .input_queues = make_logger_input_queues(app_queues),
             .frame_pool = frame_pool,
             .recycle_queue = app_queues.logger_recycle,
+            .logger_to_control_status_queue = &app_queues.logger_to_control_status,
             .output_file_path = app_config.runtime.market_data_tape_path,
         }
     };

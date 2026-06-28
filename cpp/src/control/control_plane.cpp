@@ -73,14 +73,80 @@ namespace predex::core::control{
             return events_by_shard;
         }
 
+        [[nodiscard]] operator_admin::OperatorCounterStatsSnapshot build_counter_stats_snapshot(
+            const ProcessState& process_state
+        ){
+            std::vector<operator_admin::ShardCounterStats> shard_stats;
+            shard_stats.reserve(process_state.shard_component_states.size());
+
+            for(std::uint64_t shard_index = 0; shard_index < process_state.shard_component_states.size(); ++shard_index){
+                const auto& shard_state = process_state.shard_component_states[shard_index];
+                const auto& telemetry = shard_state.telemetry;
+                shard_stats.push_back(operator_admin::ShardCounterStats{
+                    .shard_index = shard_index,
+                    .frames_seen = telemetry.frames_seen,
+                    .frames_applied = telemetry.frames_applied,
+                    .parse_rejects = telemetry.parse_rejects,
+                    .event_rejects = telemetry.event_rejects,
+                    .event_desyncs = telemetry.event_desyncs,
+                    .frames_to_logger = telemetry.frames_to_logger,
+                    .frames_recycled = telemetry.frames_recycled,
+                    .leaked_handles = telemetry.leaked_handles,
+                    .missed_frames_to_logger = telemetry.missed_frames_to_logger,
+                });
+            }
+
+            const auto& io_state = process_state.io_component_state;
+            const auto& router_state = process_state.router_component_state;
+            const auto& logger_state = process_state.logger_component_state;
+
+            return operator_admin::OperatorCounterStatsSnapshot{
+                .status_snapshot = operator_admin::OperatorStatusSnapshot{
+                    .lifecycle = process_state.lifecycle,
+                    .trading_enabled = process_state.trading_enabled,
+                    .shutdown_requested = process_state.shutdown_requested,
+                },
+                .io_stats = operator_admin::IoCounterStats{
+                    .io_connected = io_state.connected,
+                    .installed_universe_version = io_state.installed_universe_version,
+                    .subscribed_universe_version = io_state.subscribed_universe_version,
+                    .frames_received = io_state.telemetry.frames_received,
+                    .frames_published = io_state.telemetry.frames_published,
+                    .frames_dropped = io_state.telemetry.frames_dropped,
+                    .recycle_failures = io_state.telemetry.recycle_failures,
+                    .last_error = io_state.last_error,
+                },
+                .router_stats = operator_admin::RouterCounterStats{
+                    .frames_seen = router_state.telemetry.total_frames_seen,
+                    .frames_to_shards = router_state.telemetry.frames_to_shards,
+                    .frames_to_logger = router_state.telemetry.frames_to_logger,
+                    .frames_recycled = router_state.telemetry.frames_recycled,
+                    .leaked_handles = router_state.telemetry.leaked_handles,
+                },
+                .shard_stats = std::move(shard_stats),
+                .logger_stats = operator_admin::LoggerCounterStats{
+                    .output_file_path = logger_state.output_file_path,
+                    .records_written = logger_state.telemetry.records_written,
+                    .bytes_written = logger_state.telemetry.bytes_written,
+                    .write_failures = logger_state.telemetry.write_failures,
+                    .recycle_failures = logger_state.telemetry.recycle_failures,
+                },
+            };
+        }
+
     }
 
     ControlPlane::ControlPlane(
         OperatorQueues queues,
         ControlIoQueues io_queues,
         RouterQueue router_queue,
-        ControlShardQueues shard_queues
-    ) : queues_(queues), io_queues_(io_queues), router_queue_(router_queue), shard_queues_(std::move(shard_queues)){
+        ControlShardQueues shard_queues,
+        ControlLoggerQueue logger_queue
+    ) : queues_(queues),
+        io_queues_(io_queues),
+        router_queue_(router_queue),
+        shard_queues_(std::move(shard_queues)),
+        logger_queue_(logger_queue){
         process_state_.shard_component_states.resize(shard_queues_.control_to_shard_queues.size());
     }
 
@@ -99,6 +165,18 @@ namespace predex::core::control{
                             .trading_enabled = process_state_.trading_enabled,
                             .shutdown_requested = process_state_.shutdown_requested,
                         }
+                    })){
+                        result.responses_pushed_success++;
+                    }else{
+                        result.responses_pushed_failure++;
+                    }
+                    break;
+                }
+                case operator_admin::OperatorCommandType::kCOUNTERSTATS:{
+                    if(push_operator_response(operator_admin::OperatorResponse{
+                        .request_id = item.request_id,
+                        .type = operator_admin::OperatorResponseType::kCOUNTERSTATS,
+                        .payload = build_counter_stats_snapshot(process_state_),
                     })){
                         result.responses_pushed_success++;
                     }else{
@@ -185,6 +263,8 @@ namespace predex::core::control{
                 process_state_.io_component_state.status = ComponentStatus::kFAULTED;
                 process_state_.io_component_state.connected = false;
                 process_state_.io_component_state.last_error = stat.error_message;
+            }else if constexpr(std::is_same_v<T, IoTelemetry>){
+                process_state_.io_component_state.telemetry = stat.telemetry;
             }
         }, status);
     }
@@ -201,6 +281,7 @@ namespace predex::core::control{
 
         if(process_state_.io_component_state.status == ComponentStatus::kFAULTED ||
            process_state_.router_component_state.status == ComponentStatus::kFAULTED ||
+           process_state_.logger_component_state.status == ComponentStatus::kFAULTED ||
            std::any_of(
                 process_state_.shard_component_states.begin(),
                 process_state_.shard_component_states.end(),
@@ -472,6 +553,44 @@ namespace predex::core::control{
     bool ControlPlane::process_shard_messages() noexcept{
         bool processed_any = false;
         while(process_one_shard_message()){
+            processed_any = true;
+        }
+        return processed_any;
+    }
+
+    void ControlPlane::apply_logger_status(const LoggerToControlStatus& status) noexcept{
+        std::visit([&](auto&& stat){
+            using T = std::decay_t<decltype(stat)>;
+            if constexpr(std::is_same_v<T, LoggerStarted>){
+                process_state_.logger_component_state.status = ComponentStatus::kLIVE;
+                process_state_.logger_component_state.output_file_path = stat.output_file_path;
+                process_state_.logger_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, LoggerFaulted>){
+                process_state_.logger_component_state.status = ComponentStatus::kFAULTED;
+                process_state_.logger_component_state.last_error = stat.error_message;
+            }else if constexpr(std::is_same_v<T, LoggerTelemetry>){
+                process_state_.logger_component_state.telemetry = stat.telemetry;
+            }
+        }, status);
+    }
+
+    bool ControlPlane::process_one_logger_message() noexcept{
+        if(logger_queue_.logger_to_control_status_queue == nullptr){
+            return false;
+        }
+
+        LoggerToControlStatus status{};
+        if(logger_queue_.logger_to_control_status_queue->try_pop(status)){
+            apply_logger_status(status);
+            recompute_process_state();
+            return true;
+        }
+        return false;
+    }
+
+    bool ControlPlane::process_logger_messages() noexcept{
+        bool processed_any = false;
+        while(process_one_logger_message()){
             processed_any = true;
         }
         return processed_any;

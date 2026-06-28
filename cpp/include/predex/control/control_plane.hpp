@@ -26,6 +26,10 @@ namespace predex::core::control{
         utils::SPSCQueue<router::RouterToControl>& router_to_control_queue;
     };
 
+    struct ControlLoggerQueue{
+        utils::SPSCQueue<LoggerToControlStatus>* logger_to_control_status_queue{nullptr};
+    };
+
     struct ControlShardQueues{
         std::vector<utils::SPSCQueue<shard::ControlToShardCommand>*> control_to_shard_queues;
         std::vector<utils::SPSCQueue<shard::ShardToControlMessage>*> shard_to_control_queues;
@@ -56,7 +60,8 @@ namespace predex::core::control{
                 OperatorQueues queues,
                 ControlIoQueues io_queues,
                 RouterQueue router_queue,
-                ControlShardQueues shard_queues = {}
+                ControlShardQueues shard_queues = {},
+                ControlLoggerQueue logger_queue = {}
             );
         
             [[nodiscard]] OperatorPumpResult process_operator_commands();
@@ -93,6 +98,9 @@ namespace predex::core::control{
             [[nodiscard]] bool process_one_shard_message() noexcept;
             [[nodiscard]] bool process_shard_messages() noexcept;
 
+            [[nodiscard]] bool process_one_logger_message() noexcept;
+            [[nodiscard]] bool process_logger_messages() noexcept;
+
 
         private:
             OperatorQueues queues_;
@@ -102,12 +110,14 @@ namespace predex::core::control{
             void recompute_process_state() noexcept;
             void apply_io_status(const IoToControlStatus& status) noexcept;
             void apply_shard_status(const shard::ShardToControlMessage& status) noexcept;
+            void apply_logger_status(const LoggerToControlStatus& status) noexcept;
             [[nodiscard]] bool push_shard_command(std::uint32_t shard_index, shard::ControlToShardCommand command);
 
             std::shared_ptr<const UniverseSnapshot> active_universe_;
             std::uint64_t next_universe_version_{1};
             RouterQueue router_queue_;
             ControlShardQueues shard_queues_;
+            ControlLoggerQueue logger_queue_;
     };
 
 }

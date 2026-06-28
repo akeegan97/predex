@@ -109,10 +109,12 @@ namespace predex::ingest::kalshi::market_data{
             else{
                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
             }
+            maybe_send_telemetry();
         }
 
         disconnect("wire session stopped");
         drain_recycle_queues();
+        maybe_send_telemetry();
     }
 
     bool KalshiWireSession::pop_control_command(core::control::ControlToIoCommand& cmd_out) noexcept{
@@ -121,6 +123,23 @@ namespace predex::ingest::kalshi::market_data{
 
     bool KalshiWireSession::push_control_status(core::control::IoToControlStatus status) noexcept{
         return control_queues_.io_to_control_status_queue.try_push(std::move(status));
+    }
+
+    void KalshiWireSession::maybe_send_telemetry() noexcept{
+        const auto now = std::chrono::steady_clock::now();
+        if(now < next_telemetry_send_){
+            return;
+        }
+        (void)push_control_status(core::control::IoTelemetry{
+            .telemetry = telemetry_,
+        });
+        next_telemetry_send_ = now + kIO_TELEMETRY_INTERVAL;
+    }
+
+    void KalshiWireSession::recycle_handle(FrameHandle handle) noexcept{
+        if(!frame_pool_.recycle(handle)){
+            ++telemetry_.recycle_failures;
+        }
     }
 
     void KalshiWireSession::drain_control_commands(){
@@ -437,7 +456,9 @@ namespace predex::ingest::kalshi::market_data{
     }
 
     void KalshiWireSession::publish_market_data_frame(std::span<const std::byte> payload){
+        ++telemetry_.frames_received;
         if(payload.size() > predex::ingest::kalshi::kMaxFrameBytes){
+            ++telemetry_.frames_dropped;
             return;
         }
 
@@ -445,13 +466,15 @@ namespace predex::ingest::kalshi::market_data{
         if(!frame_pool_.try_acquire(handle)){
             drain_recycle_queues();
             if(!frame_pool_.try_acquire(handle)){
+                ++telemetry_.frames_dropped;
                 return;
             }
         }
 
         auto* frame = frame_pool_.writable_frame(handle);
         if(frame == nullptr){
-            (void)frame_pool_.recycle(handle);
+            ++telemetry_.frames_dropped;
+            recycle_handle(handle);
             return;
         }
 
@@ -462,20 +485,25 @@ namespace predex::ingest::kalshi::market_data{
 
         MarketDataEnvelope envelope{};
         if(!parse_market_data_envelope(*frame, envelope)){
-            (void)frame_pool_.recycle(handle);
+            ++telemetry_.frames_dropped;
+            recycle_handle(handle);
             return;
         }
 
         if(!stamp_handle_from_envelope(handle, envelope)){
-            (void)frame_pool_.recycle(handle);
+            ++telemetry_.frames_dropped;
+            recycle_handle(handle);
             return;
         }
 
         if(!router_queue_.try_push(handle)){
             if(!logger_queue_.try_push(handle)){
-                (void)frame_pool_.recycle(handle);
+                ++telemetry_.frames_dropped;
+                recycle_handle(handle);
+                return;
             }
         }
+        ++telemetry_.frames_published;
     }
     
     void KalshiWireSession::drain_recycle_queues(){
@@ -504,7 +532,7 @@ namespace predex::ingest::kalshi::market_data{
                 ++total_recycled;
             }
             else{
-                //failure to recycle frame back into pool, will leak the frame/handle 
+                ++telemetry_.recycle_failures;
             }
         } 
     }

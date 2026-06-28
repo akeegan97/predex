@@ -5,7 +5,8 @@
     "router_queue_capacity": 8192,
     "frame_pool_capacity": 8192,
     "operator_queue_capacity": 64,
-    "operator_socket_path": "/tmp/predex_operator.sock"
+    "operator_socket_path": "/tmp/predex_operator.sock",
+    "market_data_tape_path": "logs/live/predex_tape.bin"
   },
   "kalshi": {
     "auth": {

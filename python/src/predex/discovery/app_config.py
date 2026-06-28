@@ -25,6 +25,7 @@ class RuntimeSettings:
     frame_pool_capacity: int = 8192
     operator_queue_capacity: int = 64
     operator_socket_path: str = "/tmp/predex_operator.sock"
+    market_data_tape_path: str = "logs/live/predex_tape.bin"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -34,6 +35,7 @@ class RuntimeSettings:
             "frame_pool_capacity": self.frame_pool_capacity,
             "operator_queue_capacity": self.operator_queue_capacity,
             "operator_socket_path": self.operator_socket_path,
+            "market_data_tape_path": self.market_data_tape_path,
         }
 
 

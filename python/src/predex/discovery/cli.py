@@ -336,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
                 frame_pool_capacity=args.frame_pool_capacity,
                 operator_queue_capacity=args.operator_queue_capacity,
                 operator_socket_path=args.operator_socket_path,
+                market_data_tape_path=args.tape_output,
             ),
             kalshi=KalshiSettings(
                 credentials=CredentialSettings(

@@ -956,6 +956,7 @@ class ConfigTests(unittest.TestCase):
                 "frame_pool_capacity": 4096,
                 "operator_queue_capacity": 32,
                 "operator_socket_path": "/tmp/predex-test.sock",
+                "market_data_tape_path": "logs/live/predex_tape.bin",
             },
         )
         self.assertEqual(

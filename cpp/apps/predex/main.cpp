@@ -48,7 +48,6 @@ std::atomic<bool> g_signal_stop_requested{false};
 constexpr std::size_t kDefaultSleepMs = 10;
 constexpr std::string_view kDefaultConfigPath = "docs/app_config.example.json";
 
-constexpr std::string_view kDefaultTapeOutputPath = "logs/live/predex_tape.bin";
 constexpr std::size_t kLoggerPumpBatchSize = 256;
 
 using OperatorCommandQueue = utils::SPSCQueue<operator_admin::OperatorCommand>;
@@ -393,7 +392,7 @@ int main(int argc, char** argv) {
             .input_queues = make_logger_input_queues(app_queues),
             .frame_pool = frame_pool,
             .recycle_queue = app_queues.logger_recycle,
-            .output_file_path = kDefaultTapeOutputPath
+            .output_file_path = app_config.runtime.market_data_tape_path,
         }
     };
     std::jthread market_data_logger_thread = start_market_data_logger_thread(market_data_logger);

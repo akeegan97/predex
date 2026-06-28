@@ -14,6 +14,7 @@ namespace predex::config{
     constexpr std::size_t kDefaultFramePoolCapacity = 8192;
     constexpr std::size_t kDefaultOperatorQueueCapacity = 64;
     constexpr std::string_view kDefaultOperatorSocketPath = "/tmp/predex_operator.sock";
+    constexpr std::string_view kDefaultMarketDataTapePath = "logs/live/predex_tape.bin";
 
     struct RuntimeConfig{
         std::size_t shard_count{kDefaultShardCount};
@@ -22,6 +23,7 @@ namespace predex::config{
         std::size_t frame_pool_capacity{kDefaultFramePoolCapacity};
         std::size_t operator_queue_capacity{kDefaultOperatorQueueCapacity};
         std::string operator_socket_path{kDefaultOperatorSocketPath};
+        std::string market_data_tape_path{kDefaultMarketDataTapePath};
     };
 
     struct KalshiAuthConfig{

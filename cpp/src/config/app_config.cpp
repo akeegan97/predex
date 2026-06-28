@@ -85,6 +85,9 @@ namespace predex::config{
                 if(runtime_json.contains("operator_socket_path")){
                     runtime_config.operator_socket_path = runtime_json["operator_socket_path"].get<std::string>();
                 }
+                if(runtime_json.contains("market_data_tape_path")){
+                    runtime_config.market_data_tape_path = runtime_json["market_data_tape_path"].get<std::string>();
+                }
 
                 config.runtime = std::move(runtime_config);
             }
@@ -181,6 +184,9 @@ namespace predex::config{
         }
         if(config.runtime.operator_socket_path.empty()){
             throw std::runtime_error("Invalid configuration: operator_socket_path must not be empty");
+        }
+        if(config.runtime.market_data_tape_path.empty()){
+            throw std::runtime_error("Invalid configuration: market_data_tape_path must not be empty");
         }
         if(config.universe.events.empty()){
             throw std::runtime_error("Invalid configuration: universe must contain at least one event");

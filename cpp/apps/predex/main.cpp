@@ -283,7 +283,35 @@ std::jthread start_shard_thread(shard::Shard& shard_instance) {
     return std::jthread([&shard_instance](const std::stop_token& stop_token) {
         while (!stop_token.stop_requested()) {
             (void)shard_instance.drain_control_commands(64); //NOLINT: arbitrary max commands to process per iteration
+            shard_instance.maybe_send_telemetry();
             const auto result = shard_instance.pump_once();
+            switch(result.code){
+                case shard::ShardPumpCode::kIDLE:
+                case shard::ShardPumpCode::kAPPLIED:
+                    break;
+
+                case shard::ShardPumpCode::kPARSE_REJECTED:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " parse failure: "
+                            << static_cast<std::uint32_t>(result.parse_result.reason)
+                            << '\n';
+                    break;
+
+                case shard::ShardPumpCode::kEVENT_REJECTED:
+                case shard::ShardPumpCode::kEVENT_DESYNCED:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " event apply failure: "
+                            << static_cast<std::uint32_t>(result.event_result.code)
+                            << '\n';
+                    break;
+
+                default:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " pump result: "
+                            << static_cast<std::uint32_t>(result.code)
+                            << '\n';
+                    break;
+            }
 
             if (result.code == shard::ShardPumpCode::kIDLE) {
                 std::this_thread::yield();

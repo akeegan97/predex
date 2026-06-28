@@ -119,6 +119,7 @@ namespace predex::shard{
         ShardApplyRejected,
         ShardEventDesynced,
         ShardTelemetry,
-        ShardFaulted
+        ShardFaulted,
+        ShardStats
     >;
 }

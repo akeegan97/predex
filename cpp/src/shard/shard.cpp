@@ -252,6 +252,22 @@ namespace predex::shard{
         }
         run_state_ = ShardRunState::kLIVE;
     }
+    void Shard::maybe_send_telemetry() noexcept {
+        const auto now = std::chrono::steady_clock::now();
+        if(now < next_telemetry_send_) {
+            return;
+        }
+
+        (void)send_control_message(ShardToControlMessage{
+            ShardTelemetry{
+                .shard_index = shard_index_,
+                .universe_version = installed_universe_version_,
+                .stats = stats_,
+            }
+        });
+
+        next_telemetry_send_ = now + kSHARD_TELEMETRY_INTERVAL;
+    }
 
 
 }

@@ -20,7 +20,7 @@ namespace predex::shard{
         predex::utils::SPSCQueue<ShardToControlMessage>& shard_to_control_queue;
         predex::utils::SPSCQueue<ControlToShardCommand>& control_to_shard_queue;
     };
-
+    const std::chrono::milliseconds kSHARD_TELEMETRY_INTERVAL{5000};
     enum class ShardPumpCode : std::uint8_t{
         kIDLE = 0,
         kAPPLIED = 1,
@@ -58,6 +58,7 @@ namespace predex::shard{
 
             [[nodiscard]] bool process_one_control_command() noexcept;
             [[nodiscard]] std::size_t drain_control_commands(std::size_t max_commands) noexcept;
+            void maybe_send_telemetry() noexcept;
 
         private:
             [[nodiscard]] bool terminal_handoff(const predex::ingest::kalshi::FrameHandle& handle) noexcept;
@@ -73,6 +74,8 @@ namespace predex::shard{
             void handle_operator_command(ResumeShardUniverse& command);
 
 
+
+
             std::uint32_t shard_index_{0};
             std::uint64_t installed_universe_version_{0};
             ShardRunState run_state_{ShardRunState::kUNINSTALLED};
@@ -82,6 +85,7 @@ namespace predex::shard{
             EventStore event_store_;
             MarketParser market_parser_;
             ShardStats stats_;
+            std::chrono::steady_clock::time_point next_telemetry_send_;
     };
 
 }

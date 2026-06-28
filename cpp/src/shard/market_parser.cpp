@@ -54,6 +54,19 @@ namespace {
         out = result.value_unsafe();
         return true;
     }
+    bool read_object(simdjson::ondemand::object& value, std::string_view key,
+                    simdjson::ondemand::object& out) noexcept {
+        auto field = value.find_field_unordered(key);
+        if (field.error() != simdjson::SUCCESS) {
+            return false;
+        }
+        auto value_ = field.get_object();
+        if (value_.error() != simdjson::SUCCESS) {
+            return false;
+        }
+        out = value_.value();
+        return true;
+    }
 //NOLINTNEXTLINE - accepting a high cognitive complexity for this function
     bool parse_scaled_fp(
         std::string_view value,
@@ -442,7 +455,13 @@ namespace predex::shard{
             result.reason = KalshiParseFailureReason::kINVALID_JSON;
             return result;
         }
-        auto document_result = parser_.iterate(buffer, buffer_length);
+        simdjson::padded_string_view json{
+            reinterpret_cast<const char*>(frame.payload.data()),
+            frame.len,
+            frame.payload.size()
+        };
+
+        auto document_result = parser_.iterate(json);
         if(document_result.error() != simdjson::SUCCESS){
             result.reason = KalshiParseFailureReason::kINVALID_JSON;
             return result;
@@ -452,13 +471,19 @@ namespace predex::shard{
             result.reason = KalshiParseFailureReason::kINVALID_JSON;
             return result;
         }
-        auto message_object = root_result.value_unsafe();
+        auto value = root_result.value_unsafe();
+
+        simdjson::ondemand::object msg_object{};
+        if(!read_object(value, "msg", msg_object)){
+            result.reason = KalshiParseFailureReason::kMISSING_FIELD;
+            return result;
+        }
 
         switch (handle.kind) {
             case ingest::kalshi::FrameKind::kORDERBOOK_SNAPSHOT: {
                 KalshiSnapshotEvent snapshot_event{};
 
-                if (!parse_snapshot(message_object, snapshot_event)) {
+                if (!parse_snapshot(msg_object, snapshot_event)) {
                     result.success = false;
                     result.reason = KalshiParseFailureReason::kMISSING_FIELD;
                     return result;
@@ -472,7 +497,7 @@ namespace predex::shard{
             case ingest::kalshi::FrameKind::kORDERBOOK_DELTA: {
                 KalshiDeltaData delta_event{};
 
-                if (!parse_delta(message_object, delta_event)) {
+                if (!parse_delta(msg_object, delta_event)) {
                     result.success = false;
                     result.reason = KalshiParseFailureReason::kMISSING_FIELD;
                     return result;
@@ -486,7 +511,7 @@ namespace predex::shard{
             case ingest::kalshi::FrameKind::kTRADE: {
                 KalshiTradeData trade_event{};
 
-                if (!parse_trade(message_object, trade_event)) {
+                if (!parse_trade(msg_object, trade_event)) {
                     result.success = false;
                     result.reason = KalshiParseFailureReason::kMISSING_FIELD;
                     return result;
@@ -500,7 +525,7 @@ namespace predex::shard{
             case ingest::kalshi::FrameKind::kLIFECYCLE: {
                 KalshiLifecycleData lifecycle_event{};
 
-                if (!parse_lifecycle(message_object, lifecycle_event)) {
+                if (!parse_lifecycle(msg_object, lifecycle_event)) {
                     result.success = false;
                     result.reason = KalshiParseFailureReason::kMISSING_FIELD;
                     return result;

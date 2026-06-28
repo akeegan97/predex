@@ -3,11 +3,3 @@ Name: predex
 Version: 0.1.0
 Summary: Python discovery and config synthesis tooling for Predex
 Requires-Python: >=3.11
-Provides-Extra: replay
-Requires-Dist: pyarrow>=16.0.0; extra == "replay"
-Provides-Extra: replay-viz
-Requires-Dist: pyarrow>=16.0.0; extra == "replay-viz"
-Requires-Dist: pandas>=2.2.0; extra == "replay-viz"
-Requires-Dist: plotly>=5.22.0; extra == "replay-viz"
-Requires-Dist: matplotlib>=3.8.0; extra == "replay-viz"
-Requires-Dist: streamlit>=1.40.0; extra == "replay-viz"

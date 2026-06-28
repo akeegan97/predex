@@ -36,6 +36,7 @@ namespace predex::ingest::kalshi::market_data{
         predex::utils::SPSCQueue<predex::core::control::IoToControlStatus>& io_to_control_status_queue;
     };
 
+    using LoggerQueue = predex::utils::SPSCQueue<FrameHandle>;
     using RecycleQueues = std::vector<predex::utils::SPSCQueue<FrameHandle>*>;
 
     struct KalshiWireSessionDeps{
@@ -43,7 +44,9 @@ namespace predex::ingest::kalshi::market_data{
         ControlQueues control_queues;
         RecycleQueues recycle_queues;
         RouterQueue& router_queue;
+        LoggerQueue& logger_queue;
         exchange::kalshi::KalshiMarketDataHandler market_data_handler;
+        std::vector<exchange::kalshi::KalshiMarketDataChannel> desired_channels;
     };
 
     enum class SubscriptionPhase : std::uint8_t {
@@ -91,6 +94,24 @@ namespace predex::ingest::kalshi::market_data{
         std::string_view market_ticker;
     };
 
+    struct StringHash {
+        using is_transparent = void;
+
+        std::size_t operator()(std::string_view value) const noexcept {
+            return std::hash<std::string_view>{}(value);
+        }
+
+        std::size_t operator()(const std::string& value) const noexcept {
+            return std::hash<std::string_view>{}(std::string_view{value});
+        }
+
+        std::size_t operator()(const char* value) const noexcept {
+            return std::hash<std::string_view>{}(std::string_view{value});
+        }
+    };
+
+    using RouteByTickerMap = std::unordered_map<std::string, core::control::UniverseMarketRoute, StringHash, std::equal_to<>>;
+
     class KalshiWireSession {
         public:
             KalshiWireSession(KalshiWireSessionDeps deps) : 
@@ -98,8 +119,10 @@ namespace predex::ingest::kalshi::market_data{
                 router_queue_(deps.router_queue), 
                 control_queues_(deps.control_queues), 
                 recycle_queues_(std::move(deps.recycle_queues)),
+                logger_queue_(deps.logger_queue),
                 market_data_handler_(std::move(deps.market_data_handler)),
-                ws_session_(market_data_handler_){}
+                ws_session_(market_data_handler_),
+                desired_channels_(std::move(deps.desired_channels)){}
 
             void run(const std::stop_token& stop_token);
 
@@ -115,6 +138,7 @@ namespace predex::ingest::kalshi::market_data{
             RouterQueue& router_queue_;
             ControlQueues control_queues_;
             RecycleQueues recycle_queues_;
+            LoggerQueue& logger_queue_;
 
             exchange::kalshi::KalshiMarketDataHandler market_data_handler_;
             exchange::kalshi::WebSocketSession ws_session_;
@@ -122,13 +146,10 @@ namespace predex::ingest::kalshi::market_data{
             WireSessionState status_;
 
             std::shared_ptr<const core::control::UniverseSnapshot> desired_universe_{nullptr};
-            std::unordered_map<std::string, core::control::UniverseMarketRoute> market_route_by_ticker_;
+            RouteByTickerMap market_route_by_ticker_;
             std::unordered_map<core::control::MarketId, core::control::UniverseMarketRoute> market_route_by_id_;
 
-            std::vector<exchange::kalshi::KalshiMarketDataChannel> desired_channels_{
-                exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA,
-                exchange::kalshi::KalshiMarketDataChannel::kTRADE,
-            };
+            std::vector<exchange::kalshi::KalshiMarketDataChannel> desired_channels_;
             std::unordered_map<exchange::kalshi::KalshiMarketDataChannel, ActiveSubscription> active_subscriptions_;
             std::unordered_map<std::uint64_t, PendingWsCommand> pending_ws_commands_;
             simdjson::ondemand::parser message_classifier_parser_;

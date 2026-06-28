@@ -11,6 +11,7 @@ python/src/predex.egg-info/top_level.txt
 python/src/predex/discovery/__init__.py
 python/src/predex/discovery/__main__.py
 python/src/predex/discovery/affinity.py
+python/src/predex/discovery/app_config.py
 python/src/predex/discovery/classifier.py
 python/src/predex/discovery/cli.py
 python/src/predex/discovery/config.py
@@ -18,14 +19,7 @@ python/src/predex/discovery/kalshi.py
 python/src/predex/discovery/models.py
 python/src/predex/replay/__init__.py
 python/src/predex/replay/__main__.py
-python/src/predex/replay/audit.py
-python/src/predex/replay/books.py
+python/src/predex/replay/app_config.py
 python/src/predex/replay/cli.py
-python/src/predex/replay/config.py
-python/src/predex/replay/dashboard.py
-python/src/predex/replay/latency.py
-python/src/predex/replay/monotonic.py
-python/src/predex/replay/tape.py
-python/src/predex/replay/timeline.py
-python/src/predex/replay/verify.py
-python/src/predex/replay/windows.py
+python/src/predex/replay/inspect.py
+python/src/predex/replay/market_data_tape.py

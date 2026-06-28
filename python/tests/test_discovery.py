@@ -6,8 +6,12 @@ from urllib.error import HTTPError
 
 from predex.discovery import (
     EventRecord,
+    KalshiMarketDataSettings,
+    KalshiSettings,
     MarketRecord,
+    RuntimeSettings,
     TopologyKind,
+    build_app_config_result,
     build_trader_config,
     build_trader_config_result,
     classify_event,
@@ -474,6 +478,17 @@ class ClassifierTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_market_record_from_api_preserves_price_level_structure(self) -> None:
+        market = MarketRecord.from_api(
+            {
+                "ticker": "MKT-PRICE",
+                "event_ticker": "EV-PRICE",
+                "price_level_structure": "tapered_deci_cent",
+            }
+        )
+
+        self.assertEqual(market.price_level_structure, "tapered_deci_cent")
+
     def test_config_builder_assigns_stable_per_event_affinity(self) -> None:
         events = [
             EventRecord(
@@ -885,6 +900,125 @@ class ConfigTests(unittest.TestCase):
                 "shard_to_logger_capacity": 1500,
             },
         )
+
+    def test_app_config_builder_emits_cpp_runtime_shape(self) -> None:
+        events = [
+            EventRecord(
+                event_ticker="EV-APP-1",
+                markets=[
+                    MarketRecord(
+                        ticker="MKT-APP-1A",
+                        event_ticker="EV-APP-1",
+                        strike_type="custom",
+                        custom_strike={"Company": "Ramp"},
+                        close_time="2040-01-01T04:59:00Z",
+                        status="active",
+                        price_level_structure="linear_cent",
+                    ),
+                    MarketRecord(
+                        ticker="MKT-APP-1B",
+                        event_ticker="EV-APP-1",
+                        strike_type="custom",
+                        custom_strike={"Company": "Brex"},
+                        close_time="2040-01-01T04:59:00Z",
+                        price_level_structure="tapered_deci_cent",
+                    ),
+                ],
+            )
+        ]
+
+        result = build_app_config_result(
+            events,
+            runtime=RuntimeSettings(
+                shard_count=2,
+                shard_queue_capacity=1024,
+                router_queue_capacity=2048,
+                frame_pool_capacity=4096,
+                operator_queue_capacity=32,
+                operator_socket_path="/tmp/predex-test.sock",
+            ),
+            kalshi=KalshiSettings(
+                market_data=KalshiMarketDataSettings(
+                    enable_market_data=True,
+                    channels=("orderbook_delta", "trade", "market_lifecycle_v2"),
+                )
+            ),
+        )
+
+        config = result.config
+
+        self.assertEqual(
+            config["runtime"],
+            {
+                "shard_count": 2,
+                "shard_queue_capacity": 1024,
+                "router_queue_capacity": 2048,
+                "frame_pool_capacity": 4096,
+                "operator_queue_capacity": 32,
+                "operator_socket_path": "/tmp/predex-test.sock",
+            },
+        )
+        self.assertEqual(
+            config["kalshi"]["market_data"],
+            {
+                "enable_market_data": True,
+                "channels": ["orderbook_delta", "trade", "market_lifecycle_v2"],
+            },
+        )
+        self.assertNotIn("market_routes", config)
+        self.assertEqual(len(config["universe"]["events"]), 1)
+
+        event_config = config["universe"]["events"][0]
+        self.assertEqual(event_config["topology"], "mutually_exclusive")
+        self.assertIsInstance(event_config["event_id"], str)
+        self.assertIsInstance(event_config["affinity_key"], str)
+        self.assertTrue(event_config["markets"][0]["market_id"].isdigit())
+        self.assertTrue(event_config["markets"][1]["market_id"].isdigit())
+        self.assertEqual(
+            [
+                {
+                    key: market_config[key]
+                    for key in ("kalshi_ticker", "tradeable", "price_level_structure")
+                }
+                for market_config in event_config["markets"]
+            ],
+            [
+                {
+                    "kalshi_ticker": "MKT-APP-1A",
+                    "tradeable": True,
+                    "price_level_structure": "linear_cent",
+                },
+                {
+                    "kalshi_ticker": "MKT-APP-1B",
+                    "tradeable": False,
+                    "price_level_structure": "tapered_deci_cent",
+                },
+            ],
+        )
+        self.assertEqual(result.topology_counts, {"mutually_exclusive": 1})
+        self.assertEqual(result.report()["included_market_count"], 2)
+
+    def test_app_config_builder_resolves_32_bit_market_id_collisions(self) -> None:
+        events = [
+            EventRecord(
+                event_ticker="EV-COLLISION-1",
+                markets=[MarketRecord(ticker="KXFED-26OCT-T4.00", event_ticker="EV-COLLISION-1")],
+            ),
+            EventRecord(
+                event_ticker="EV-COLLISION-2",
+                markets=[MarketRecord(ticker="KXRIVN-26AUGDELIV-9000", event_ticker="EV-COLLISION-2")],
+            ),
+        ]
+
+        result = build_app_config_result(events)
+        market_ids = [
+            market["market_id"]
+            for event in result.config["universe"]["events"]
+            for market in event["markets"]
+        ]
+
+        self.assertEqual(len(market_ids), 2)
+        self.assertEqual(len(set(market_ids)), 2)
 
 
 class KalshiClientTests(unittest.TestCase):

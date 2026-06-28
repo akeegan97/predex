@@ -71,7 +71,7 @@ namespace{
 
 }// namespace
 
-    constexpr std::string_view kDefaultSocketPath = "/tmp/predex.sock";
+    constexpr std::string_view kDefaultSocketPath = "/tmp/predex_operator.sock";
 
     enum class SocketExitCode : std::uint8_t{
         kSuccess = 0,

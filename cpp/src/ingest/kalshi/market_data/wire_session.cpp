@@ -472,7 +472,9 @@ namespace predex::ingest::kalshi::market_data{
         }
 
         if(!router_queue_.try_push(handle)){
-            (void)frame_pool_.recycle(handle);
+            if(!logger_queue_.try_push(handle)){
+                (void)frame_pool_.recycle(handle);
+            }
         }
     }
     
@@ -641,7 +643,7 @@ namespace predex::ingest::kalshi::market_data{
             return false;
         }
 
-        const auto route_it = market_route_by_ticker_.find(std::string{envelope.market_ticker});
+        const auto route_it = market_route_by_ticker_.find(envelope.market_ticker);
         if(route_it == market_route_by_ticker_.end()){
             return false;
         }

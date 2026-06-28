@@ -39,6 +39,7 @@ add_executable(predex
   include/predex/shard/shard_types.hpp
   src/config/app_config.cpp
   src/config/universe_builder.cpp
+  include/predex/logging/market_data_logger.hpp
 )
 
 add_executable(smoke 

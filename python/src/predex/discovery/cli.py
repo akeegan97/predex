@@ -6,6 +6,12 @@ import sys
 
 from predex.env import load_repo_dotenv
 
+from .app_config import (
+    KalshiMarketDataSettings,
+    KalshiSettings,
+    RuntimeSettings,
+    build_app_config_result,
+)
 from .config import (
     CredentialSettings,
     DiscoverySettings,
@@ -46,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predex",
         description="Discover Kalshi events and emit an event-centric Predex trader config.",
+    )
+    parser.add_argument(
+        "--config-format",
+        choices=("trader", "app"),
+        default="trader",
+        help="Config schema to emit. 'trader' is the legacy generator; 'app' targets the C++ AppConfig. Default: trader.",
     )
     parser.add_argument(
         "--event-ticker",
@@ -127,6 +139,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8192,
         help="Per-shard logger queue capacity written into the generated config. Default: 8192.",
+    )
+    parser.add_argument(
+        "--router-queue-capacity",
+        type=int,
+        help="Router queue capacity written into the C++ app config. Defaults to --io-to-router-capacity.",
+    )
+    parser.add_argument(
+        "--operator-queue-capacity",
+        type=int,
+        default=64,
+        help="Operator command queue capacity written into the C++ app config. Default: 64.",
+    )
+    parser.add_argument(
+        "--operator-socket-path",
+        default="/tmp/predex_operator.sock",
+        help="Operator Unix socket path written into the C++ app config. Default: /tmp/predex_operator.sock.",
     )
     parser.add_argument(
         "--include-topology",
@@ -236,6 +264,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable local risk trading in the generated config (default: disabled).",
     )
+    parser.add_argument(
+        "--enable-market-data",
+        action="store_true",
+        help="Enable market data in the generated C++ app config (default: disabled).",
+    )
     return parser
 
 
@@ -292,18 +325,45 @@ def main(argv: list[str] | None = None) -> int:
         status=args.status,
         limit=event_limit,
     )
-    build_result = build_trader_config_result(
-        events,
-        discovery=discovery,
-        pipeline=pipeline,
-        oms_transport=oms_transport,
-        local_risk=local_risk,
-        tape_output_path=args.tape_output,
-        audit_output_path=args.audit_output,
-        include_topologies=args.include_topology or None,
-        exclude_topologies=args.exclude_topology or None,
-        market_limit=args.market_limit,
-    )
+    if args.config_format == "app":
+        app_channels = tuple(dict.fromkeys(channels + lifecycle_channels))
+        build_result = build_app_config_result(
+            events,
+            runtime=RuntimeSettings(
+                shard_count=args.shard_count,
+                shard_queue_capacity=args.shard_input_capacity,
+                router_queue_capacity=args.router_queue_capacity or args.io_to_router_capacity,
+                frame_pool_capacity=args.frame_pool_capacity,
+                operator_queue_capacity=args.operator_queue_capacity,
+                operator_socket_path=args.operator_socket_path,
+            ),
+            kalshi=KalshiSettings(
+                credentials=CredentialSettings(
+                    key_id_env=args.key_id_env,
+                    private_key_pem_env=args.private_key_env,
+                ),
+                market_data=KalshiMarketDataSettings(
+                    enable_market_data=args.enable_market_data,
+                    channels=app_channels,
+                ),
+            ),
+            include_topologies=args.include_topology or None,
+            exclude_topologies=args.exclude_topology or None,
+            market_limit=args.market_limit,
+        )
+    else:
+        build_result = build_trader_config_result(
+            events,
+            discovery=discovery,
+            pipeline=pipeline,
+            oms_transport=oms_transport,
+            local_risk=local_risk,
+            tape_output_path=args.tape_output,
+            audit_output_path=args.audit_output,
+            include_topologies=args.include_topology or None,
+            exclude_topologies=args.exclude_topology or None,
+            market_limit=args.market_limit,
+        )
     config = build_result.config
     report = build_result.report()
 

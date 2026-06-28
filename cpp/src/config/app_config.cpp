@@ -182,6 +182,9 @@ namespace predex::config{
         if(config.runtime.operator_socket_path.empty()){
             throw std::runtime_error("Invalid configuration: operator_socket_path must not be empty");
         }
+        if(config.universe.events.empty()){
+            throw std::runtime_error("Invalid configuration: universe must contain at least one event");
+        }
         for(const auto& event : config.universe.events){
             if(event.event_id.empty()){
                 throw std::runtime_error("Invalid configuration: universe event_id must not be empty");

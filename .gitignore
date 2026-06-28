@@ -63,7 +63,6 @@ predex_tape_5_8_2026.bin
 python/eda/*.py
 
 python/tests/*.py
-python/src/predex/replay/*.py
 python/src/predex/ingest/*.py
 
 docs/generated_config2.report.json

@@ -5,6 +5,9 @@
 
 namespace {
 
+    constexpr auto kConnectTimeout = std::chrono::seconds{2};
+    constexpr auto kWriteTimeout = std::chrono::seconds{1};
+
     std::string to_lower(std::string text) {
         std::transform(text.begin(), text.end(), text.begin(), [](unsigned char character) {
             return static_cast<char>(std::tolower(character));
@@ -140,11 +143,15 @@ namespace predex::exchange::kalshi {
             return false;
         }
 
-        boost::beast::get_lowest_layer(*ws_stream_).connect(results, error_code);
+        auto& lowest_layer = boost::beast::get_lowest_layer(*ws_stream_);
+        lowest_layer.expires_after(kConnectTimeout);
+        lowest_layer.connect(results, error_code);
         if(error_code){
+            lowest_layer.expires_never();
             last_error_ = "Failed to connect to websocket host: " + error_code.message();
             return false;
         }
+        lowest_layer.expires_never();
 
         if(SSL_set_tlsext_host_name(ws_stream_->next_layer().native_handle(), endpoint_.host.c_str()) != 1){
             last_error_ =  openssl_error_message("Failed to set SNI hostname for TLS connection");
@@ -156,8 +163,11 @@ namespace predex::exchange::kalshi {
             return false;
         }
 
+        lowest_layer.expires_after(kConnectTimeout);
         const auto tls_handshake_result = ws_stream_->next_layer().handshake(boost::asio::ssl::stream_base::client, error_code);
+        (void)tls_handshake_result;
         if(error_code){
+            lowest_layer.expires_never();
             last_error_ = "TLS handshake failed: " + error_code.message();
             return false;
         }
@@ -185,7 +195,9 @@ namespace predex::exchange::kalshi {
             handshake_host += ":" + endpoint_.port;
         }
 
+        lowest_layer.expires_after(kConnectTimeout);
         ws_stream_->handshake(handshake_host, endpoint_.target, error_code);
+        lowest_layer.expires_never();
         if(error_code){
             last_error_ = "Websocket handshake failed: " + error_code.message();
             return false;
@@ -200,8 +212,23 @@ namespace predex::exchange::kalshi {
     
     void WebSocketSession::close(){
         boost::system::error_code error_code;
-        auto& socket = boost::beast::get_lowest_layer(*ws_stream_).socket();
+        if(!ws_stream_){
+            connected_ = false;
+            return;
+        }
+
+        auto& lowest_layer = boost::beast::get_lowest_layer(*ws_stream_);
+        lowest_layer.expires_never();
+
+        auto& socket = lowest_layer.socket();
+        if(!socket.is_open()){
+            connected_ = false;
+            read_buffer_.consume(read_buffer_.size());
+            return;
+        }
+
         const auto cancelled_operations = socket.cancel(error_code);
+        (void)cancelled_operations;
 
         if(error_code && error_code != boost::beast::net::error::not_connected) {
             last_error_ = "Failed to cancel outstanding operations: " + error_code.message();
@@ -210,6 +237,7 @@ namespace predex::exchange::kalshi {
         error_code.clear();
 
         const auto shutdown_result = socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, error_code);
+        (void)shutdown_result;
         if (error_code && error_code != boost::beast::net::error::not_connected) {
             last_error_ = "Failed to shutdown socket: " + error_code.message();
         }
@@ -217,11 +245,13 @@ namespace predex::exchange::kalshi {
         error_code.clear();
 
         const auto close_result = socket.close(error_code);
+        (void)close_result;
         if (error_code && error_code != boost::beast::net::error::not_connected) {
             last_error_ = "Failed to close socket: " + error_code.message();
         }
 
         connected_ = false;
+        read_buffer_.consume(read_buffer_.size());
     }
 
     bool WebSocketSession::send_text(std::string_view message){
@@ -231,7 +261,10 @@ namespace predex::exchange::kalshi {
         }
 
         boost::system::error_code error_code;
+        auto& lowest_layer = boost::beast::get_lowest_layer(*ws_stream_);
+        lowest_layer.expires_after(kWriteTimeout);
         ws_stream_->write(boost::asio::buffer(message), error_code);
+        lowest_layer.expires_never();
         if(error_code){
             last_error_ = "Failed to send message: " + error_code.message();
             return false;

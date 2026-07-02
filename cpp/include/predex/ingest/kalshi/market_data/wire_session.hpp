@@ -23,6 +23,7 @@
 namespace predex::ingest::kalshi::market_data{
 
     inline constexpr std::size_t kMAX_RECYCLE_BATCH_SIZE = 64;
+    inline constexpr std::size_t kMAX_UNKNOWN_MARKET_TICKER_SAMPLES = 8;
     inline constexpr std::chrono::milliseconds kIO_TELEMETRY_INTERVAL{250};
 
     using RouterQueue = predex::utils::SPSCQueue<FrameHandle>;
@@ -112,6 +113,25 @@ namespace predex::ingest::kalshi::market_data{
         }
     };
 
+    enum class EnvelopeParseCode : std::uint8_t {
+        kOK = 0,
+        kINVALID_JSON,
+        kMISSING_SID,
+        kSID_OUT_OF_RANGE,
+        kMISSING_TYPE,
+        kUNSUPPORTED_TYPE,
+        kMISSING_SEQUENCE,
+        kMISSING_MSG,
+        kMISSING_MARKET_TICKER,
+    };
+    enum class StampHandleCode : std::uint8_t {
+        kOK = 0,
+        kUNKNOWN_KIND,
+        kEMPTY_MARKET_TICKER,
+        kINACTIVE_SID,
+        kUNKNOWN_MARKET_TICKER,
+    };
+
     using RouteByTickerMap = std::unordered_map<std::string, core::control::UniverseMarketRoute, StringHash, std::equal_to<>>;
 
     class KalshiWireSession {
@@ -189,14 +209,16 @@ namespace predex::ingest::kalshi::market_data{
             [[nodiscard]] bool push_control_status(core::control::IoToControlStatus status) noexcept;
             void maybe_send_telemetry() noexcept;
             void recycle_handle(FrameHandle handle) noexcept;
+            void record_unknown_market_ticker(const core::control::UnknownMarketTickerStats& unknown_market_ticker);
+            [[nodiscard]] std::uint8_t channel_for_sid(std::uint32_t sid) const noexcept;
 
             void drain_recycle_queues();
             void pump_socket_once();
             
             [[nodiscard]] IncomingMessageKind classify_incoming_message(std::span<const std::byte> payload);
-            [[nodiscard]] bool parse_market_data_envelope(const KalshiFrame& frame,
+            [[nodiscard]] EnvelopeParseCode parse_market_data_envelope(const KalshiFrame& frame,
                                                           MarketDataEnvelope& envelope_out);
-            [[nodiscard]] bool stamp_handle_from_envelope(FrameHandle& handle,
+            [[nodiscard]] StampHandleCode stamp_handle_from_envelope(FrameHandle& handle,
                                                           const MarketDataEnvelope& envelope);
             [[nodiscard]] bool is_active_sid(std::uint32_t sid) const noexcept;
             void publish_market_data_frame(std::span<const std::byte> payload);

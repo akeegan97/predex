@@ -20,10 +20,35 @@ namespace predex::core::control {
         kFAULTED = 7,
     };
 
+    struct UnknownMarketTickerStats{
+        std::string market_ticker;
+        std::uint8_t frame_kind{};
+        std::uint64_t sid{};
+        std::uint8_t channel{};
+    };
+
     struct IoTelemetrySnapshot{
         std::uint64_t frames_received{0};
         std::uint64_t frames_published{0};
         std::uint64_t frames_dropped{0};
+
+        std::uint64_t oversized_frames{0};
+        std::uint64_t pool_exhausted{0};
+        std::uint64_t missing_frame_slot{0};
+
+        std::uint64_t envelope_parse_failed{0};
+        std::uint64_t envelope_missing_market_ticker{0};
+        std::uint64_t envelope_unsupported_type{0};
+
+        std::uint64_t inactive_sid{0};
+        std::uint64_t unknown_market_ticker{0};
+        std::vector<UnknownMarketTickerStats> unknown_market_ticker_samples;
+        std::uint64_t stamp_failed{0};
+
+        std::uint64_t router_enqueue_failed{0};
+        std::uint64_t logger_fallback_enqueued{0};
+        std::uint64_t logger_fallback_failed{0};
+
         std::uint64_t recycle_failures{0};
     };
 

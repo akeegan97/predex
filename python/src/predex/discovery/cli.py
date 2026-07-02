@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
+from pathlib import Path
+import re
 import sys
 
 from predex.env import load_repo_dotenv
@@ -23,9 +27,82 @@ from .config import (
 from .kalshi import KalshiPublicClient
 from .models import TopologyKind
 
+DEFAULT_TAPE_OUTPUT = "logs/live/predex_tape.bin"
+DEFAULT_AUDIT_OUTPUT = "logs/live/predex_audit.jsonl"
+
+
+@dataclass(frozen=True, slots=True)
+class RunArtifacts:
+    run_dir: Path | None
+    output: str | None
+    report_output: str | None
+    tape_output: str
+    audit_output: str
+
 
 def _topology_choice(value: str) -> str:
     return TopologyKind(value).value
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "run"
+
+
+def _default_run_label(args: argparse.Namespace) -> str:
+    parts: list[str] = []
+    if args.all_events:
+        parts.append("all-events")
+    elif args.event_ticker:
+        parts.append("selected-events")
+    elif args.series_ticker:
+        parts.append(args.series_ticker)
+    else:
+        parts.append(f"{args.status}-events")
+
+    if args.include_topology:
+        parts.extend(sorted(args.include_topology))
+    elif args.exclude_topology:
+        parts.append("filtered")
+
+    return _slugify("-".join(parts))
+
+
+def _resolve_run_artifacts(
+    args: argparse.Namespace,
+    *,
+    now: datetime | None = None,
+) -> RunArtifacts:
+    if not args.run_dir_root:
+        return RunArtifacts(
+            run_dir=None,
+            output=args.output,
+            report_output=args.report_output,
+            tape_output=args.tape_output or DEFAULT_TAPE_OUTPUT,
+            audit_output=args.audit_output or DEFAULT_AUDIT_OUTPUT,
+        )
+
+    timestamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d-%H%M%S")
+    label = _slugify(args.run_label) if args.run_label else _default_run_label(args)
+    run_dir = Path(args.run_dir_root) / f"predex-{timestamp}-market-data-{label}"
+
+    if run_dir.exists() and not args.overwrite_run_dir:
+        raise FileExistsError(f"run directory already exists: {run_dir}")
+
+    return RunArtifacts(
+        run_dir=run_dir,
+        output=args.output or str(run_dir / "config.json"),
+        report_output=args.report_output or str(run_dir / "report.json"),
+        tape_output=args.tape_output or str(run_dir / "tape.bin"),
+        audit_output=args.audit_output or str(run_dir / "audit.jsonl"),
+    )
+
+
+def _write_text_file(path: str, payload: str) -> None:
+    output_path = Path(path)
+    if output_path.parent != Path("."):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(payload, encoding="utf-8")
 
 
 def _summary_line(build_report: dict[str, object]) -> str:
@@ -52,6 +129,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="predex",
         description="Discover Kalshi events and emit an event-centric Predex trader config.",
+    )
+    parser.add_argument(
+        "--materialize",
+        action="store_true",
+        help="Materialize an existing run directory's config/report/tape artifacts into parquet tables.",
+    )
+    parser.add_argument(
+        "--path",
+        help="Run directory path used with --materialize.",
+    )
+    parser.add_argument(
+        "--tables-output",
+        help="Optional tables output directory used with --materialize. Default: <path>/tables.",
+    )
+    parser.add_argument(
+        "--compress-if-verified",
+        "--compress_if_verified",
+        dest="compress_if_verified",
+        action="store_true",
+        help="With --materialize, write .gz copies of config/report/tape only after verification passes.",
+    )
+    parser.add_argument(
+        "--remove-if-verified",
+        "--remove_if_verified",
+        dest="remove_if_verified",
+        action="store_true",
+        help=(
+            "With --materialize, remove raw tape.bin only after verification passes, tape.bin.gz exists, "
+            "and all expected parquet tables exist."
+        ),
+    )
+    parser.add_argument(
+        "--materialize-batch-size",
+        type=int,
+        default=100_000,
+        help="Parquet writer batch size used with --materialize. Default: 100000.",
     )
     parser.add_argument(
         "--config-format",
@@ -81,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="Maximum number of events to discover from the API. Default: 50.",
+    )
+    parser.add_argument(
+        "--event-fetch-workers",
+        type=int,
+        default=8,
+        help="Concurrent event detail fetch workers used during discovery. Use 1 for serial fetching. Default: 8.",
     )
     parser.add_argument(
         "--all-events",
@@ -179,6 +298,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path for a build report describing included/skipped events and topology counts.",
     )
     parser.add_argument(
+        "--run-dir-root",
+        help=(
+            "Create a stable run artifact directory under this root and default config/report/tape/audit "
+            "paths into it. Explicit --output/--report-output/--tape-output/--audit-output values still win."
+        ),
+    )
+    parser.add_argument(
+        "--run-label",
+        help="Optional label used in the generated run directory name. Defaults from discovery/topology filters.",
+    )
+    parser.add_argument(
+        "--overwrite-run-dir",
+        action="store_true",
+        help="Allow writing into an existing generated run directory. Default: fail if the directory already exists.",
+    )
+    parser.add_argument(
         "--api-base-url",
         default="https://api.elections.kalshi.com/trade-api/v2",
         help="Kalshi REST API base URL used for discovery.",
@@ -200,13 +335,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tape-output",
-        default="logs/live/predex_tape.bin",
-        help="Tape output path written into the config.",
+        help=f"Tape output path written into the config. Default: {DEFAULT_TAPE_OUTPUT}, or <run-dir>/tape.bin with --run-dir-root.",
     )
     parser.add_argument(
         "--audit-output",
-        default="logs/live/predex_audit.jsonl",
-        help="Audit output path written into the config.",
+        help=f"Audit output path written into the config. Default: {DEFAULT_AUDIT_OUTPUT}, or <run-dir>/audit.jsonl with --run-dir-root.",
     )
     parser.add_argument(
         "--oms-enabled",
@@ -277,6 +410,45 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.materialize:
+        if not args.path:
+            parser.error("--materialize requires --path")
+        from predex.replay.materialize import materialize_run
+
+        result = materialize_run(
+            args.path,
+            tables_dir=args.tables_output,
+            batch_size=args.materialize_batch_size,
+            compress_if_verified=args.compress_if_verified,
+            remove_if_verified=args.remove_if_verified,
+        )
+        manifest = result.manifest
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": bool(manifest.get("verified")),
+                    "run_dir": str(result.run_dir),
+                    "tables_dir": str(result.tables_dir),
+                    "manifest": str(result.manifest_path),
+                    "checks": manifest.get("checks", {}),
+                    "tables": manifest.get("tables", {}),
+                    "compressed_artifacts": manifest.get("compressed_artifacts", {}),
+                    "remove_raw_checks": manifest.get("remove_raw_checks", {}),
+                    "missing_expected_tables": manifest.get("missing_expected_tables", []),
+                    "removed_artifacts": manifest.get("removed_artifacts", {}),
+                },
+                indent=2,
+                sort_keys=False,
+            )
+        )
+        sys.stdout.write("\n")
+        return 0 if manifest.get("verified") else 1
+
+    try:
+        run_artifacts = _resolve_run_artifacts(args)
+    except FileExistsError as exc:
+        parser.error(str(exc))
+
     channels = tuple(args.channel) if args.channel else ("trade", "orderbook_delta")
     lifecycle_channels = tuple(args.lifecycle_channel) if args.lifecycle_channel else ("market_lifecycle_v2",)
     discovery = DiscoverySettings(
@@ -317,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
 
     client = KalshiPublicClient(
         base_url=args.api_base_url,
+        event_fetch_workers=args.event_fetch_workers,
         progress_callback=_progress_line,
     )
     events = client.discover_events(
@@ -336,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
                 frame_pool_capacity=args.frame_pool_capacity,
                 operator_queue_capacity=args.operator_queue_capacity,
                 operator_socket_path=args.operator_socket_path,
-                market_data_tape_path=args.tape_output,
+                market_data_tape_path=run_artifacts.tape_output,
             ),
             kalshi=KalshiSettings(
                 credentials=CredentialSettings(
@@ -359,8 +532,8 @@ def main(argv: list[str] | None = None) -> int:
             pipeline=pipeline,
             oms_transport=oms_transport,
             local_risk=local_risk,
-            tape_output_path=args.tape_output,
-            audit_output_path=args.audit_output,
+            tape_output_path=run_artifacts.tape_output,
+            audit_output_path=run_artifacts.audit_output,
             include_topologies=args.include_topology or None,
             exclude_topologies=args.exclude_topology or None,
             market_limit=args.market_limit,
@@ -369,25 +542,27 @@ def main(argv: list[str] | None = None) -> int:
     report = build_result.report()
 
     payload = json.dumps(config, indent=2, sort_keys=False)
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as output_file:
-            output_file.write(payload)
-            output_file.write("\n")
+    if run_artifacts.run_dir is not None:
+        run_artifacts.run_dir.mkdir(parents=True, exist_ok=args.overwrite_run_dir)
+
+    if run_artifacts.output:
+        _write_text_file(run_artifacts.output, payload + "\n")
     else:
         sys.stdout.write(payload)
         sys.stdout.write("\n")
 
-    if args.report_output:
-        with open(args.report_output, "w", encoding="utf-8") as report_file:
-            report_file.write(json.dumps(report, indent=2, sort_keys=False))
-            report_file.write("\n")
-    elif args.output:
+    if run_artifacts.report_output:
+        _write_text_file(run_artifacts.report_output, json.dumps(report, indent=2, sort_keys=False) + "\n")
+    elif run_artifacts.output:
         sys.stderr.write(json.dumps(report, indent=2, sort_keys=False))
         sys.stderr.write("\n")
     sys.stderr.write(_summary_line(report))
-    if args.output:
-        sys.stderr.write(f" | config={args.output}")
-    if args.report_output:
-        sys.stderr.write(f" | report={args.report_output}")
+    if run_artifacts.run_dir is not None:
+        sys.stderr.write(f" | run_dir={run_artifacts.run_dir}")
+    if run_artifacts.output:
+        sys.stderr.write(f" | config={run_artifacts.output}")
+    if run_artifacts.report_output:
+        sys.stderr.write(f" | report={run_artifacts.report_output}")
+    sys.stderr.write(f" | tape={run_artifacts.tape_output}")
     sys.stderr.write("\n")
     return 0

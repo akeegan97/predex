@@ -69,6 +69,42 @@ namespace {
                 return "unknown";
         }
     }
+
+    std::string frame_kind_to_string(std::uint8_t frame_kind){
+        switch(frame_kind){
+            case 1:
+                return "orderbook_snapshot";
+            case 2:
+                return "orderbook_delta";
+            case 3:
+                return "trade";
+            case 4:
+                return "subscription_ack";
+            case 5:
+                return "unsubscribed";
+            case 6:
+                return "lifecycle";
+            case 7:
+                return "heartbeat";
+            case 0:
+            default:
+                return "unknown";
+        }
+    }
+
+    std::string market_data_channel_to_string(std::uint8_t channel){
+        switch(channel){
+            case 1:
+                return "orderbook_delta";
+            case 2:
+                return "trade";
+            case 3:
+                return "market_lifecycle_v2";
+            case 0:
+            default:
+                return "unknown";
+        }
+    }
     
     nlohmann::json to_json(const predex::operator_admin::OperatorResponse& response){
         nlohmann::json json_response;
@@ -109,6 +145,18 @@ namespace {
                     });
                 }
 
+                nlohmann::json unknown_market_ticker_samples_json = nlohmann::json::array();
+                for(const auto& sample : payload.io_stats.unknown_market_ticker_samples){
+                    unknown_market_ticker_samples_json.push_back({
+                        {"market_ticker", sample.market_ticker},
+                        {"frame_kind", frame_kind_to_string(sample.frame_kind)},
+                        {"frame_kind_code", static_cast<std::uint32_t>(sample.frame_kind)},
+                        {"sid", sample.sid},
+                        {"channel", market_data_channel_to_string(sample.channel)},
+                        {"channel_code", static_cast<std::uint32_t>(sample.channel)},
+                    });
+                }
+
                 json_response["payload"] = {
                     {"status_snapshot", {
                         {"lifecycle", lifecycle_to_string(payload.status_snapshot.lifecycle)},
@@ -122,6 +170,19 @@ namespace {
                         {"frames_received", payload.io_stats.frames_received},
                         {"frames_published", payload.io_stats.frames_published},
                         {"frames_dropped", payload.io_stats.frames_dropped},
+                        {"oversized_frames", payload.io_stats.oversized_frames},
+                        {"pool_exhausted", payload.io_stats.pool_exhausted},
+                        {"missing_frame_slot", payload.io_stats.missing_frame_slot},
+                        {"envelope_parse_failed", payload.io_stats.envelope_parse_failed},
+                        {"envelope_missing_market_ticker", payload.io_stats.envelope_missing_market_ticker},
+                        {"envelope_unsupported_type", payload.io_stats.envelope_unsupported_type},
+                        {"inactive_sid", payload.io_stats.inactive_sid},
+                        {"unknown_market_ticker", payload.io_stats.unknown_market_ticker},
+                        {"unknown_market_ticker_samples", unknown_market_ticker_samples_json},
+                        {"stamp_failed", payload.io_stats.stamp_failed},
+                        {"router_enqueue_failed", payload.io_stats.router_enqueue_failed},
+                        {"logger_fallback_enqueued", payload.io_stats.logger_fallback_enqueued},
+                        {"logger_fallback_failed", payload.io_stats.logger_fallback_failed},
                         {"recycle_failures", payload.io_stats.recycle_failures},
                         {"last_error", payload.io_stats.last_error},
                     }},

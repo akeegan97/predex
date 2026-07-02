@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 #include <thread>
+#include <algorithm>
 
 namespace {
 
@@ -140,6 +141,35 @@ namespace predex::ingest::kalshi::market_data{
         if(!frame_pool_.recycle(handle)){
             ++telemetry_.recycle_failures;
         }
+    }
+
+    void KalshiWireSession::record_unknown_market_ticker(const core::control::UnknownMarketTickerStats& unknown_market_ticker){
+        auto& samples = telemetry_.unknown_market_ticker_samples;
+        const auto already_sampled = std::find_if(samples.begin(), samples.end(), [&](const auto& sample){
+            return sample.market_ticker == unknown_market_ticker.market_ticker &&
+                   sample.frame_kind == unknown_market_ticker.frame_kind &&
+                   sample.sid == unknown_market_ticker.sid &&
+                   sample.channel == unknown_market_ticker.channel;
+        }) != samples.end();
+        if(already_sampled || samples.size() >= kMAX_UNKNOWN_MARKET_TICKER_SAMPLES){
+            return;
+        }
+        samples.emplace_back(unknown_market_ticker);
+
+    }
+
+    std::uint8_t KalshiWireSession::channel_for_sid(std::uint32_t sid) const noexcept{
+        //NOLINTNEXTLINE -- future work change to std::range
+        for(const auto& [channel, subscription] : active_subscriptions_){
+            if(subscription.phase == SubscriptionPhase::kSUBSCRIBED &&
+               subscription.sid.has_value() &&
+               *subscription.sid >= 0 &&
+               *subscription.sid <= std::numeric_limits<std::uint32_t>::max() &&
+               static_cast<std::uint32_t>(*subscription.sid) == sid){
+                return static_cast<std::uint8_t>(channel);
+            }
+        }
+        return 0;
     }
 
     void KalshiWireSession::drain_control_commands(){
@@ -459,6 +489,7 @@ namespace predex::ingest::kalshi::market_data{
         ++telemetry_.frames_received;
         if(payload.size() > predex::ingest::kalshi::kMaxFrameBytes){
             ++telemetry_.frames_dropped;
+            ++telemetry_.oversized_frames;
             return;
         }
 
@@ -467,6 +498,7 @@ namespace predex::ingest::kalshi::market_data{
             drain_recycle_queues();
             if(!frame_pool_.try_acquire(handle)){
                 ++telemetry_.frames_dropped;
+                ++telemetry_.pool_exhausted;
                 return;
             }
         }
@@ -474,6 +506,7 @@ namespace predex::ingest::kalshi::market_data{
         auto* frame = frame_pool_.writable_frame(handle);
         if(frame == nullptr){
             ++telemetry_.frames_dropped;
+            ++telemetry_.missing_frame_slot;
             recycle_handle(handle);
             return;
         }
@@ -484,24 +517,92 @@ namespace predex::ingest::kalshi::market_data{
         std::memcpy(frame->payload.data(), payload.data(), payload.size());
 
         MarketDataEnvelope envelope{};
-        if(!parse_market_data_envelope(*frame, envelope)){
-            ++telemetry_.frames_dropped;
-            recycle_handle(handle);
-            return;
+        EnvelopeParseCode parse_result = parse_market_data_envelope(*frame, envelope);
+
+        switch(parse_result){
+            case EnvelopeParseCode::kOK:
+                break;
+
+            case EnvelopeParseCode::kINVALID_JSON://NOLINT
+                ++telemetry_.frames_dropped;
+                ++telemetry_.envelope_parse_failed;
+                recycle_handle(handle);
+                return;
+
+            case EnvelopeParseCode::kMISSING_SID:
+            case EnvelopeParseCode::kSID_OUT_OF_RANGE:
+            case EnvelopeParseCode::kMISSING_TYPE:
+            case EnvelopeParseCode::kMISSING_SEQUENCE:
+            case EnvelopeParseCode::kMISSING_MSG:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.envelope_parse_failed;
+                recycle_handle(handle);
+                return;
+
+            case EnvelopeParseCode::kUNSUPPORTED_TYPE:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.envelope_unsupported_type;
+                recycle_handle(handle);
+                return;
+
+            case EnvelopeParseCode::kMISSING_MARKET_TICKER:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.envelope_missing_market_ticker;
+                recycle_handle(handle);
+                return;
         }
 
-        if(!stamp_handle_from_envelope(handle, envelope)){
-            ++telemetry_.frames_dropped;
-            recycle_handle(handle);
-            return;
+        StampHandleCode stamp_result = stamp_handle_from_envelope(handle, envelope);
+
+        switch(stamp_result){
+            case StampHandleCode::kOK:
+                break;
+
+            case StampHandleCode::kUNKNOWN_KIND:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.stamp_failed;
+                ++telemetry_.envelope_unsupported_type;
+                recycle_handle(handle);
+                return;
+
+            case StampHandleCode::kEMPTY_MARKET_TICKER:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.stamp_failed;
+                ++telemetry_.envelope_missing_market_ticker;
+                recycle_handle(handle);
+                return;
+
+            case StampHandleCode::kINACTIVE_SID:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.stamp_failed;
+                ++telemetry_.inactive_sid;
+                recycle_handle(handle);
+                return;
+
+            case StampHandleCode::kUNKNOWN_MARKET_TICKER:
+                ++telemetry_.frames_dropped;
+                ++telemetry_.stamp_failed;
+                ++telemetry_.unknown_market_ticker;
+                core::control::UnknownMarketTickerStats unknown_market_ticker{
+                    .market_ticker = std::string{envelope.market_ticker},
+                    .frame_kind = static_cast<std::uint8_t>(envelope.kind),
+                    .sid = envelope.sid,
+                    .channel = channel_for_sid(envelope.sid),
+                };
+                record_unknown_market_ticker(unknown_market_ticker);
+                recycle_handle(handle);
+                return;
         }
 
         if(!router_queue_.try_push(handle)){
+            ++telemetry_.router_enqueue_failed;
             if(!logger_queue_.try_push(handle)){
                 ++telemetry_.frames_dropped;
+                ++telemetry_.logger_fallback_failed;
                 recycle_handle(handle);
                 return;
             }
+            ++telemetry_.logger_fallback_enqueued;
         }
         ++telemetry_.frames_published;
     }
@@ -612,7 +713,7 @@ namespace predex::ingest::kalshi::market_data{
         return IncomingMessageKind::kIGNORE;
     }
 
-    bool KalshiWireSession::parse_market_data_envelope(const KalshiFrame& frame,
+    EnvelopeParseCode KalshiWireSession::parse_market_data_envelope(const KalshiFrame& frame,
                                                        MarketDataEnvelope& envelope_out){
         envelope_out = MarketDataEnvelope{};
 
@@ -620,60 +721,65 @@ namespace predex::ingest::kalshi::market_data{
         simdjson::padded_string_view json{data, frame.len, frame.payload.size()};
 
         auto doc_result = market_data_envelope_parser_.iterate(json);
-        if(doc_result.error() != simdjson::SUCCESS){return false;}
+        if(doc_result.error() != simdjson::SUCCESS){return EnvelopeParseCode::kINVALID_JSON;}
         auto root_result = doc_result.get_object();
-        if(root_result.error() != simdjson::SUCCESS){return false;}
+        if(root_result.error() != simdjson::SUCCESS){return EnvelopeParseCode::kINVALID_JSON;}
         simdjson::ondemand::object root = root_result.value();
 
         std::uint64_t session_id_out{};
-        if(!read_uint64(root, "sid", session_id_out) ||
-           session_id_out > std::numeric_limits<std::uint32_t>::max()){
-            return false;
+        if(!read_uint64(root, "sid", session_id_out)){
+            return EnvelopeParseCode::kMISSING_SID;
+        }
+        if(session_id_out > std::numeric_limits<std::uint32_t>::max()){
+            return EnvelopeParseCode::kSID_OUT_OF_RANGE;
         }
         envelope_out.sid = static_cast<std::uint32_t>(session_id_out);
 
         std::string_view type_out;
         if(!read_string(root, "type", type_out)){
-            return false;
+            return EnvelopeParseCode::kMISSING_TYPE;
         }
         envelope_out.kind = frame_kind_from_type(type_out);
         if(envelope_out.kind == FrameKind::kUNKNOWN){
-            return false;
+            return EnvelopeParseCode::kUNSUPPORTED_TYPE;
         }
 
         std::uint64_t sequence_out{};
         if(!read_uint64(root, "seq", sequence_out)){
-            return false;
+            return EnvelopeParseCode::kMISSING_SEQUENCE;
         }
         envelope_out.sequence = sequence_out;
 
         simdjson::ondemand::object msg;
         if(!read_object(root, "msg", msg)){
-            return false;
+            return EnvelopeParseCode::kMISSING_MSG;
         }
 
         std::string_view market_ticker_out;
         if(!read_string(msg, "market_ticker", market_ticker_out)){
-            return false;
+            return EnvelopeParseCode::kMISSING_MARKET_TICKER;
         }
         envelope_out.market_ticker = market_ticker_out;
 
-        return true;
+        return EnvelopeParseCode::kOK;
     }
 
-    bool KalshiWireSession::stamp_handle_from_envelope(FrameHandle& handle,
+    StampHandleCode KalshiWireSession::stamp_handle_from_envelope(FrameHandle& handle,
                                                        const MarketDataEnvelope& envelope){
-        if(envelope.kind == FrameKind::kUNKNOWN || envelope.market_ticker.empty()){
-            return false;
+        if(envelope.kind == FrameKind::kUNKNOWN){
+            return StampHandleCode::kUNKNOWN_KIND;
+        }
+        if(envelope.market_ticker.empty()){
+            return StampHandleCode::kEMPTY_MARKET_TICKER;
         }
 
         if(!is_active_sid(envelope.sid)){
-            return false;
+            return StampHandleCode::kINACTIVE_SID;
         }
 
         const auto route_it = market_route_by_ticker_.find(envelope.market_ticker);
         if(route_it == market_route_by_ticker_.end()){
-            return false;
+            return StampHandleCode::kUNKNOWN_MARKET_TICKER;
         }
 
         const auto& route = route_it->second;
@@ -689,7 +795,7 @@ namespace predex::ingest::kalshi::market_data{
         handle.event_market_index = route.event_market_index;
         handle.kind = envelope.kind;
 
-        return true;
+        return StampHandleCode::kOK;
     }
 
     bool KalshiWireSession::is_active_sid(std::uint32_t sid) const noexcept{

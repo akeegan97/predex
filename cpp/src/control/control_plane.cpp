@@ -38,6 +38,21 @@ namespace predex::core::control{
             };
         }
 
+        [[nodiscard]] std::vector<operator_admin::UnknownMarketTickerStats> to_operator_unknown_market_ticker_stats(
+            const std::vector<UnknownMarketTickerStats>& samples){
+            std::vector<operator_admin::UnknownMarketTickerStats> result;
+            result.reserve(samples.size());
+            for(const auto& sample : samples){
+                result.push_back(operator_admin::UnknownMarketTickerStats{
+                    .market_ticker = sample.market_ticker,
+                    .frame_kind = sample.frame_kind,
+                    .sid = sample.sid,
+                    .channel = sample.channel,
+                });
+            }
+            return result;
+        }
+
         [[nodiscard]] std::vector<std::vector<shard::KalshiEvent>> build_shard_events(
             const UniverseSnapshot& snapshot,
             std::size_t shard_count
@@ -113,6 +128,19 @@ namespace predex::core::control{
                     .frames_received = io_state.telemetry.frames_received,
                     .frames_published = io_state.telemetry.frames_published,
                     .frames_dropped = io_state.telemetry.frames_dropped,
+                    .oversized_frames = io_state.telemetry.oversized_frames,
+                    .pool_exhausted = io_state.telemetry.pool_exhausted,
+                    .missing_frame_slot = io_state.telemetry.missing_frame_slot,
+                    .envelope_parse_failed = io_state.telemetry.envelope_parse_failed,
+                    .envelope_missing_market_ticker = io_state.telemetry.envelope_missing_market_ticker,
+                    .envelope_unsupported_type = io_state.telemetry.envelope_unsupported_type,
+                    .inactive_sid = io_state.telemetry.inactive_sid,
+                    .unknown_market_ticker = io_state.telemetry.unknown_market_ticker,
+                    .unknown_market_ticker_samples = to_operator_unknown_market_ticker_stats(io_state.telemetry.unknown_market_ticker_samples),
+                    .stamp_failed = io_state.telemetry.stamp_failed,
+                    .router_enqueue_failed = io_state.telemetry.router_enqueue_failed,
+                    .logger_fallback_enqueued = io_state.telemetry.logger_fallback_enqueued,
+                    .logger_fallback_failed = io_state.telemetry.logger_fallback_failed,
                     .recycle_failures = io_state.telemetry.recycle_failures,
                     .last_error = io_state.last_error,
                 },

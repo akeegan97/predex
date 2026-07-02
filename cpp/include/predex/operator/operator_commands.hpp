@@ -38,6 +38,13 @@ struct OperatorStatusSnapshot {
     bool shutdown_requested{false};
 };
 
+struct UnknownMarketTickerStats{
+    std::string market_ticker;
+    std::uint8_t frame_kind{};
+    std::uint64_t sid{};
+    std::uint8_t channel{};
+};
+
 struct IoCounterStats{
     bool io_connected{false};
     std::uint64_t installed_universe_version{};
@@ -45,6 +52,19 @@ struct IoCounterStats{
     std::uint64_t frames_received{};
     std::uint64_t frames_published{};
     std::uint64_t frames_dropped{};
+    std::uint64_t oversized_frames{};
+    std::uint64_t pool_exhausted{};
+    std::uint64_t missing_frame_slot{};
+    std::uint64_t envelope_parse_failed{};
+    std::uint64_t envelope_missing_market_ticker{};
+    std::uint64_t envelope_unsupported_type{};
+    std::uint64_t inactive_sid{};
+    std::uint64_t unknown_market_ticker{};
+    std::vector<UnknownMarketTickerStats> unknown_market_ticker_samples;
+    std::uint64_t stamp_failed{};
+    std::uint64_t router_enqueue_failed{};
+    std::uint64_t logger_fallback_enqueued{};
+    std::uint64_t logger_fallback_failed{};
     std::uint64_t recycle_failures{};
     std::string last_error;
 };

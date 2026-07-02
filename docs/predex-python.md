@@ -56,6 +56,36 @@ Discover all open events under a series:
   --report-output docs/generated_config.report.json
 ```
 
+Generate a C++ app config and bundle an overnight market-data soak:
+```bash
+./scripts/predex \
+  --config-format app \
+  --all-events \
+  --enable-market-data \
+  --run-dir-root runs \
+  --run-label overnight-soak
+```
+
+This creates a directory like `runs/predex-2026-06-28-143012-market-data-overnight-soak/`
+with `config.json`, `report.json`, and a generated config that writes the binary tape to
+`tape.bin` in the same directory.
+
+After the run is stopped, materialize the binary tape into parquet tables:
+```bash
+./scripts/predex \
+  --materialize \
+  --path runs/predex-2026-06-28-143012-market-data-overnight-soak \
+  --compress_if_verified \
+  --remove_if_verified
+```
+
+This writes `tables/*.parquet` plus `tables/manifest.json`. With
+`--compress_if_verified`, `.gz` copies of `config.json`, `report.json`, and
+`tape.bin` are written only if verification checks pass. The original raw files
+are left in place unless `--remove_if_verified` is also provided. That second
+flag removes only the raw `tape.bin`, and only when verification passed,
+`tape.bin.gz` exists, and all expected parquet tables are present.
+
 Limit total markets and enable live trading:
 ```bash
 ./scripts/predex \
@@ -75,8 +105,20 @@ Limit total markets and enable live trading:
 | `--series-ticker TICKER` | — | Discover events under this series (used when explicit tickers not given). |
 | `--status STATUS` | `open` | Event status filter for series discovery. |
 | `--event-limit N` / `--limit N` | `50` | Max events fetched from the API. |
+| `--event-fetch-workers N` | `8` | Concurrent event-detail fetch workers. Use `1` to force serial fetching. |
 | `--all-events` | off | Page through all matching events (ignores `--event-limit`). |
 | `--market-limit N` | — | Max total included markets. Events are kept whole; an event is skipped if adding it would exceed the limit. |
+
+#### Materialization
+
+| Argument | Default | Description |
+|---|---|---|
+| `--materialize` | off | Convert an existing run directory's `config.json` / `report.json` / `tape.bin` into parquet tables. |
+| `--path DIR` | — | Run directory used with `--materialize`. |
+| `--tables-output DIR` | `<path>/tables` | Optional materialized table output directory. |
+| `--compress-if-verified` / `--compress_if_verified` | off | Write `.gz` copies of raw run artifacts after verification passes. |
+| `--remove-if-verified` / `--remove_if_verified` | off | Remove raw `tape.bin` only after verification passes, `tape.bin.gz` exists, and all expected tables exist. |
+| `--materialize-batch-size N` | `100000` | Parquet writer batch size. |
 
 #### Topology filtering
 
@@ -120,6 +162,9 @@ Valid topology values: `monotonic_chain`, `mutually_exclusive`, `unordered_group
 |---|---|---|
 | `--output PATH` | stdout | Write config JSON to file. |
 | `--report-output PATH` | — | Write a build report (included/skipped events, topology counts). |
+| `--run-dir-root DIR` | — | Create a timestamped run directory under this root and default config/report/tape/audit outputs into it. |
+| `--run-label LABEL` | derived | Label used in the generated run directory name. |
+| `--overwrite-run-dir` | off | Allow writing into an existing generated run directory. |
 | `--tape-output PATH` | `logs/live/predex_tape.bin` | Tape output path embedded in config. |
 | `--audit-output PATH` | `logs/live/predex_audit.jsonl` | Audit output path embedded in config. |
 | `--api-base-url URL` | Kalshi prod | Kalshi REST API base URL for discovery. |
@@ -154,9 +199,63 @@ With `--report-output`, a JSON file is written alongside the config:
 
 ### What it needs
 
-All subcommands require at minimum a `--config` (generated trader config) and an `--audit` (JSONL audit log from `trader_app`). Some subcommands also require a `--tape` (binary tape file).
+Most post-run subcommands require at minimum a `--config` (generated trader config) and an `--audit` (JSONL audit log from `trader_app`). Tape inspection also requires a `--tape` (binary tape file). Static config inspection only needs `--config`.
 
 ### Subcommands
+
+#### `config-summary`
+
+Summarize the event/market distribution in a generated C++ app config.
+
+```bash
+./scripts/predex-replay config-summary \
+  --config runs/predex-2026-06-29-123310-market-data-monday-day/config.json \
+  --top-events 20
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--config PATH` | required | PredEx app config JSON. |
+| `--top-events N` | `20` | Number of largest events to list. |
+| `--sample-tickers N` | `5` | Number of representative market tickers shown per large event. |
+| `--json` | off | Emit machine-readable JSON instead of text. |
+
+Output: text or JSON with event/market totals, markets-per-event distribution, market-count histogram, per-topology summary, shard balance, price-level counts, tradeable counts, and largest events.
+
+---
+
+## Research harness
+
+The `predex.research` package is a lightweight strategy investigation layer over
+materialized run tables. It mirrors the eventual live boundary without placing
+orders:
+
+```text
+MarketUpdate -> EventChainState -> ChainFeatureSnapshot -> Strategy -> OrderIntent
+```
+
+For one-event debugging, use `iter_event_updates_from_tables()` and
+`load_event_routes_from_tables()`, then feed those into `run_strategy_on_event()`.
+For real scans, use `run_strategy_on_run()`: it streams materialized updates once
+in chronological order, keeps per-event state warm, and defaults to
+`topology_filter=("monotonic_chain",)`.
+
+Strategy logic implements `on_chain_snapshot(snapshot)` and returns zero or more
+`StrategyCandidate`s and, where appropriate, `OrderIntent`s. Hard monotonic
+violations can emit paired IOC intents; statistical residual scanners should
+emit candidates first so later labeling can decide whether the signal fades,
+continues, or is noise.
+
+`run_strategy_on_event()` and `run_strategy_on_run()` can optionally apply a
+candidate cooldown via `CandidateDedupConfig` and label future outcomes via
+`CandidateOutcomeConfig`. Outcome labels use explicit decision/order latency
+assumptions plus one or more horizons, which lets research compare signals
+against the latency budget the eventual C++ path must hit.
+
+This layer is intentionally Python-first and research-oriented: prove the chain
+state/features/intent semantics here, then mirror the surviving contracts in C++.
+
+---
 
 #### `audit-summary`
 

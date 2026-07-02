@@ -68,3 +68,4 @@ python/src/predex/ingest/*.py
 docs/generated_config2.report.json
 docs/generated_config2.json
 /*.png
+runs/*

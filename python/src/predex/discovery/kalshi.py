@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ class KalshiPublicClient:
     max_retries: int = 4
     initial_backoff_seconds: float = 1.0
     max_backoff_seconds: float = 8.0
+    event_fetch_workers: int = 8
     progress_callback: Callable[[str], None] | None = None
 
     def _urlopen(self, request: Request):
@@ -166,12 +168,36 @@ class KalshiPublicClient:
         ordered_unique_tickers = list(dict.fromkeys(tickers))
         events: list[EventRecord] = []
         total = len(ordered_unique_tickers)
-        for index, event_ticker in enumerate(ordered_unique_tickers, start=1):
+
+        def fetch_one(index: int, event_ticker: str) -> tuple[int, EventRecord | None]:
             self._report_progress(f"fetching event {index}/{total}: {event_ticker}")
             try:
-                events.append(self.get_event(event_ticker))
+                return index, self.get_event(event_ticker)
             except (HTTPError, URLError, TimeoutError, ValueError) as error:
                 self._report_progress(
                     f"skipping event {event_ticker} after repeated fetch failure: {error}"
                 )
-        return events
+                return index, None
+
+        max_workers = max(1, self.event_fetch_workers)
+        if max_workers == 1 or total <= 1:
+            for index, event_ticker in enumerate(ordered_unique_tickers, start=1):
+                _, event = fetch_one(index, event_ticker)
+                if event is not None:
+                    events.append(event)
+            return events
+
+        events_by_index: list[EventRecord | None] = [None] * total
+        with ThreadPoolExecutor(
+            max_workers=min(max_workers, total),
+            thread_name_prefix="kalshi-event-fetch",
+        ) as executor:
+            futures = [
+                executor.submit(fetch_one, index, event_ticker)
+                for index, event_ticker in enumerate(ordered_unique_tickers, start=1)
+            ]
+            for future in as_completed(futures):
+                index, event = future.result()
+                events_by_index[index - 1] = event
+
+        return [event for event in events_by_index if event is not None]

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from argparse import Namespace
+from datetime import UTC, datetime
 from email.message import Message
+import time
 from urllib.error import HTTPError
 
+from predex.discovery.cli import _resolve_run_artifacts
 from predex.discovery import (
     EventRecord,
     KalshiMarketDataSettings,
@@ -21,6 +25,77 @@ from predex.discovery.kalshi import KalshiPublicClient
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_run_artifacts_bundle_defaults_into_run_directory(self) -> None:
+        args = Namespace(
+            run_dir_root="runs",
+            run_label=None,
+            all_events=True,
+            event_ticker=[],
+            series_ticker=None,
+            status="open",
+            include_topology=["monotonic_chain"],
+            exclude_topology=[],
+            overwrite_run_dir=True,
+            output=None,
+            report_output=None,
+            tape_output=None,
+            audit_output=None,
+        )
+
+        artifacts = _resolve_run_artifacts(
+            args,
+            now=datetime(2026, 6, 28, 14, 30, 12, tzinfo=UTC),
+        )
+
+        self.assertEqual(
+            str(artifacts.run_dir),
+            "runs/predex-2026-06-28-143012-market-data-all-events-monotonic-chain",
+        )
+        self.assertEqual(
+            artifacts.output,
+            "runs/predex-2026-06-28-143012-market-data-all-events-monotonic-chain/config.json",
+        )
+        self.assertEqual(
+            artifacts.report_output,
+            "runs/predex-2026-06-28-143012-market-data-all-events-monotonic-chain/report.json",
+        )
+        self.assertEqual(
+            artifacts.tape_output,
+            "runs/predex-2026-06-28-143012-market-data-all-events-monotonic-chain/tape.bin",
+        )
+        self.assertEqual(
+            artifacts.audit_output,
+            "runs/predex-2026-06-28-143012-market-data-all-events-monotonic-chain/audit.jsonl",
+        )
+
+    def test_run_artifacts_explicit_paths_win_over_bundle_defaults(self) -> None:
+        args = Namespace(
+            run_dir_root="runs",
+            run_label="overnight soak",
+            all_events=False,
+            event_ticker=[],
+            series_ticker=None,
+            status="open",
+            include_topology=[],
+            exclude_topology=[],
+            overwrite_run_dir=True,
+            output="custom/config.json",
+            report_output="custom/report.json",
+            tape_output="custom/tape.bin",
+            audit_output="custom/audit.jsonl",
+        )
+
+        artifacts = _resolve_run_artifacts(
+            args,
+            now=datetime(2026, 6, 28, 14, 30, 12, tzinfo=UTC),
+        )
+
+        self.assertEqual(str(artifacts.run_dir), "runs/predex-2026-06-28-143012-market-data-overnight-soak")
+        self.assertEqual(artifacts.output, "custom/config.json")
+        self.assertEqual(artifacts.report_output, "custom/report.json")
+        self.assertEqual(artifacts.tape_output, "custom/tape.bin")
+        self.assertEqual(artifacts.audit_output, "custom/audit.jsonl")
+
     def test_single_market_event_classifies_as_single_market(self) -> None:
         event = EventRecord(
             event_ticker="EV-SINGLE",
@@ -1111,6 +1186,42 @@ class KalshiClientTests(unittest.TestCase):
         self.assertEqual(client._retry_delay(1, error), 1.0)
         self.assertEqual(client._retry_delay(2, error), 2.0)
         self.assertEqual(client._retry_delay(3, error), 3.0)
+
+    def test_parallel_discover_events_preserves_input_order(self) -> None:
+        class FakeClient(KalshiPublicClient):
+            def __init__(self) -> None:
+                super().__init__(event_fetch_workers=3)
+
+            def get_event(self, event_ticker: str) -> EventRecord:
+                delays = {"EV-1": 0.03, "EV-2": 0.02, "EV-3": 0.01}
+                time.sleep(delays[event_ticker])
+                return EventRecord(
+                    event_ticker=event_ticker,
+                    markets=[MarketRecord(ticker=f"{event_ticker}-MKT", event_ticker=event_ticker)],
+                )
+
+        client = FakeClient()
+        events = client.discover_events(event_tickers=["EV-1", "EV-2", "EV-3"])
+
+        self.assertEqual([event.event_ticker for event in events], ["EV-1", "EV-2", "EV-3"])
+
+    def test_parallel_discover_events_skips_failed_events(self) -> None:
+        class FakeClient(KalshiPublicClient):
+            def __init__(self) -> None:
+                super().__init__(event_fetch_workers=2)
+
+            def get_event(self, event_ticker: str) -> EventRecord:
+                if event_ticker == "EV-BAD":
+                    raise ValueError("bad event")
+                return EventRecord(
+                    event_ticker=event_ticker,
+                    markets=[MarketRecord(ticker=f"{event_ticker}-MKT", event_ticker=event_ticker)],
+                )
+
+        client = FakeClient()
+        events = client.discover_events(event_tickers=["EV-1", "EV-BAD", "EV-2"])
+
+        self.assertEqual([event.event_ticker for event in events], ["EV-1", "EV-2"])
 
 
 if __name__ == "__main__":

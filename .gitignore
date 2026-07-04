@@ -69,3 +69,7 @@ docs/generated_config2.report.json
 docs/generated_config2.json
 /*.png
 runs/*
+cpp/apps/research
+scripts/predex-research-summary
+python/src/predex/research/episode_summary.py
+python/src/predex/replay/metadata_overlay.py

@@ -126,7 +126,20 @@ Current CMake targets in [`cpp/CMakeLists.txt`](cpp/CMakeLists.txt):
 - CMake 3.24+
 - Ninja
 - A C++20 compiler
-- `vcpkg` or equivalent system packages for Boost.System, OpenSSL, `nlohmann_json`, and `simdjson`
+- `vcpkg`
+- System build tools required by the current vcpkg graph:
+
+```bash
+sudo apt-get install clang flex bison ninja-build cmake
+```
+
+- Export `VCPKG_ROOT` before using the `*-vcpkg` presets:
+
+```bash
+export VCPKG_ROOT=/home/andrew/vcpkg
+```
+
+The current Arrow dependency chain pulls in `thrift`, and the vcpkg `thrift` port requires both `flex` and `bison` during configure.
 
 ### Configure and Build
 

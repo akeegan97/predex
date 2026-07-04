@@ -184,6 +184,14 @@ def _write_route_tables(index: AppConfigIndex, tables_dir: Path, *, compression:
             "shard_index": event.shard_index,
             "shard_event_index": event.shard_event_index,
             "market_count": len(event.markets),
+            "event_ticker": event.event_ticker,
+            "series_ticker": event.series_ticker,
+            "event_category": event.event_category,
+            "event_domain": event.event_domain,
+            "event_time_s": event.event_time_s,
+            "event_close_time_s": event.event_close_time_s,
+            "event_expected_expiration_time_s": event.event_expected_expiration_time_s,
+            "event_expiration_time_s": event.event_expiration_time_s,
         }
         for event in index.events
     ]
@@ -198,8 +206,21 @@ def _write_route_tables(index: AppConfigIndex, tables_dir: Path, *, compression:
             "shard_index": route.shard_index,
             "shard_event_index": route.shard_event_index,
             "event_market_index": route.event_market_index,
+            "strike_key": route.strike_key,
             "tradeable": route.tradeable,
             "price_level_structure": route.price_level_structure,
+            "event_ticker": route.event_ticker,
+            "series_ticker": route.series_ticker,
+            "event_category": route.event_category,
+            "event_domain": route.event_domain,
+            "event_time_s": route.event_time_s,
+            "event_close_time_s": route.event_close_time_s,
+            "event_expected_expiration_time_s": route.event_expected_expiration_time_s,
+            "event_expiration_time_s": route.event_expiration_time_s,
+            "market_time_s": route.market_time_s,
+            "market_close_time_s": route.market_close_time_s,
+            "market_expected_expiration_time_s": route.market_expected_expiration_time_s,
+            "market_expiration_time_s": route.market_expiration_time_s,
         }
         for route in index.routes
     ]
@@ -213,6 +234,14 @@ def _write_route_tables(index: AppConfigIndex, tables_dir: Path, *, compression:
             ("shard_index", pa.uint32()),
             ("shard_event_index", pa.uint32()),
             ("market_count", pa.uint32()),
+            ("event_ticker", pa.string()),
+            ("series_ticker", pa.string()),
+            ("event_category", pa.string()),
+            ("event_domain", pa.string()),
+            ("event_time_s", pa.int64()),
+            ("event_close_time_s", pa.int64()),
+            ("event_expected_expiration_time_s", pa.int64()),
+            ("event_expiration_time_s", pa.int64()),
         ]
     )
     market_schema = pa.schema(
@@ -226,8 +255,21 @@ def _write_route_tables(index: AppConfigIndex, tables_dir: Path, *, compression:
             ("shard_index", pa.uint32()),
             ("shard_event_index", pa.uint32()),
             ("event_market_index", pa.uint32()),
+            ("strike_key", pa.int64()),
             ("tradeable", pa.bool_()),
             ("price_level_structure", pa.string()),
+            ("event_ticker", pa.string()),
+            ("series_ticker", pa.string()),
+            ("event_category", pa.string()),
+            ("event_domain", pa.string()),
+            ("event_time_s", pa.int64()),
+            ("event_close_time_s", pa.int64()),
+            ("event_expected_expiration_time_s", pa.int64()),
+            ("event_expiration_time_s", pa.int64()),
+            ("market_time_s", pa.int64()),
+            ("market_close_time_s", pa.int64()),
+            ("market_expected_expiration_time_s", pa.int64()),
+            ("market_expiration_time_s", pa.int64()),
         ]
     )
 
@@ -591,7 +633,7 @@ def materialize_run(
 
     manifest = {
         "run_id": run_id,
-        "materializer_version": 1,
+        "materializer_version": 4,
         "created_at_utc": datetime.now(UTC).isoformat(),
         "verified": verified,
         "run_dir": str(run_dir),

@@ -9,7 +9,9 @@
     "nlohmann-json",
     "gtest",
     "simdjson",
-    "spdlog"
+    "spdlog",
+    {"name": "arrow",
+     "features" : ["parquet", "dataset", "filesystem", "csv", "json"]}
   ],
   "builtin-baseline": "1e199d32ad53aab1defda61ce41c380302e3f95c"
 }

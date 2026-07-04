@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Callable, Iterable
 
 from .affinity import stable_affinity_key, stable_event_id, stable_market_id
@@ -87,12 +88,102 @@ def _event_config_name(classified_event: ClassifiedEvent) -> str:
     return f"{classified_event.event.event_ticker}::{classified_event.synthetic_key}"
 
 
-def _market_config(market: MarketRecord, market_id: int) -> dict[str, Any]:
+def _parse_time_s(value: str) -> int:
+    if not value:
+        return 0
+    text = value.strip()
+    if not text:
+        return 0
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp())
+
+
+def _event_time_s(markets: Iterable[MarketRecord]) -> int:
+    times = [
+        parsed
+        for market in markets
+        if (parsed := _parse_time_s(market.primary_time_reference())) > 0
+    ]
+    return min(times) if times else 0
+
+
+def _min_positive(values: Iterable[int]) -> int:
+    positives = [value for value in values if value > 0]
+    return min(positives) if positives else 0
+
+
+def _event_time_fields(markets: Iterable[MarketRecord]) -> dict[str, int]:
+    market_list = list(markets)
+    return {
+        "event_time_s": _event_time_s(market_list),
+        "event_close_time_s": _min_positive(_parse_time_s(market.close_time) for market in market_list),
+        "event_expected_expiration_time_s": _min_positive(
+            _parse_time_s(market.expected_expiration_time) for market in market_list
+        ),
+        "event_expiration_time_s": _min_positive(_parse_time_s(market.expiration_time) for market in market_list),
+    }
+
+
+def _event_domain(event: EventRecord) -> str:
+    category = event.category.strip().lower()
+    searchable = " ".join(
+        part.lower()
+        for part in (event.event_ticker, event.series_ticker, event.title, event.sub_title, category)
+        if part
+    )
+
+    if any(token in searchable for token in (
+        "sports", "nba", "nfl", "mlb", "nhl", "soccer", "football", "tennis",
+        "ufc", "golf", "world cup", "kxwc", "kxatp", "kxwta", "kxitf",
+    )):
+        return "sports"
+    if any(token in searchable for token in ("crypto", "bitcoin", "ethereum", "kxbtc", "kxeth")):
+        return "crypto"
+    if any(token in searchable for token in (
+        "financial", "finance", "economics", "economic", "fed", "inflation", "cpi",
+        "gdp", "unemployment", "nasdaq", "s&p", "spx", "oil", "wti", "gas",
+        "kxfed", "kxcpi", "kxin", "kxinx", "kxwti", "kxgas",
+    )):
+        return "financial_economic"
+    if any(token in searchable for token in (
+        "weather", "temperature", "rain", "snow", "hurricane", "climate",
+    )):
+        return "weather"
+    if any(token in searchable for token in (
+        "politics", "election", "president", "senate", "congress", "supreme court",
+    )):
+        return "politics"
+    if any(token in searchable for token in (
+        "entertainment", "culture", "celebrity", "movie", "tv", "oscars",
+        "grammy", "love island",
+    )):
+        return "pop_culture"
+    if category:
+        return category.replace(" ", "_")
+    return "other"
+
+
+def _market_config(market: MarketRecord, market_id: int, strike_key: int) -> dict[str, Any]:
+    market_time_s = _parse_time_s(market.primary_time_reference())
     return {
         "market_id": str(market_id),
         "kalshi_ticker": market.ticker,
+        "strike_key": strike_key,
         "tradeable": market.status == "active",
         "price_level_structure": market.price_level_structure or "linear_cent",
+        "market_title": market.title,
+        "market_subtitle": market.subtitle,
+        "market_time_s": market_time_s,
+        "market_close_time_s": _parse_time_s(market.close_time),
+        "market_expected_expiration_time_s": _parse_time_s(market.expected_expiration_time),
+        "market_expiration_time_s": _parse_time_s(market.expiration_time),
     }
 
 
@@ -207,6 +298,7 @@ def build_app_config_result(
                 id_kind="event_id",
                 stable_id=lambda key: base_event_id if key == event_name else stable_event_id(key),
             )
+            event_time_fields = _event_time_fields(market.market for market in classified_event.markets)
 
             market_configs: list[dict[str, Any]] = []
             included_market_tickers: list[str] = []
@@ -224,13 +316,20 @@ def build_app_config_result(
                 seen_market_tickers.add(market.ticker)
 
                 included_market_tickers.append(market.ticker)
-                market_configs.append(_market_config(market, market_id))
+                market_configs.append(_market_config(market, market_id, classified_market.strike_key))
 
             universe_events.append(
                 {
                     "event_id": str(event_id),
                     "affinity_key": str(affinity_key),
                     "topology": topology.value,
+                    "event_ticker": classified_event.event.event_ticker,
+                    "series_ticker": classified_event.event.series_ticker,
+                    "event_title": classified_event.event.title,
+                    "event_sub_title": classified_event.event.sub_title,
+                    "event_category": classified_event.event.category,
+                    "event_domain": _event_domain(classified_event.event),
+                    **event_time_fields,
                     "markets": market_configs,
                 }
             )

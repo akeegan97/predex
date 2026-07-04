@@ -11,6 +11,8 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)
+find_package(Arrow CONFIG REQUIRED)
+find_package(Parquet CONFIG REQUIRED)
 
 add_executable(predexctl 
   apps/predexctl/main.cpp
@@ -45,6 +47,10 @@ add_executable(predex
 add_executable(smoke 
   tests/spine_smoke.cpp
 )
+
+add_executable(research 
+  apps/research/main.cpp
+)
 target_include_directories(smoke PRIVATE include)
 target_include_directories(predexctl PRIVATE include)
 target_include_directories(predex PRIVATE include)
@@ -53,3 +59,10 @@ target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE simdjson::simdjson)
 target_link_libraries(predex PRIVATE Boost::system OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(smoke PRIVATE simdjson::simdjson)
+target_include_directories(research PRIVATE include)
+
+target_link_libraries(research PRIVATE
+  nlohmann_json::nlohmann_json
+  Arrow::arrow_static
+  Parquet::parquet_static
+)

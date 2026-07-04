@@ -42,6 +42,10 @@ add_executable(predex
   src/config/app_config.cpp
   src/config/universe_builder.cpp
   include/predex/logging/market_data_logger.hpp
+  include/predex/strategy/strategy.hpp
+  include/predex/oms/oms_types.hpp
+  include/predex/oms/order_types.hpp
+  include/predex/oms/oms.hpp
 )
 
 add_executable(smoke 

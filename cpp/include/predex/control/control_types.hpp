@@ -237,6 +237,12 @@ namespace predex::core::control {
 
     using LoggerToControlStatus = std::variant<LoggerStarted, LoggerFaulted, LoggerTelemetry>;
 
+    struct AllowTrading{};
+    struct DisableTrading{};
+
+    struct FlattenAllOrders{}; // either cancel/remove any resting orders, and decide what to do with any inventory/filled positions
+
+    using ControlToOmsCommand = std::variant<AllowTrading, DisableTrading, FlattenAllOrders>;
 
 
 

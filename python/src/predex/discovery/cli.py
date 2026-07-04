@@ -29,6 +29,7 @@ from .models import TopologyKind
 
 DEFAULT_TAPE_OUTPUT = "logs/live/predex_tape.bin"
 DEFAULT_AUDIT_OUTPUT = "logs/live/predex_audit.jsonl"
+DEFAULT_RUN_DIR_ROOT = "runs"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +74,11 @@ def _resolve_run_artifacts(
     *,
     now: datetime | None = None,
 ) -> RunArtifacts:
-    if not args.run_dir_root:
+    run_dir_root = args.run_dir_root
+    if not run_dir_root and args.run_label:
+        run_dir_root = DEFAULT_RUN_DIR_ROOT
+
+    if not run_dir_root:
         return RunArtifacts(
             run_dir=None,
             output=args.output,
@@ -84,7 +89,7 @@ def _resolve_run_artifacts(
 
     timestamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d-%H%M%S")
     label = _slugify(args.run_label) if args.run_label else _default_run_label(args)
-    run_dir = Path(args.run_dir_root) / f"predex-{timestamp}-market-data-{label}"
+    run_dir = Path(run_dir_root) / f"predex-{timestamp}-market-data-{label}"
 
     if run_dir.exists() and not args.overwrite_run_dir:
         raise FileExistsError(f"run directory already exists: {run_dir}")
@@ -306,7 +311,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--run-label",
-        help="Optional label used in the generated run directory name. Defaults from discovery/topology filters.",
+        help=(
+            "Optional label used in the generated run directory name. "
+            f"If --run-dir-root is omitted, this implies --run-dir-root {DEFAULT_RUN_DIR_ROOT}."
+        ),
     )
     parser.add_argument(
         "--overwrite-run-dir",
@@ -400,7 +408,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-market-data",
         action="store_true",
-        help="Enable market data in the generated C++ app config (default: disabled).",
+        help=(
+            "Enable market data in the generated C++ app config. "
+            "Run-directory captures enable this by default."
+        ),
     )
     return parser
 
@@ -500,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.config_format == "app":
         app_channels = tuple(dict.fromkeys(channels + lifecycle_channels))
+        enable_market_data = args.enable_market_data or run_artifacts.run_dir is not None
         build_result = build_app_config_result(
             events,
             runtime=RuntimeSettings(
@@ -517,7 +529,7 @@ def main(argv: list[str] | None = None) -> int:
                     private_key_pem_env=args.private_key_env,
                 ),
                 market_data=KalshiMarketDataSettings(
-                    enable_market_data=args.enable_market_data,
+                    enable_market_data=enable_market_data,
                     channels=app_channels,
                 ),
             ),

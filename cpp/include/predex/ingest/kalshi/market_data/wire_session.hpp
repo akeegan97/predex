@@ -18,7 +18,7 @@
 #include "predex/exchange/kalshi/websocket_session.hpp"
 #include "predex/exchange/kalshi/adapters/market_data_handler.hpp"
 #include "predex/control/control_types.hpp"
-#include "predex/exchange/kalshi/market_data_protocol.hpp"
+#include "predex/exchange/kalshi/kalshi_ws_protocol.hpp"
 
 namespace predex::ingest::kalshi::market_data{
 

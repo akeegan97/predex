@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <string>
 #include <optional>
+#include <functional>
 
 #include "predex/oms/order_intents.hpp"
 
@@ -267,8 +268,15 @@ namespace predex::oms{
 
     using KalshiToOmsEvent = std::variant<RestOrderResponse, PrivateWsOrderEvent, ReconciledOrderSnapshot>;
 
-    
-
-
-
 }
+
+template<> struct std::hash<predex::oms::ClientOrderId>{
+    std::size_t operator()(const predex::oms::ClientOrderId& client_id) const noexcept{
+        return std::hash<std::string_view>{}(client_id.view());
+    }
+};
+template<> struct std::hash<predex::oms::ExchangeOrderId>{
+    std::size_t operator()(const predex::oms::ExchangeOrderId& exchange_id) const noexcept{
+        return std::hash<std::string_view>{}(exchange_id.view());
+    }
+};

@@ -79,6 +79,44 @@ namespace predex::core::control {
         std::uint64_t recycle_failures{0};
     };
 
+    struct OmsTelemetrySnapshot{
+        std::uint64_t strategy_intents_received{0};
+        std::uint64_t strategy_intents_processed{0};
+        std::uint64_t strategy_intents_rejected{0};
+
+        std::uint64_t kalshi_commands_sent{0};
+        std::uint64_t kalshi_commands_failed{0};
+
+        std::uint64_t rest_responses_seen{0};
+        std::uint64_t private_ws_events_seen{0};
+        std::uint64_t reconciliation_events_seen{0};
+
+        std::uint64_t order_state_updates_sent{0};
+        std::uint64_t strategy_response_backpressure{0};
+
+        std::uint64_t live_orders{0};
+        std::uint64_t pending_submit_orders{0};
+        std::uint64_t uncertain_orders{0};
+    };
+
+    struct PrivateOrderFeedTelemetrySnapshot{
+        std::uint64_t messages_received{0};
+        std::uint64_t messages_decoded{0};
+        std::uint64_t messages_dropped{0};
+        std::uint64_t parse_failures{0};
+        std::uint64_t oms_enqueue_failures{0};
+        std::uint64_t reconnects{0};
+    };
+
+    struct OrderRestTelemetrySnapshot{
+        std::uint64_t commands_received{0};
+        std::uint64_t requests_sent{0};
+        std::uint64_t responses_received{0};
+        std::uint64_t requests_failed{0};
+        std::uint64_t retry_count{0};
+        std::uint64_t oms_enqueue_failures{0};
+    };
+
     struct IoComponentState{
         ComponentStatus status{ComponentStatus::kUNKNOWN};
         bool connected{false};
@@ -110,6 +148,31 @@ namespace predex::core::control {
         LoggerTelemetrySnapshot telemetry;
     };
 
+    struct OmsComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        bool trading_enabled{false};
+        bool flatten_requested{false};
+        OmsTelemetrySnapshot telemetry;
+        std::string last_error;
+    };
+
+    struct PrivateOrderFeedComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        bool connected{false};
+        std::uint64_t installed_universe_version{0};
+        std::uint64_t subscribed_universe_version{0};
+        std::string last_error;
+        PrivateOrderFeedTelemetrySnapshot telemetry;
+    };
+
+    struct OrderRestComponentState{
+        ComponentStatus status{ComponentStatus::kUNKNOWN};
+        bool enabled{false};
+        std::uint64_t installed_universe_version{0};
+        std::string last_error;
+        OrderRestTelemetrySnapshot telemetry;
+    };
+
     struct ProcessState {
         LifecyclePhase lifecycle{LifecyclePhase::kBOOTING};
         bool trading_enabled{false};
@@ -121,6 +184,9 @@ namespace predex::core::control {
         IoComponentState io_component_state;
         RouterComponentState router_component_state;
         LoggerComponentState logger_component_state;
+        OmsComponentState oms_component_state;
+        PrivateOrderFeedComponentState private_order_feed_component_state;
+        OrderRestComponentState order_rest_component_state;
         std::vector<ShardComponentState> shard_component_states;
     };
 
@@ -184,6 +250,19 @@ namespace predex::core::control {
         std::vector<UniverseMarketRoute> market_routes;
     };
 
+    struct OrderMarketRoute{
+        MarketId market_id{};
+        EventId event_id{};
+        std::string kalshi_ticker;
+        bool tradeable{false};
+        PriceLevelStructure price_level_structure{PriceLevelStructure::kLINEAR_CENT};
+    };
+
+    struct OrderRouteUniverse{
+        std::uint64_t version{};
+        std::vector<OrderMarketRoute> market_routes;
+    };
+
     // IO control commands and responses 
 
     struct ApplyUniverseSnapshotIo{
@@ -237,6 +316,78 @@ namespace predex::core::control {
 
     using LoggerToControlStatus = std::variant<LoggerStarted, LoggerFaulted, LoggerTelemetry>;
 
+    // Private order feed control commands and responses
+
+    struct ApplyOrderRouteUniverse{
+        std::shared_ptr<const OrderRouteUniverse> snapshot;
+    };
+
+    struct ConnectPrivateOrderFeed{};
+    struct DisconnectPrivateOrderFeed{};
+
+    using ControlToPrivateOrderFeedCommand = std::variant<
+        ApplyOrderRouteUniverse,
+        ConnectPrivateOrderFeed,
+        DisconnectPrivateOrderFeed
+    >;
+
+    struct PrivateOrderFeedConnected{};
+    struct PrivateOrderFeedDisconnected{
+        std::string reason;
+    };
+    struct PrivateOrderFeedUniverseApplied{
+        std::uint64_t version{};
+    };
+    struct PrivateOrderFeedSubscriptionReady{
+        std::uint64_t version{};
+    };
+    struct PrivateOrderFeedFaulted{
+        std::string error_message;
+    };
+    struct PrivateOrderFeedTelemetry{
+        PrivateOrderFeedTelemetrySnapshot telemetry;
+    };
+
+    using PrivateOrderFeedToControlStatus = std::variant<
+        PrivateOrderFeedConnected,
+        PrivateOrderFeedDisconnected,
+        PrivateOrderFeedUniverseApplied,
+        PrivateOrderFeedSubscriptionReady,
+        PrivateOrderFeedFaulted,
+        PrivateOrderFeedTelemetry
+    >;
+
+    // Order REST control commands and responses
+
+    struct EnableOrderRest{};
+    struct DisableOrderRest{};
+
+    using ControlToOrderRestCommand = std::variant<
+        ApplyOrderRouteUniverse,
+        EnableOrderRest,
+        DisableOrderRest
+    >;
+
+    struct OrderRestReady{};
+    struct OrderRestDisabled{};
+    struct OrderRestUniverseApplied{
+        std::uint64_t version{};
+    };
+    struct OrderRestFaulted{
+        std::string error_message;
+    };
+    struct OrderRestTelemetry{
+        OrderRestTelemetrySnapshot telemetry;
+    };
+
+    using OrderRestToControlStatus = std::variant<
+        OrderRestReady,
+        OrderRestDisabled,
+        OrderRestUniverseApplied,
+        OrderRestFaulted,
+        OrderRestTelemetry
+    >;
+
     struct AllowTrading{};
     struct DisableTrading{};
 
@@ -244,10 +395,28 @@ namespace predex::core::control {
 
     using ControlToOmsCommand = std::variant<AllowTrading, DisableTrading, FlattenAllOrders>;
 
+    struct OmsReady{};
+    struct OmsFaulted{
+        std::string error_message;
+    };
+    struct OmsTelemetry{
+        OmsTelemetrySnapshot telemetry;
+    };
+    struct OmsTradingEnabledChanged{
+        bool trading_enabled{false};
+    };
 
+    struct OmsFlattenStateChanged{
+        bool flatten_requested{false};
+        std::uint64_t live_orders{0};
+    };
 
-
-
-
+    using OmsToControlStatus = std::variant<
+        OmsReady,
+        OmsFaulted,
+        OmsTelemetry,
+        OmsTradingEnabledChanged,
+        OmsFlattenStateChanged
+    >;
 
 }  // namespace predex::core::control

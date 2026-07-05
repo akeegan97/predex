@@ -1,6 +1,6 @@
 #pragma once 
 
-#include "predex/exchange/kalshi/market_data_protocol.hpp"
+#include "predex/exchange/kalshi/kalshi_ws_protocol.hpp"
 #include <string>
 #include <vector>
 #include <cstddef>

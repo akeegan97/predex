@@ -2,7 +2,7 @@
 #include <span>
 #include "predex/exchange/kalshi/handler.hpp"
 #include "predex/exchange/kalshi/adapters/auth_signer.hpp"
-#include "predex/exchange/kalshi/market_data_protocol.hpp"
+#include "predex/exchange/kalshi/kalshi_ws_protocol.hpp"
 
 namespace predex::exchange::kalshi{
     inline constexpr std::string_view kWEBSOCKET_ENDPOINT = "wss://api.elections.kalshi.com/trade-api/ws/v2";

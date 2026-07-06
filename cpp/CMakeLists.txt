@@ -26,6 +26,7 @@ add_executable(predex
   src/socket/unix_command_server.cpp
   src/exchange/kalshi/adapters/auth_signer.cpp
   src/exchange/kalshi/adapters/market_data_handler.cpp
+  src/exchange/kalshi/adapters/order_rest_adapter.cpp
   src/exchange/kalshi/websocket_session.cpp
   include/predex/ingest/kalshi/market_data/frame_pool.hpp
   src/ingest/kalshi/market_data/wire_session.cpp

@@ -207,6 +207,7 @@ namespace predex::oms{
         kREJECTED = 2,
         kTIMEOUT = 3,
         kTRANSPORT_ERROR = 4,
+        kNOT_SENT = 5,
     };
 
     enum class VenueRejectReason : std::uint8_t{

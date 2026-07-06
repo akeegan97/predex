@@ -44,6 +44,7 @@ struct OmsHarness {
             .signal_id = 505,
         },
         .outcome = intent::Outcome::kYES,
+        .action = intent::OrderAction::kBUY,
         .liquidity_intent = intent::LiquidityIntent::kMAKER,
         .order_type = intent::OrderType::kLIMIT,
         .time_in_force = intent::TimeInForce::kGTC,

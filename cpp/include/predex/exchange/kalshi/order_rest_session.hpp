@@ -1,8 +1,10 @@
 #pragma once
 
 #include <chrono>
-#include <optional>
+#include <memory>
 #include <stop_token>
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "predex/control/control_types.hpp"
@@ -13,11 +15,16 @@
 
 namespace predex::exchange::kalshi {
 
+    namespace control = ::predex::core::control;
+    namespace oms = ::predex::oms;
+
     inline constexpr std::chrono::milliseconds kORDER_REST_TELEMETRY_INTERVAL{250};
+    inline constexpr std::size_t kMAX_PENDING_OMS_EVENTS{64};
+    inline constexpr std::size_t kMAX_HTTP_POLL_BATCH_SIZE{64};
 
     struct OrderRestControlQueues {
-        utils::SPSCQueue<core::control::ControlToOrderRestCommand>& control_to_order_rest_queue;
-        utils::SPSCQueue<core::control::OrderRestToControlStatus>& order_rest_to_control_queue;
+        utils::SPSCQueue<control::ControlToOrderRestCommand>& control_to_order_rest_queue;
+        utils::SPSCQueue<control::OrderRestToControlStatus>& order_rest_to_control_queue;
     };
 
     struct OrderRestOmsQueues {
@@ -34,6 +41,7 @@ namespace predex::exchange::kalshi {
 
     struct OrderRestSessionState { 
         bool enabled{false};
+        bool faulted{false};
         std::string last_error;
     };
 
@@ -62,14 +70,22 @@ namespace predex::exchange::kalshi {
             void handle_oms_command(const oms::OmsToKalshiCommand& command);
 
             void apply_order_route_universe(const std::shared_ptr<const core::control::OrderRouteUniverse>& snapshot);
-            void enable();
+            void enable() noexcept;
             void disable(std::string reason = {});
 
-            void pump_http_once() noexcept;
+            void receive_http(std::size_t max_batch_size) noexcept;
             void maybe_send_telemetry() noexcept;
 
-            [[nodiscard]] bool push_control_status(core::control::OrderRestToControlStatus status) noexcept;
-            [[nodiscard]] bool send_oms_event(oms::KalshiToOmsEvent event) noexcept;
+            [[nodiscard]] bool try_push_control_status(core::control::OrderRestToControlStatus status) noexcept;
+            void try_send_pending_control_notifications() noexcept;
+            [[nodiscard]] bool send_or_defer_oms_event(oms::KalshiToOmsEvent event) noexcept;
+            [[nodiscard]] bool emit_local_reject(const PreparedOrderRestRequest& prepared, std::string reason) noexcept;
+
+            [[nodiscard]] bool defer_oms_event(oms::KalshiToOmsEvent event) noexcept;
+
+            void drain_pending_oms_events() noexcept; 
+            void fault(std::string reason) noexcept;
+
 
             Http2Session http_session_;
             KalshiOrderRestAdapter order_rest_adapter_;
@@ -77,11 +93,20 @@ namespace predex::exchange::kalshi {
             OrderRestOmsQueues oms_queues_;
 
             OrderRestSessionState status_;
-            std::optional<InflightRequest> inflight_request_;
+            std::unordered_map<HttpRequestId, InflightRequest> inflight_requests_;
             core::control::OrderRestTelemetrySnapshot telemetry_;
             std::chrono::steady_clock::time_point next_telemetry_send_{
                 std::chrono::steady_clock::now() + kORDER_REST_TELEMETRY_INTERVAL
             };
+            inline constexpr static std::size_t kMAX_INFLIGHT_REQUESTS{10};//unsure yet
+            std::array<oms::KalshiToOmsEvent, kMAX_PENDING_OMS_EVENTS> pending_oms_events_;
+            std::size_t pending_oms_head_{0};
+            std::size_t pending_oms_tail_{0};
+            std::size_t pending_oms_count_{0};
+
+            std::uint64_t installed_universe_version_{0};
+            bool pending_ready_notification_{false};
+            bool pending_fault_notification_{false};
     };
 
 } // namespace predex::exchange::kalshi

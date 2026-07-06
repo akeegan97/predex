@@ -247,7 +247,10 @@ constexpr std::size_t kMAX_DRAIN = 100;
             reject(RejectReason::kTRADING_DISABLED);
             return;
         }
-        if(intent.quantity_lots <= 0 || intent.price_ticks <= 0 || intent.outcome == intent::Outcome::kUNKNOWN){
+        if(intent.quantity_lots <= 0 ||
+           intent.price_ticks <= 0 ||
+           intent.outcome == intent::Outcome::kUNKNOWN ||
+           intent.action == intent::OrderAction::kUNKNOWN){
             reject(RejectReason::kINVALID_INTENT);
             return;
         }
@@ -403,6 +406,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
                 clear_pending_command(*record);
                 break;
             case RestResultCode::kREJECTED:
+            case RestResultCode::kNOT_SENT:
                 if(response.command_kind == RestCommandKind::kSUBMIT_ORDER){
                     record->order_state = OrderState::kREJECTED;
                     record->leaves_qty_lots = 0;

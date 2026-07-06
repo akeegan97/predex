@@ -15,8 +15,8 @@ namespace predex::exchange::kalshi {
 
     struct Http2SessionConfig {
         std::string endpoint{std::string{kKALSHI_REST_ENDPOINT}};
-        std::chrono::milliseconds connect_timeout{3000};
-        std::chrono::milliseconds request_timeout{5000};
+        std::chrono::milliseconds connect_timeout{3000}; //NOLINT
+        std::chrono::milliseconds request_timeout{5000};//NOLINT
         std::uint16_t max_retries{0};
         std::uint16_t max_concurrent_streams{1};
     };

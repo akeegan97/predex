@@ -28,6 +28,12 @@ namespace predex::oms::intent{
         kNO = 2,
     };
 
+    enum class OrderAction : std::uint8_t{
+        kUNKNOWN = 0,
+        kBUY = 1,
+        kSELL = 2,
+    };
+
     using StrategyId = std::uint32_t;
     using StrategyIntentId = std::uint32_t;
     using MarketId = std::uint32_t;
@@ -51,6 +57,7 @@ namespace predex::oms::intent{
     struct NewOrderIntent{
         IntentContext context{};
         Outcome outcome{Outcome::kUNKNOWN};
+        OrderAction action{OrderAction::kUNKNOWN};
         LiquidityIntent liquidity_intent{LiquidityIntent::kUNKNOWN};
         OrderType order_type{OrderType::kLIMIT};
         TimeInForce time_in_force{TimeInForce::kGTC};

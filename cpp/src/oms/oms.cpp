@@ -30,6 +30,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
 
     OmsPumpResult Oms::pump_once() noexcept{
         std::size_t work_done{0};
+        work_done += try_send_pending_control_status() ? 1 : 0;
         work_done += drain_control_commands(kMAX_DRAIN);
         work_done += drain_venue_events(kMAX_DRAIN);
         work_done += drain_strategy_intents(kMAX_DRAIN);
@@ -80,7 +81,8 @@ constexpr std::size_t kMAX_DRAIN = 100;
             std::visit(Overloaded{
                 [this](const RestOrderResponse& response){ handle_venue_event(response); },
                 [this](const PrivateWsOrderEvent& event){ handle_venue_event(event); },
-                [this](const ReconciledOrderSnapshot& snapshot){ handle_venue_event(snapshot); }
+                [this](const ReconciledOrderSnapshot& snapshot){ handle_venue_event(snapshot); },
+                [this](const OrderRestEgressDrained& drained){ handle_venue_event(drained); }
             }, event);
             ++processed;
         }
@@ -116,7 +118,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
             client_order_id.clear();
             return client_order_id;
         }
-        const std::string_view id{buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data())};
+        const std::string_view id{buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data())};//NOLINT
         (void)client_order_id.assign_from(id);
         return client_order_id;
     }
@@ -149,7 +151,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
     }
 
     OrderRecord* Oms::find_order(intent::OmsRequestId oms_request_id) noexcept{
-        auto it = oms_request_id_to_order_record_map_.find(oms_request_id);
+        auto it = oms_request_id_to_order_record_map_.find(oms_request_id);//NOLINT
         if(it == oms_request_id_to_order_record_map_.end()){
             return nullptr;
         }
@@ -184,7 +186,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
             return false;
         }
         auto* queue = queues_.strategy_response_queues[strategy_index];
-        if(queue == nullptr || !queue->try_push(std::move(message))){
+        if(queue == nullptr || !queue->try_push(std::move(message))){//NOLINT
             ++telemetry_.strategy_response_backpressure;
             return false;
         }
@@ -192,7 +194,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
     }
 
     bool Oms::send_kalshi_command(OmsToKalshiCommand command) noexcept{
-        if(!queues_.kalshi_command_queue.try_push(std::move(command))){
+        if(!queues_.kalshi_command_queue.try_push(std::move(command))){//NOLINT
             ++telemetry_.kalshi_commands_failed;
             return false;
         }
@@ -456,6 +458,28 @@ constexpr std::size_t kMAX_DRAIN = 100;
 
     void Oms::handle_venue_event(const ReconciledOrderSnapshot& /*snapshot*/) noexcept{
         ++telemetry_.reconciliation_events_seen;
+    }
+
+    void Oms::handle_venue_event(const OrderRestEgressDrained& drained) noexcept {
+        pending_rest_egress_drained_ = core::control::OmsRestEgressDrained{
+            .shutdown_epoch = drained.shutdown_epoch,
+            .completion_ts_ns = drained.completion_ts_ns,
+            .live_orders = live_order_count(),
+            .uncertain_orders = uncertain_order_count(),
+        };
+
+        (void)try_send_pending_control_status();
+    }
+
+    bool Oms::try_send_pending_control_status() noexcept{
+        if(!pending_rest_egress_drained_.has_value()){
+            return false;
+        }
+        if(!send_control_status(core::control::OmsToControlStatus{*pending_rest_egress_drained_})){
+            return false;
+        }
+        pending_rest_egress_drained_.reset();
+        return true;
     }
 
     void Oms::handle_control_command(const core::control::AllowTrading& /*command*/) noexcept{

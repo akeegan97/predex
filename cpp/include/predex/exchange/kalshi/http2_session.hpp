@@ -18,7 +18,7 @@ namespace predex::exchange::kalshi {
         std::chrono::milliseconds connect_timeout{3000}; //NOLINT
         std::chrono::milliseconds request_timeout{5000};//NOLINT
         std::uint16_t max_retries{0};
-        std::uint16_t max_concurrent_streams{1};
+        std::uint16_t max_concurrent_streams{10};//NOLINT
     };
 
     class Http2Session {

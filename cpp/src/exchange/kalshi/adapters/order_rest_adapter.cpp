@@ -142,6 +142,8 @@ namespace {
                 return prepare_cancel_order(cmd);
             } else if constexpr(std::is_same_v<CmdType, oms::ModifyOrderCmd>){
                 return prepare_modify_order(cmd);
+            } else if constexpr(std::is_same_v<CmdType, oms::CloseOrderRestEgress>){
+                return PreparedOrderRestRequest{.ok = false, .error_message = "CloseOrderRestEgress does not generate an HTTP request"};
             } else {
                 PreparedOrderRestRequest result;
                 result.ok = false;
@@ -255,12 +257,15 @@ namespace {
 
             if constexpr(std::is_same_v<T, oms::SubmitOrderCmd>){
                 result.response.context.context = cmd.new_order_intent.context;
+                result.response.client_order_id = cmd.client_order_id;
             }else if constexpr(std::is_same_v<T, oms::CancelOrderCmd>){
                 result.response.context.context = cmd.cancel_order_intent.context;
+                result.response.client_order_id = cmd.client_order_id;
             }else if constexpr(std::is_same_v<T, oms::ModifyOrderCmd>){
                 result.response.context.context = cmd.modify_order_intent.context;
+                result.response.client_order_id = cmd.client_order_id;
             }
-           result.response.client_order_id = cmd.client_order_id;
+
            if constexpr(requires {cmd.exchange_order_id;}){if(cmd.exchange_order_id.has_value()){result.response.exchange_order_id = cmd.exchange_order_id.value();}}
         }, prepared.source_command);
 

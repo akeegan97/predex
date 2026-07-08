@@ -64,6 +64,7 @@ namespace predex::oms{
             void handle_venue_event(const RestOrderResponse& response) noexcept;
             void handle_venue_event(const PrivateWsOrderEvent& event) noexcept;
             void handle_venue_event(const ReconciledOrderSnapshot& snapshot) noexcept;
+            void handle_venue_event(const OrderRestEgressDrained& drained) noexcept;
             
             void handle_control_command(const core::control::AllowTrading& command) noexcept;
             void handle_control_command(const core::control::DisableTrading& command) noexcept;
@@ -92,6 +93,7 @@ namespace predex::oms{
             [[nodiscard]] std::uint64_t live_order_count() const noexcept;
             [[nodiscard]] std::uint64_t pending_submit_order_count() const noexcept;
             [[nodiscard]] std::uint64_t uncertain_order_count() const noexcept;
+            [[nodiscard]] bool try_send_pending_control_status() noexcept;
 
             std::unordered_map<ClientOrderId, intent::OmsRequestId> client_order_id_to_oms_request_id_map_;
             std::unordered_map<ExchangeOrderId, intent::OmsRequestId> exchange_order_id_to_oms_request_id_map_;
@@ -102,6 +104,7 @@ namespace predex::oms{
             bool trading_enabled_{false};
             bool flatten_requested_{false};
             intent::OmsRequestId next_oms_request_id_{1};
+            std::optional<core::control::OmsRestEgressDrained> pending_rest_egress_drained_;
 
     };
 

@@ -86,6 +86,10 @@ namespace predex::exchange::kalshi {
             void drain_pending_oms_events() noexcept; 
             void fault(std::string reason) noexcept;
 
+            void handle_close_egress(const oms::CloseOrderRestEgress& command) noexcept;
+
+            void finish_egress_drain() noexcept;
+
 
             Http2Session http_session_;
             KalshiOrderRestAdapter order_rest_adapter_;
@@ -107,6 +111,10 @@ namespace predex::exchange::kalshi {
             std::uint64_t installed_universe_version_{0};
             bool pending_ready_notification_{false};
             bool pending_fault_notification_{false};
+
+            bool egress_closed_{false};
+            std::uint64_t shutdown_epoch_{0};
+            bool drain_marker_sent_{false};
     };
 
 } // namespace predex::exchange::kalshi

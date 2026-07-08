@@ -191,8 +191,14 @@ namespace predex::oms{
         intent::ModifyOrderIntent modify_order_intent{};
         std::uint64_t submission_ts_ns{0};
     };
+    struct CloseOrderRestEgress {
+        intent::OmsRequestId oms_request_id{};
+        std::uint64_t submission_ts_ns{0};
+        std::uint64_t shutdown_epoch{};
+    };
 
-    using OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>;
+
+    using OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd, CloseOrderRestEgress>;
 
     enum class RestCommandKind : std::uint8_t{
         kUNKNOWN = 0,
@@ -267,7 +273,12 @@ namespace predex::oms{
 
     struct ReconciledOrderSnapshot{};
 
-    using KalshiToOmsEvent = std::variant<RestOrderResponse, PrivateWsOrderEvent, ReconciledOrderSnapshot>;
+    struct OrderRestEgressDrained{
+        std::uint64_t shutdown_epoch{};
+        std::uint64_t completion_ts_ns{};
+    };
+
+    using KalshiToOmsEvent = std::variant<RestOrderResponse, PrivateWsOrderEvent, ReconciledOrderSnapshot, OrderRestEgressDrained>;
 
 }
 

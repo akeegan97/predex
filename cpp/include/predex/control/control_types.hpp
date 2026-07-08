@@ -411,12 +411,20 @@ namespace predex::core::control {
         std::uint64_t live_orders{0};
     };
 
+    struct OmsRestEgressDrained{
+        std::uint64_t shutdown_epoch{};
+        std::uint64_t completion_ts_ns{};
+        std::uint64_t live_orders{0};
+        std::uint64_t uncertain_orders{0};
+    };
+
     using OmsToControlStatus = std::variant<
         OmsReady,
         OmsFaulted,
         OmsTelemetry,
         OmsTradingEnabledChanged,
-        OmsFlattenStateChanged
+        OmsFlattenStateChanged,
+        OmsRestEgressDrained
     >;
 
 }  // namespace predex::core::control

@@ -5,7 +5,7 @@
 #include "predex/oms/oms_types.hpp"
 #include <type_traits>
 #include <variant>
-
+#include <thread>
 
 namespace predex::exchange::kalshi{
     namespace {
@@ -19,6 +19,10 @@ namespace predex::exchange::kalshi{
     }
 
     void OrderRestSession::apply_order_route_universe(const std::shared_ptr<const core::control::OrderRouteUniverse>& snapshot){
+        if(!snapshot){
+            fault("apply_order_route_universe: snapshot is null");
+            return;
+        }
         installed_universe_version_ = snapshot->version;
         order_rest_adapter_.apply_order_route_universe(snapshot);
     }
@@ -31,7 +35,7 @@ namespace predex::exchange::kalshi{
     }
     void OrderRestSession::drain_oms_commands() noexcept{
         oms::OmsToKalshiCommand command;
-        while(oms_queues_.oms_to_order_rest_queue.try_pop(command) && inflight_requests_.size() < kMAX_INFLIGHT_REQUESTS){
+        while(!egress_closed_ && inflight_requests_.size() < kMAX_INFLIGHT_REQUESTS  && oms_queues_.oms_to_order_rest_queue.try_pop(command)){
             handle_oms_command(command);
         }
     }
@@ -138,16 +142,19 @@ namespace predex::exchange::kalshi{
         std::visit([&response](const auto& cmd){
             using T = std::decay_t<decltype(cmd)>;
             response.context.oms_request_id = cmd.oms_request_id;
-            response.client_order_id = cmd.client_order_id;
+
             if constexpr(std::is_same_v<T, oms::SubmitOrderCmd>){
                 response.context.context = cmd.new_order_intent.context;
+                response.client_order_id = cmd.client_order_id;
             }else if constexpr(std::is_same_v<T, oms::CancelOrderCmd>){
                 response.context.context = cmd.cancel_order_intent.context;
+                response.client_order_id = cmd.client_order_id;
                 if(cmd.exchange_order_id.has_value()){
                     response.exchange_order_id = *cmd.exchange_order_id;
                 }
             }else if constexpr(std::is_same_v<T, oms::ModifyOrderCmd>){
                 response.context.context = cmd.modify_order_intent.context;
+                    response.client_order_id = cmd.client_order_id;
                 if(cmd.exchange_order_id.has_value()){
                     response.exchange_order_id = *cmd.exchange_order_id;
                 }
@@ -165,6 +172,10 @@ namespace predex::exchange::kalshi{
 
     void OrderRestSession::handle_oms_command(const oms::OmsToKalshiCommand& command){
         ++telemetry_.commands_received;
+        if(const auto* close_cmd = std::get_if<oms::CloseOrderRestEgress>(&command)){
+            handle_close_egress(*close_cmd);
+            return;
+        }
         PreparedOrderRestRequest prepared = order_rest_adapter_.prepare_command(command);
 
         if(!prepared.ok){
@@ -209,6 +220,8 @@ namespace predex::exchange::kalshi{
                 break;
             }
 
+            pending_oms_events_[pending_oms_head_ % pending_oms_events_.size()] = oms::KalshiToOmsEvent{};//clear the slot
+
             --pending_oms_count_;
             ++pending_oms_head_;
         }
@@ -233,7 +246,7 @@ namespace predex::exchange::kalshi{
                 break;
             }
 
-            PreparedOrderRestRequest prepared = std::move(inflight_iter->second.prepared);
+            PreparedOrderRestRequest prepared = std::move(inflight_iter->second.prepared); 
             inflight_requests_.erase(inflight_iter);
 
             CompletedOrderRestRequest completed = order_rest_adapter_.complete_request(prepared, response);
@@ -245,7 +258,7 @@ namespace predex::exchange::kalshi{
 
             if(!send_or_defer_oms_event(oms::KalshiToOmsEvent{std::move(completed.response)})){
                 fault("pending OMS event queue full, unable to send response to OMS");
-                ++telemetry_.oms_enqueue_failures;
+                break;
             }
 
         }
@@ -283,11 +296,54 @@ namespace predex::exchange::kalshi{
     void OrderRestSession::run(const std::stop_token& stop_token){
         while(!stop_token.stop_requested()){
             drain_control_commands();
-            drain_oms_commands();
-            receive_http(kMAX_HTTP_POLL_BATCH_SIZE);
             drain_pending_oms_events();
+
+            
+            receive_http(kMAX_HTTP_POLL_BATCH_SIZE);
+
+            finish_egress_drain();
+
+            if(status_.enabled && !status_.faulted && pending_oms_count_ == 0){
+                drain_oms_commands();
+            }
+
             maybe_send_telemetry();
+
+            std::this_thread::yield();
         }
+    }
+
+    void OrderRestSession::handle_close_egress(const oms::CloseOrderRestEgress& command) noexcept{
+        if(egress_closed_){
+            if(shutdown_epoch_ != command.shutdown_epoch){
+                fault("Received CloseOrderRestEgress with mismatched shutdown_epoch");
+            }
+            return;
+        }
+        if(command.shutdown_epoch == 0){
+            fault("Received CloseOrderRestEgress with shutdown_epoch=0");
+            return;
+        }
+        egress_closed_ = true;
+        shutdown_epoch_ = command.shutdown_epoch;
+        status_.enabled = false;
+        pending_ready_notification_ = false;
+        pending_fault_notification_ = false;
+        try_send_pending_control_notifications();
+    }
+
+    void OrderRestSession::finish_egress_drain() noexcept{
+        if(!egress_closed_ || drain_marker_sent_ || !inflight_requests_.empty() || pending_oms_count_ > 0){
+            return;
+        }
+        if(!send_or_defer_oms_event(oms::KalshiToOmsEvent{oms::OrderRestEgressDrained{
+            .shutdown_epoch = shutdown_epoch_,
+            .completion_ts_ns = now_ns()
+        }})){
+            fault("Failed to send OrderRestEgressDrained event to OMS");
+            return;
+        }
+        drain_marker_sent_ = true;
     }
 
 

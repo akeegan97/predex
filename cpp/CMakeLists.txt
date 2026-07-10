@@ -14,6 +14,7 @@ find_package(OpenSSL REQUIRED)
 find_package(Arrow CONFIG REQUIRED)
 find_package(Parquet CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
+find_package(CURL REQUIRED)
 
 add_executable(predexctl 
   apps/predexctl/main.cpp
@@ -52,6 +53,7 @@ add_executable(predex
   include/predex/ingest/kalshi/order_data/order_session.hpp
   include/predex/ingest/kalshi/order_data/order_parser.hpp
   src/exchange/kalshi/order_rest_session.cpp
+  src/exchange/kalshi/http2_session.cpp
 )
 
 add_executable(predex_tests
@@ -70,6 +72,7 @@ target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE simdjson::simdjson)
 target_link_libraries(predex PRIVATE Boost::system OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(predex PRIVATE CURL::libcurl)
 target_link_libraries(predex_tests PRIVATE GTest::gtest GTest::gtest_main simdjson::simdjson)
 add_test(NAME predex_tests COMMAND predex_tests)
 target_include_directories(research PRIVATE include)

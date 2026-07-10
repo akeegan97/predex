@@ -193,10 +193,19 @@ namespace predex::exchange::kalshi{
             (void)emit_local_reject(prepared, "Duplicate request_id in flight");
             return;
         }
-
-        if(!http_session_.start_request(prepared.request)){
-            (void)emit_local_reject(prepared, "Failed to start HTTP request");
-            return;
+        const auto http_start_result = http_session_.start_request(prepared.request);
+        switch(http_start_result){
+            case HttpStartResult::kACCEPTED:
+                break;
+            case HttpStartResult::kAT_CAPACITY:
+                (void)emit_local_reject(prepared, "HTTP session at capacity");
+                return;
+            case HttpStartResult::kCLOSED:
+                (void)emit_local_reject(prepared, "HTTP session closed");
+                return;
+            case HttpStartResult::kERROR:
+                (void)emit_local_reject(prepared, "HTTP session error: " + std::string{http_session_.last_error()});
+                return;
         }
         inflight_requests_.emplace(request_id, InflightRequest{std::move(prepared)});
         ++telemetry_.requests_sent;

@@ -1,5 +1,7 @@
 #include "predex/exchange/kalshi/http2_session.hpp"
+#include "predex/exchange/kalshi/adapters/auth_signer.hpp"
 #include "predex/exchange/kalshi/http_types.hpp"
+#include <curl/curl.h>
 #include <curl/easy.h>
 #include <curl/multi.h>
 
@@ -10,6 +12,22 @@ namespace {
                 std::chrono::steady_clock::now().time_since_epoch()
             ).count()
         );
+    }
+
+    [[nodiscard]] std::string_view http_method_to_string(predex::exchange::kalshi::HttpMethod method) noexcept{
+        using namespace predex::exchange::kalshi;
+        switch(method){
+            case HttpMethod::kGET:
+                return "GET";
+            case HttpMethod::kPOST:
+                return "POST";
+            case HttpMethod::kDELETE:
+                return "DELETE";
+            case HttpMethod::kPUT:
+                return "PUT";
+            default:
+                return "GET";
+        }
     }
 }
 namespace predex::exchange::kalshi{
@@ -69,6 +87,8 @@ namespace predex::exchange::kalshi{
             last_error_ = "Failed to initialize CURL multi handle";
             return false;
         }
+        curl_multi_setopt(curl_multi_handle_, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
+        curl_multi_setopt(curl_multi_handle_, CURLMOPT_MAX_HOST_CONNECTIONS, 1L);
         is_closed_ = false;
         is_warmed_up_ = true;
         return true;
@@ -164,7 +184,10 @@ namespace predex::exchange::kalshi{
                 response.request_id = request_id;
                 response.status_code = static_cast<std::uint16_t>(http_code);
                 response.body = std::move(active_req.response_body);
-                response.error_message = msg->data.result == CURLE_OK ? "" : curl_easy_strerror(msg->data.result);
+                if(msg->data.result != CURLE_OK){
+                    const char* curl_error = active_req.error_buffer.c_str();
+                    response.error_message = curl_error[0] != '\0' ? std::string{curl_error} : "CURL error: " + std::string{curl_easy_strerror(msg->data.result)};
+                }
                 response.ok = (msg->data.result == CURLE_OK && http_code >= 200 && http_code < 300); //NOLINT
                 response.trace = active_req.request.trace;
                 response.trace.response_recv_ts_ns = now_ns();
@@ -184,7 +207,7 @@ namespace predex::exchange::kalshi{
         return HttpPollResult{has_inflight_requests() ? HttpRequestStatus::kIN_FLIGHT : HttpRequestStatus::kIDLE, std::nullopt};
     }
 
-    HttpStartResult Http2Session::start_request(HttpRequest request){
+    HttpStartResult Http2Session::start_request(HttpRequest request){//NOLINT
         if(is_closed_ || curl_multi_handle_ == nullptr){
             return HttpStartResult::kCLOSED;
         }
@@ -203,10 +226,122 @@ namespace predex::exchange::kalshi{
         active.url = config_.endpoint + active.request.target;
         active.body = std::move(active.request.body);
         active.error_buffer.resize(CURL_ERROR_SIZE, '\0');
-        active.deadline_ns = now_ns() + config_.request_timeout.count();
-        inflight_requests_.emplace(active.request.request_id, std::move(active));
-        
+        active.deadline_ns = now_ns() + static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(config_.request_timeout).count());
+        active.method = std::string{http_method_to_string(active.request.method)};
 
+        auto append_header = [&active](const std::string& header)->bool{
+            curl_slist* next = curl_slist_append(active.curl_headers, header.c_str());
+            if(next == nullptr){return false;}
+            active.curl_headers = next;
+            return true;
+        };
+
+        if(!append_header("Accept: application/json")){
+            last_error_ = "Failed to append Accept header";
+            return HttpStartResult::kERROR;
+        }
+        if(!append_header("Content-Type: " + active.request.content_type)){
+            last_error_ = "Failed to append Content-Type header";
+            return HttpStartResult::kERROR;
+        }
+        if(!append_header("User-Agent: PredEx/1.0")){
+            last_error_ = "Failed to append User-Agent header";
+            return HttpStartResult::kERROR;
+        }
+
+        if(active.request.authenticate){
+            AuthHeaders auth_headers = signer_.make_rest_auth_headers(RestAuthArguments{
+                .method = active.method,
+                .path = active.request.target
+            });
+            if(!append_header("KALSHI-ACCESS-KEY: " + auth_headers.key_id)){
+                last_error_ = "Failed to append KALSHI-ACCESS-KEY header";
+                return HttpStartResult::kERROR;
+            }
+            if(!append_header("KALSHI-ACCESS-SIGNATURE: " + auth_headers.signature_base64)){
+                last_error_ = "Failed to append KALSHI-ACCESS-SIGNATURE header";
+                return HttpStartResult::kERROR;
+            }
+            if(!append_header("KALSHI-ACCESS-TIMESTAMP: " + auth_headers.timestamp_ms)){
+                last_error_ = "Failed to append KALSHI-ACCESS-TIMESTAMP header";
+                return HttpStartResult::kERROR;
+            }
+        }
+
+        for (const auto& header : active.request.headers){
+            if(!append_header(header.name + ": " + header.value)){
+                last_error_ = "Failed to append custom header: " + header.name;
+                return HttpStartResult::kERROR;
+            }
+        }
+
+        active.curl_handle = curl_easy_init();
+        if(active.curl_handle == nullptr){
+            last_error_ = "Failed to initialize CURL easy handle";
+            return HttpStartResult::kERROR;
+        }
+
+        const HttpRequestId request_id = active.request.request_id;
+        auto[iter, inserted] = inflight_requests_.emplace(request_id, std::move(active));
+        if(!inserted){return HttpStartResult::kERROR;}
+
+        ActiveRequest& active_req_stored = iter->second;
+
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_URL, active_req_stored.url.c_str());
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_HTTPHEADER, active_req_stored.curl_headers);
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_PRIVATE, reinterpret_cast<void*>(static_cast<std::uintptr_t>(request_id))); //NOLINT
+
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_WRITEFUNCTION, [](char* ptr, std::size_t size, std::size_t nmemb, void* userdata) -> std::size_t{
+            std::size_t total_size = size * nmemb;
+            auto* active_req = static_cast<ActiveRequest*>(userdata);
+            active_req->response_body.append(ptr, total_size);
+            return total_size;
+        });
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_WRITEDATA, &active_req_stored);
+
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_ERRORBUFFER, active_req_stored.error_buffer.data());
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_TIMEOUT_MS, static_cast<long>(config_.request_timeout.count()));
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(config_.connect_timeout.count()));
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_NOSIGNAL, 1L);
+
+        switch(active_req_stored.request.method){
+            case HttpMethod::kGET:
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_HTTPGET, 1L);
+                break;
+            case HttpMethod::kPOST:
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POST, 1L);
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POSTFIELDS, active_req_stored.body.c_str());
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POSTFIELDSIZE, active_req_stored.body.size());
+                break;
+            case HttpMethod::kDELETE:
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_CUSTOMREQUEST, "DELETE");
+                if(!active_req_stored.body.empty()){
+                    curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POSTFIELDS, active_req_stored.body.c_str());
+                    curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POSTFIELDSIZE, active_req_stored.body.size());
+                }
+                break;
+            case HttpMethod::kPUT:
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_CUSTOMREQUEST, "PUT");
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POSTFIELDS, active_req_stored.body.c_str());
+                curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_POSTFIELDSIZE, active_req_stored.body.size());
+                break;
+            default:
+                last_error_ = "Unsupported HTTP method";
+                inflight_requests_.erase(request_id);
+                return HttpStartResult::kERROR;
+        }
+        active_req_stored.request.trace.enqueue_ts_ns = now_ns();
+        const CURLMcode add_result = curl_multi_add_handle(curl_multi_handle_, active_req_stored.curl_handle);
+        if(add_result != CURLM_OK){
+            last_error_ = "Failed to add CURL easy handle to multi handle: " + std::string{curl_multi_strerror(add_result)};
+            inflight_requests_.erase(request_id);
+            return HttpStartResult::kERROR;
+        }
+
+        active_req_stored.request.trace.request_sent_ts_ns = now_ns();
+
+        return HttpStartResult::kACCEPTED;
 
     }
 

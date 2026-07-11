@@ -336,15 +336,15 @@ namespace {
     }
 
     std::string KalshiOrderRestAdapter::build_submit_target(){
-        return "/trade-api/v2/portfolio/orders";
+        return "/trade-api/v2/portfolio/events/orders";
     }
     std::string KalshiOrderRestAdapter::build_cancel_target(const oms::ExchangeOrderId& exchange_order_id){
-        std::string target{"/trade-api/v2/portfolio/orders/"};
+        std::string target{"/trade-api/v2/portfolio/events/orders/"};
         target.append(exchange_order_id.view());
         return target;
     }
     std::string KalshiOrderRestAdapter::build_modify_target(const oms::ExchangeOrderId& exchange_order_id){
-        std::string target{"/trade-api/v2/portfolio/orders/"};
+        std::string target{"/trade-api/v2/portfolio/events/orders/"};
         target.append(exchange_order_id.view());
         target.append("/amend");
         return target;

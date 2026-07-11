@@ -65,15 +65,24 @@ add_executable(predex_tests
 add_executable(research 
   apps/research/main.cpp
 )
+
+add_executable(predex_http_smoke
+  apps/testing/main.cpp
+  src/exchange/kalshi/adapters/auth_signer.cpp
+  src/exchange/kalshi/http2_session.cpp
+)
+
 target_include_directories(predex_tests PRIVATE include)
 target_include_directories(predexctl PRIVATE include)
 target_include_directories(predex PRIVATE include)
+target_include_directories(predex_http_smoke PRIVATE include)
 target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE simdjson::simdjson)
 target_link_libraries(predex PRIVATE Boost::system OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(predex PRIVATE CURL::libcurl)
 target_link_libraries(predex_tests PRIVATE GTest::gtest GTest::gtest_main simdjson::simdjson)
+target_link_libraries(predex_http_smoke PRIVATE OpenSSL::SSL OpenSSL::Crypto CURL::libcurl)
 add_test(NAME predex_tests COMMAND predex_tests)
 target_include_directories(research PRIVATE include)
 

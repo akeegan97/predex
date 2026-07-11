@@ -29,6 +29,16 @@ namespace {
                 return "GET";
         }
     }
+
+    std::size_t write_body_callback(char* ptr, std::size_t size, std::size_t nmemb, void* userdata){
+        const std::size_t total_size = size * nmemb;
+        if(userdata == nullptr){
+            return 0;
+        }
+        auto* active_req = static_cast<predex::exchange::kalshi::ActiveRequest*>(userdata);
+        active_req->response_body.append(ptr, total_size);
+        return total_size;
+    }
 }
 namespace predex::exchange::kalshi{
 
@@ -292,12 +302,7 @@ namespace predex::exchange::kalshi{
         curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
         curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_PRIVATE, reinterpret_cast<void*>(static_cast<std::uintptr_t>(request_id))); //NOLINT
 
-        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_WRITEFUNCTION, [](char* ptr, std::size_t size, std::size_t nmemb, void* userdata) -> std::size_t{
-            std::size_t total_size = size * nmemb;
-            auto* active_req = static_cast<ActiveRequest*>(userdata);
-            active_req->response_body.append(ptr, total_size);
-            return total_size;
-        });
+        curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_WRITEFUNCTION, write_body_callback);
         curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_WRITEDATA, &active_req_stored);
 
         curl_easy_setopt(active_req_stored.curl_handle, CURLOPT_ERRORBUFFER, active_req_stored.error_buffer.data());

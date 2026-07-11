@@ -446,13 +446,38 @@ constexpr std::size_t kMAX_DRAIN = 100;
             exchange_order_id_to_oms_request_id_map_[event.exchange_order_id] = record->context.oms_request_id;
         }
 
-        record->order_state = event.order_state;
-        record->outcome = event.outcome;
-        record->market_id = event.market_id;
-        record->ordered_qty_lots = event.ordered_qty_lots;
-        record->cumulative_filled_qty_lots = event.cumulative_filled_qty_lots;
-        record->leaves_qty_lots = event.leaves_qty_lots;
-        clear_pending_command(*record);
+        switch(event.event_kind){
+            case PrivateWsOrderEventKind::kUSER_ORDER:
+                record->order_state = event.order_state;
+                record->outcome = event.outcome;
+                record->market_id = event.market_id;
+                record->ordered_qty_lots = event.ordered_qty_lots;
+                record->cumulative_filled_qty_lots = event.cumulative_filled_qty_lots;
+                record->leaves_qty_lots = event.leaves_qty_lots;
+                clear_pending_command(*record);
+                break;
+            case PrivateWsOrderEventKind::kFILL:
+                if(event.outcome != intent::Outcome::kUNKNOWN){
+                    record->outcome = event.outcome;
+                }
+                if(event.market_id != 0){
+                    record->market_id = event.market_id;
+                }
+                record->cumulative_filled_qty_lots += event.last_fill_qty_lots;
+                if(record->leaves_qty_lots >= event.last_fill_qty_lots){
+                    record->leaves_qty_lots -= event.last_fill_qty_lots;
+                }
+                if(record->leaves_qty_lots == 0 && record->ordered_qty_lots > 0){
+                    record->order_state = OrderState::kFILLED;
+                    clear_pending_command(*record);
+                }else if(record->cumulative_filled_qty_lots > 0){
+                    record->order_state = OrderState::kPARTIALLY_FILLED;
+                }
+                break;
+            case PrivateWsOrderEventKind::kMARKET_POSITION:
+            case PrivateWsOrderEventKind::kUNKNOWN:
+                return;
+        }
         emit_order_state_update(*record, VenueEventSource::kWEBSOCKET_FEED, event.recv_ts_ns);
     }
 

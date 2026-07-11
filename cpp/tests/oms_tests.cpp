@@ -184,6 +184,7 @@ TEST(OmsTest, PrivateWsEventUpdatesCanonicalLifecycle) {
     ASSERT_TRUE(exchange_order_id.assign_from("venue-order-1"));
 
     oms::PrivateWsOrderEvent event{
+        .event_kind = oms::PrivateWsOrderEventKind::kUSER_ORDER,
         .client_order_id = submit.client_order_id,
         .exchange_order_id = exchange_order_id,
         .market_id = submit.new_order_intent.context.market_id,

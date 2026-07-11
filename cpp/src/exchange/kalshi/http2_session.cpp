@@ -51,7 +51,7 @@ namespace predex::exchange::kalshi{
         config_(std::move(other.config_)),
         curl_multi_handle_(other.curl_multi_handle_),
         inflight_requests_(std::move(other.inflight_requests_)),
-        last_error_(std::move(other.last_error_)),
+        last_error_(std::move(other.last_error_)), 
         is_closed_(other.is_closed_),
         is_warmed_up_(other.is_warmed_up_),
         completed_responses_(std::move(other.completed_responses_))

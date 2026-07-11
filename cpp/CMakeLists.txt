@@ -52,8 +52,10 @@ add_executable(predex
   src/oms/oms.cpp
   include/predex/ingest/kalshi/order_data/order_session.hpp
   include/predex/ingest/kalshi/order_data/order_parser.hpp
+  src/ingest/kalshi/order_data/order_parser.cpp
   src/exchange/kalshi/order_rest_session.cpp
   src/exchange/kalshi/http2_session.cpp
+  src/ingest/kalshi/order_data/order_session.cpp
 )
 
 add_executable(predex_tests

@@ -249,7 +249,15 @@ namespace predex::oms{
         std::string raw_reason_message;
     };
 
+    enum class PrivateWsOrderEventKind : std::uint8_t{
+        kUNKNOWN = 0,
+        kUSER_ORDER = 1,
+        kFILL = 2,
+        kMARKET_POSITION = 3,
+    };
+
     struct PrivateWsOrderEvent{
+        PrivateWsOrderEventKind event_kind{PrivateWsOrderEventKind::kUNKNOWN};
 
         ClientOrderId client_order_id{};
         ExchangeOrderId exchange_order_id{};

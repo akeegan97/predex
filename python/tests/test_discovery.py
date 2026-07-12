@@ -1032,6 +1032,10 @@ class ConfigTests(unittest.TestCase):
                 "operator_queue_capacity": 32,
                 "operator_socket_path": "/tmp/predex-test.sock",
                 "market_data_tape_path": "logs/live/predex_tape.bin",
+                "synthetic_trading_session_enabled": False,
+                "reduce_only_after_seconds": 0,
+                "flatten_to_zero_after_seconds": 0,
+                "stopped_after_seconds": 0,
             },
         )
         self.assertEqual(

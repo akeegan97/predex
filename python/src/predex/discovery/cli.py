@@ -281,6 +281,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Operator Unix socket path written into the C++ app config. Default: /tmp/predex_operator.sock.",
     )
     parser.add_argument(
+        "--synthetic-trading-session",
+        action="store_true",
+        help="Enable synthetic trading-session phase cutoffs in the generated C++ app config.",
+    )
+    parser.add_argument(
+        "--reduce-only-after-seconds",
+        type=int,
+        default=0,
+        help="Seconds after process start when the session enters reduce-only mode. Default: 0.",
+    )
+    parser.add_argument(
+        "--flatten-to-zero-after-seconds",
+        type=int,
+        default=0,
+        help="Seconds after process start when the session enters flatten-to-zero mode. Default: 0.",
+    )
+    parser.add_argument(
+        "--stopped-after-seconds",
+        type=int,
+        default=0,
+        help="Seconds after process start when the session enters stopped mode. Default: 0.",
+    )
+    parser.add_argument(
         "--include-topology",
         action="append",
         default=[],
@@ -522,6 +545,10 @@ def main(argv: list[str] | None = None) -> int:
                 operator_queue_capacity=args.operator_queue_capacity,
                 operator_socket_path=args.operator_socket_path,
                 market_data_tape_path=run_artifacts.tape_output,
+                synthetic_trading_session_enabled=args.synthetic_trading_session,
+                reduce_only_after_seconds=args.reduce_only_after_seconds,
+                flatten_to_zero_after_seconds=args.flatten_to_zero_after_seconds,
+                stopped_after_seconds=args.stopped_after_seconds,
             ),
             kalshi=KalshiSettings(
                 credentials=CredentialSettings(

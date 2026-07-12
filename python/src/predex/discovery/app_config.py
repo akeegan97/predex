@@ -27,6 +27,10 @@ class RuntimeSettings:
     operator_queue_capacity: int = 64
     operator_socket_path: str = "/tmp/predex_operator.sock"
     market_data_tape_path: str = "logs/live/predex_tape.bin"
+    synthetic_trading_session_enabled: bool = False
+    reduce_only_after_seconds: int = 0
+    flatten_to_zero_after_seconds: int = 0
+    stopped_after_seconds: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -37,6 +41,10 @@ class RuntimeSettings:
             "operator_queue_capacity": self.operator_queue_capacity,
             "operator_socket_path": self.operator_socket_path,
             "market_data_tape_path": self.market_data_tape_path,
+            "synthetic_trading_session_enabled": self.synthetic_trading_session_enabled,
+            "reduce_only_after_seconds": self.reduce_only_after_seconds,
+            "flatten_to_zero_after_seconds": self.flatten_to_zero_after_seconds,
+            "stopped_after_seconds": self.stopped_after_seconds,
         }
 
 

@@ -67,15 +67,40 @@ struct OmsHarness {
     };
 }
 
+[[nodiscard]] std::shared_ptr<const control::OrderRouteUniverse> make_order_universe(bool tradeable = true) {
+    auto universe = std::make_shared<control::OrderRouteUniverse>();
+    universe->version = 1;
+    universe->market_routes.push_back(control::OrderMarketRoute{
+        .market_id = 101,
+        .event_id = 202,
+        .kalshi_ticker = "TEST-MARKET",
+        .tradeable = tradeable,
+        .price_level_structure = control::PriceLevelStructure::kLINEAR_CENT,
+    });
+    return universe;
+}
+
+void install_order_universe(OmsHarness& harness, bool tradeable = true) {
+    ASSERT_TRUE(harness.control_to_oms.try_push(control::ControlToOmsCommand{
+        control::ApplyOrderRouteUniverse{.snapshot = make_order_universe(tradeable)}
+    }));
+    EXPECT_EQ(harness.uut.pump_once(), oms::OmsPumpResult::kOK);
+}
+
 void enable_trading(OmsHarness& harness) {
+    install_order_universe(harness);
     ASSERT_TRUE(harness.control_to_oms.try_push(control::ControlToOmsCommand{control::AllowTrading{}}));
     EXPECT_EQ(harness.uut.pump_once(), oms::OmsPumpResult::kOK);
 
+    bool saw_trading_enabled{false};
     control::OmsToControlStatus status{};
-    ASSERT_TRUE(harness.oms_to_control.try_pop(status));
-    const auto* changed = std::get_if<control::OmsTradingEnabledChanged>(&status);
-    ASSERT_NE(changed, nullptr);
-    EXPECT_TRUE(changed->trading_enabled);
+    while(harness.oms_to_control.try_pop(status)){
+        if(const auto* changed = std::get_if<control::OmsTradingEnabledChanged>(&status)){
+            saw_trading_enabled = changed->trading_enabled;
+            break;
+        }
+    }
+    EXPECT_TRUE(saw_trading_enabled);
 }
 
 [[nodiscard]] oms::SubmitOrderCmd submit_order(OmsHarness& harness) {
@@ -136,6 +161,26 @@ TEST(OmsTest, AcceptsNewOrderWhenTradingEnabledAndEmitsSubmitCommand) {
     EXPECT_EQ(submit.new_order_intent.context.market_id, 101U);
     EXPECT_EQ(submit.new_order_intent.price_ticks, 4200);
     EXPECT_EQ(submit.new_order_intent.quantity_lots, 7);
+}
+
+TEST(OmsTest, RejectsNewOrderForMarketOutsideInstalledUniverse) {
+    OmsHarness harness{};
+    enable_trading(harness);
+
+    auto intent = make_valid_new_order();
+    intent.context.market_id = 999;
+    ASSERT_TRUE(harness.strategy_to_oms.try_push(intent::StrategyIntent{intent}));
+    EXPECT_EQ(harness.uut.pump_once(), oms::OmsPumpResult::kOK);
+
+    oms::OmsToStrategyMessage message{};
+    ASSERT_TRUE(harness.oms_to_strategy.try_pop(message));
+    const auto* response = std::get_if<oms::OmsResponse>(&message);
+    ASSERT_NE(response, nullptr);
+    EXPECT_EQ(response->response_type, oms::OmsResponseType::kREJECTED);
+    EXPECT_EQ(response->reject_reason, oms::RejectReason::kUNKNOWN_MARKET);
+
+    oms::OmsToKalshiCommand command{};
+    EXPECT_FALSE(harness.oms_to_kalshi.try_pop(command));
 }
 
 TEST(OmsTest, RestSubmitAckMovesOrderToWorking) {

@@ -113,6 +113,8 @@ namespace predex::oms{
         kUNKNOWN_TARGET_ORDER,
         kDUPLICATE_INTENT,
         kOMS_NOT_READY,
+        kUNKNOWN_MARKET,
+        kMARKET_NOT_TRADEABLE,
     };
 
     struct OmsResponse{

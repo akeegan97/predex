@@ -101,6 +101,18 @@ namespace predex::config{
                 if(runtime_json.contains("market_data_tape_path")){
                     runtime_config.market_data_tape_path = runtime_json["market_data_tape_path"].get<std::string>();
                 }
+                if(runtime_json.contains("synthetic_trading_session_enabled")){
+                    runtime_config.synthetic_trading_session_enabled = runtime_json["synthetic_trading_session_enabled"].get<bool>();
+                }
+                if(runtime_json.contains("reduce_only_after_seconds")){
+                    runtime_config.reduce_only_after_seconds = runtime_json["reduce_only_after_seconds"].get<std::uint64_t>();
+                }
+                if(runtime_json.contains("flatten_to_zero_after_seconds")){
+                    runtime_config.flatten_to_zero_after_seconds = runtime_json["flatten_to_zero_after_seconds"].get<std::uint64_t>();
+                }
+                if(runtime_json.contains("stopped_after_seconds")){
+                    runtime_config.stopped_after_seconds = runtime_json["stopped_after_seconds"].get<std::uint64_t>();
+                }
 
                 config.runtime = std::move(runtime_config);
             }
@@ -233,6 +245,23 @@ namespace predex::config{
         }
         if(config.runtime.market_data_tape_path.empty()){
             throw std::runtime_error("Invalid configuration: market_data_tape_path must not be empty");
+        }
+        if(config.runtime.synthetic_trading_session_enabled){
+            if(config.runtime.reduce_only_after_seconds == 0){
+                throw std::runtime_error("Invalid configuration: reduce_only_after_seconds must be greater than 0 when synthetic trading session is enabled");
+            }
+            if(config.runtime.flatten_to_zero_after_seconds != 0 &&
+               config.runtime.flatten_to_zero_after_seconds < config.runtime.reduce_only_after_seconds){
+                throw std::runtime_error("Invalid configuration: flatten_to_zero_after_seconds must be >= reduce_only_after_seconds");
+            }
+            if(config.runtime.stopped_after_seconds != 0){
+                const std::uint64_t lower_bound = config.runtime.flatten_to_zero_after_seconds != 0
+                    ? config.runtime.flatten_to_zero_after_seconds
+                    : config.runtime.reduce_only_after_seconds;
+                if(config.runtime.stopped_after_seconds < lower_bound){
+                    throw std::runtime_error("Invalid configuration: stopped_after_seconds must be >= the previous synthetic trading session cutoff");
+                }
+            }
         }
         if(config.universe.events.empty()){
             throw std::runtime_error("Invalid configuration: universe must contain at least one event");

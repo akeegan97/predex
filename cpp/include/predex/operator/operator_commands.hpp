@@ -4,7 +4,7 @@
 #include <string>
 #include <variant>
 #include <vector>
-#include "predex/control/control_lifecycle.hpp"
+#include "predex/control/control_types.hpp"
 
 namespace predex::operator_admin {
 
@@ -14,6 +14,9 @@ enum class OperatorCommandType : std::uint8_t {
     kSHUTDOWN_GRACEFUL = 2,
     kSHUTDOWN_FORCEFUL = 3,
     kCOUNTERSTATS = 4,
+    kALLOW_TRADING = 5,
+    kDISABLE_TRADING = 6,
+    kCANCEL_ALL_ORDERS = 7,
 };
 
 using OperatorCommandId = std::uint64_t;
@@ -34,6 +37,7 @@ enum class OperatorResponseType : std::uint8_t {
 
 struct OperatorStatusSnapshot {
     predex::core::control::LifecyclePhase lifecycle{predex::core::control::LifecyclePhase::kBOOTING};
+    predex::core::control::TradingSessionPhase trading_session_phase{predex::core::control::TradingSessionPhase::kTRADING};
     bool trading_enabled{false};
     bool shutdown_requested{false};
 };
@@ -95,6 +99,53 @@ struct ShardCounterStats{
     std::uint64_t missed_frames_to_logger{};
 };
 
+struct OmsCounterStats{
+    bool trading_enabled{false};
+    bool cancel_all_requested{false};
+    std::uint64_t installed_universe_version{};
+    std::uint64_t unknown_market_rejects{};
+    std::uint64_t non_tradeable_market_rejects{};
+    std::uint64_t strategy_intents_received{};
+    std::uint64_t strategy_intents_processed{};
+    std::uint64_t strategy_intents_rejected{};
+    std::uint64_t kalshi_commands_sent{};
+    std::uint64_t kalshi_commands_failed{};
+    std::uint64_t rest_responses_seen{};
+    std::uint64_t private_ws_events_seen{};
+    std::uint64_t reconciliation_events_seen{};
+    std::uint64_t order_state_updates_sent{};
+    std::uint64_t strategy_response_backpressure{};
+    std::uint64_t live_orders{};
+    std::uint64_t pending_submit_orders{};
+    std::uint64_t uncertain_orders{};
+    std::string last_error;
+};
+
+struct PrivateOrderFeedCounterStats{
+    bool connected{false};
+    std::uint64_t installed_universe_version{};
+    std::uint64_t subscribed_universe_version{};
+    std::uint64_t messages_received{};
+    std::uint64_t messages_decoded{};
+    std::uint64_t messages_dropped{};
+    std::uint64_t parse_failures{};
+    std::uint64_t oms_enqueue_failures{};
+    std::uint64_t reconnects{};
+    std::string last_error;
+};
+
+struct OrderRestCounterStats{
+    bool enabled{false};
+    std::uint64_t installed_universe_version{};
+    std::uint64_t commands_received{};
+    std::uint64_t requests_sent{};
+    std::uint64_t responses_received{};
+    std::uint64_t requests_failed{};
+    std::uint64_t retry_count{};
+    std::uint64_t oms_enqueue_failures{};
+    std::string last_error;
+};
+
 
 struct OperatorCounterStatsSnapshot{
     OperatorStatusSnapshot status_snapshot;
@@ -102,6 +153,9 @@ struct OperatorCounterStatsSnapshot{
     RouterCounterStats router_stats;
     std::vector<ShardCounterStats> shard_stats;
     LoggerCounterStats logger_stats;
+    OmsCounterStats oms_stats;
+    PrivateOrderFeedCounterStats private_order_feed_stats;
+    OrderRestCounterStats order_rest_stats;
 };
 struct AckPayload {};
 

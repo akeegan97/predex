@@ -1,4 +1,5 @@
 #include "predex/oms/oms.hpp"
+#include "predex/control/control_types.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -30,6 +31,12 @@ constexpr std::size_t kMAX_DRAIN = 100;
 
     OmsPumpResult Oms::pump_once() noexcept{
         std::size_t work_done{0};
+        if(!ready_reported_){
+            if(send_control_status(core::control::OmsToControlStatus{core::control::OmsReady{}})){
+                ready_reported_ = true;
+                ++work_done;
+            }
+        }
         work_done += try_send_pending_control_status() ? 1 : 0;
         work_done += drain_control_commands(kMAX_DRAIN);
         work_done += drain_venue_events(kMAX_DRAIN);
@@ -107,9 +114,10 @@ constexpr std::size_t kMAX_DRAIN = 100;
                 break;
             }
             std::visit(Overloaded{
+                [this](const core::control::ApplyOrderRouteUniverse& command){ handle_control_command(command); },
                 [this](const core::control::AllowTrading& command){ handle_control_command(command); },
                 [this](const core::control::DisableTrading& command){ handle_control_command(command); },
-                [this](const core::control::FlattenAllOrders& command){ handle_control_command(command); }
+                [this](const core::control::CancelAllOrders& command){ handle_control_command(command); }
             }, command);
             ++processed;
         }
@@ -264,6 +272,17 @@ constexpr std::size_t kMAX_DRAIN = 100;
            intent.outcome == intent::Outcome::kUNKNOWN ||
            intent.action == intent::OrderAction::kUNKNOWN){
             reject(RejectReason::kINVALID_INTENT);
+            return;
+        }
+        const auto* route = find_market_route(intent.context.market_id);
+        if(route == nullptr){
+            ++telemetry_.unknown_market_rejects;
+            reject(RejectReason::kUNKNOWN_MARKET);
+            return;
+        }
+        if(!route->tradeable){
+            ++telemetry_.non_tradeable_market_rejects;
+            reject(RejectReason::kMARKET_NOT_TRADEABLE);
             return;
         }
 
@@ -527,8 +546,8 @@ constexpr std::size_t kMAX_DRAIN = 100;
         emit_trading_enabled_changed();
     }
 
-    void Oms::handle_control_command(const core::control::FlattenAllOrders& /*command*/) noexcept{
-        flatten_requested_ = true;
+    void Oms::handle_control_command(const core::control::CancelAllOrders& /*command*/) noexcept{
+        cancel_all_requested_ = true;
         trading_enabled_ = false;
 
         const std::uint64_t submission_ts = now_ns();
@@ -540,12 +559,27 @@ constexpr std::size_t kMAX_DRAIN = 100;
         }
 
         (void)send_control_status(core::control::OmsToControlStatus{
-            core::control::OmsFlattenStateChanged{
-                .flatten_requested = flatten_requested_,
+            core::control::OmsCancelAllStateChanged{
+                .cancel_all_requested = cancel_all_requested_,
                 .live_orders = live_order_count()
             }
         });
         (void)cancel_requests_sent;
+    }
+
+    void Oms::handle_control_command(const core::control::ApplyOrderRouteUniverse& command) noexcept{
+        active_order_universe_ = command.snapshot;
+        market_route_by_id_.clear();
+        if(active_order_universe_ != nullptr){
+            market_route_by_id_.reserve(active_order_universe_->market_routes.size());
+            for(const auto& route : active_order_universe_->market_routes){
+                market_route_by_id_[route.market_id] = route;
+            }
+            telemetry_.installed_universe_version = active_order_universe_->version;
+        }else{
+            telemetry_.installed_universe_version = 0;
+        }
+        emit_telemetry();
     }
 
     bool Oms::is_terminal(OrderState state) noexcept{
@@ -584,6 +618,19 @@ constexpr std::size_t kMAX_DRAIN = 100;
             }
         }
         return nullptr;
+    }
+
+    const core::control::OrderMarketRoute* Oms::find_market_route(intent::MarketId market_id) const noexcept{
+        const auto iter = market_route_by_id_.find(market_id);
+        if(iter == market_route_by_id_.end()){
+            return nullptr;
+        }
+        return &iter->second;
+    }
+
+    bool Oms::is_tradeable_market(intent::MarketId market_id) const noexcept{
+        const auto* route = find_market_route(market_id);
+        return route != nullptr && route->tradeable;
     }
 
     bool Oms::emit_cancel_command_for_record(OrderRecord& record, intent::IntentContext context, intent::OmsRequestId command_oms_request_id, std::uint64_t submission_ts_ns) noexcept{

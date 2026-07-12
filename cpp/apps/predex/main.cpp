@@ -170,6 +170,32 @@ kalshi_exchange::Http2Session make_http_session(
         std::move(http_config),
     };
 }
+
+control::RequiredComponents make_required_components(const config::AppConfig& app_config) {
+    const bool order_graph_enabled =
+        app_config.kalshi.order_rest.enable_order_rest ||
+        app_config.kalshi.private_order_feed.enable_private_order_feed;
+
+    return control::RequiredComponents{
+        .market_data = app_config.kalshi.market_data.enable_market_data,
+        .shards = true,
+        .logger = true,
+        .oms = order_graph_enabled,
+        .private_order_feed = app_config.kalshi.private_order_feed.enable_private_order_feed,
+        .order_rest = app_config.kalshi.order_rest.enable_order_rest,
+    };
+}
+
+control::SyntheticTradingSessionConfig make_synthetic_session_config(const config::RuntimeConfig& runtime_config) {
+    constexpr std::uint64_t kNsPerSecond = 1'000'000'000ULL;
+    return control::SyntheticTradingSessionConfig{
+        .enabled = runtime_config.synthetic_trading_session_enabled,
+        .reduce_only_after_ns = runtime_config.reduce_only_after_seconds * kNsPerSecond,
+        .flatten_to_zero_after_ns = runtime_config.flatten_to_zero_after_seconds * kNsPerSecond,
+        .stopped_after_ns = runtime_config.stopped_after_seconds * kNsPerSecond,
+    };
+}
+
 struct AppQueues {
     explicit AppQueues(const config::RuntimeConfig& runtime_config)
         : server_to_control(runtime_config.operator_queue_capacity),
@@ -520,6 +546,7 @@ std::jthread start_market_data_logger_thread(logging::MarketDataLogger& market_d
 }
 
 bool pump_control_plane_once(control::ControlPlane& control_plane) {
+    const bool phase_changed = control_plane.update_trading_session_phase();
     const auto operator_result = control_plane.process_operator_commands();
     const auto io_result = control_plane.process_io_status();
     const bool processed_router_messages = control_plane.process_router_messages();
@@ -529,7 +556,8 @@ bool pump_control_plane_once(control::ControlPlane& control_plane) {
     const bool processed_order_rest_messages = control_plane.process_order_rest_status();
     const bool processed_private_order_feed_messages = control_plane.process_private_order_feed_status();
 
-    return operator_result.commands_processed > 0 ||
+    return phase_changed ||
+           operator_result.commands_processed > 0 ||
            io_result.statuses_processed > 0 ||
            processed_router_messages ||
            processed_shard_messages ||
@@ -594,6 +622,8 @@ int main(int argc, char** argv) {
         control_oms_queues,
         control_private_order_feed_queues,
         control_order_rest_queues,
+        make_required_components(app_config),
+        make_synthetic_session_config(app_config.runtime),
     };
     operator_admin::OperatorCommandHandler command_handler{handler_queues};
     socket::OperatorSocketConfig socket_config{};
@@ -656,6 +686,10 @@ int main(int argc, char** argv) {
     if(order_graph_enabled){
         oms_instance.emplace(oms_queues);
         oms_thread.emplace(start_oms_thread(*oms_instance));
+        if(!control_plane.send_active_order_universe_to_oms()){
+            std::cerr << "predex OMS init error: failed to enqueue active order universe to OMS\n";
+            return 1;
+        }
     }
 
     std::optional<kalshi_exchange::OrderRestSession> order_rest_session;

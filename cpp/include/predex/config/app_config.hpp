@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 namespace predex::config{
@@ -24,6 +25,10 @@ namespace predex::config{
         std::size_t operator_queue_capacity{kDefaultOperatorQueueCapacity};
         std::string operator_socket_path{kDefaultOperatorSocketPath};
         std::string market_data_tape_path{kDefaultMarketDataTapePath};
+        bool synthetic_trading_session_enabled{false};
+        std::uint64_t reduce_only_after_seconds{0};
+        std::uint64_t flatten_to_zero_after_seconds{0};
+        std::uint64_t stopped_after_seconds{0};
     };
 
     struct KalshiAuthConfig{

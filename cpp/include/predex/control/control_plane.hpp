@@ -1,7 +1,9 @@
 #pragma once 
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
+#include <chrono>
 
 #include "predex/operator/operator_commands.hpp"
 #include "predex/utils/spsc.hpp"
@@ -68,6 +70,22 @@ namespace predex::core::control{
         std::size_t commands_pushed_failure{0};
     };
 
+    struct RequiredComponents{
+        bool market_data{false};
+        bool shards{true};
+        bool logger{true};
+        bool oms{false};
+        bool private_order_feed{false};
+        bool order_rest{false};
+    };
+
+    struct SyntheticTradingSessionConfig{
+        bool enabled{false};
+        std::uint64_t reduce_only_after_ns{0};
+        std::uint64_t flatten_to_zero_after_ns{0};
+        std::uint64_t stopped_after_ns{0};
+    };
+
 
     class ControlPlane{
         public: 
@@ -79,7 +97,9 @@ namespace predex::core::control{
                 ControlLoggerQueue logger_queue = {},
                 ControlOmsQueues oms_queues = {},
                 ControlPrivateOrderFeedQueues private_order_feed_queues = {},
-                ControlOrderRestQueues order_rest_queues = {}
+                ControlOrderRestQueues order_rest_queues = {},
+                RequiredComponents required_components = {},
+                SyntheticTradingSessionConfig synthetic_session_config = {}
             );
         
             [[nodiscard]] OperatorPumpResult process_operator_commands();
@@ -108,6 +128,7 @@ namespace predex::core::control{
 
             [[nodiscard]] std::uint64_t install_universe(UniverseSnapshot snapshot);
             [[nodiscard]] bool send_active_universe_to_io();
+            [[nodiscard]] bool send_active_order_universe_to_oms();
             [[nodiscard]] bool send_active_order_universe_to_private_order_feed();
             [[nodiscard]] bool send_active_order_universe_to_order_rest();
             [[nodiscard]] bool push_private_order_feed_command(const ControlToPrivateOrderFeedCommand& cmd);
@@ -136,6 +157,7 @@ namespace predex::core::control{
 
             [[nodiscard]] bool process_one_order_rest_status() noexcept;
             [[nodiscard]] bool process_order_rest_status() noexcept;
+            [[nodiscard]] bool update_trading_session_phase() noexcept;
 
 
         private:
@@ -152,6 +174,12 @@ namespace predex::core::control{
             void apply_order_rest_status(const OrderRestToControlStatus& status) noexcept;
             [[nodiscard]] bool push_shard_command(std::uint32_t shard_index, shard::ControlToShardCommand command);
 
+            [[nodiscard]] bool required_components_faulted() const;
+            [[nodiscard]] bool required_components_ready_for_capture() const;
+            [[nodiscard]] bool required_components_ready_for_trading() const;
+            [[nodiscard]] TradingSessionPhase compute_trading_session_phase() const noexcept;
+            void apply_trading_session_phase(TradingSessionPhase phase) noexcept;
+
             std::shared_ptr<const UniverseSnapshot> active_universe_;
             std::shared_ptr<const OrderRouteUniverse> active_order_universe_;
             std::uint64_t next_universe_version_{1};
@@ -161,6 +189,9 @@ namespace predex::core::control{
             ControlOmsQueues oms_queues_;
             ControlPrivateOrderFeedQueues private_order_feed_queues_;
             ControlOrderRestQueues order_rest_queues_;
+            RequiredComponents required_components_;
+            SyntheticTradingSessionConfig synthetic_session_config_;
+            std::chrono::steady_clock::time_point session_start_time_{std::chrono::steady_clock::now()};
     };
 
 }

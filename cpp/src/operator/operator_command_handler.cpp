@@ -23,6 +23,12 @@ namespace {
             cmd.type = predex::operator_admin::OperatorCommandType::kSHUTDOWN_FORCEFUL;
         } else if(type_str == "counterstats"){
             cmd.type = predex::operator_admin::OperatorCommandType::kCOUNTERSTATS;
+        }else if (type_str == "allow-trading"){
+            cmd.type = predex::operator_admin::OperatorCommandType::kALLOW_TRADING;
+        }else if(type_str == "disable-trading"){
+            cmd.type = predex::operator_admin::OperatorCommandType::kDISABLE_TRADING;
+        }else if(type_str == "cancel-all-orders"){
+            cmd.type = predex::operator_admin::OperatorCommandType::kCANCEL_ALL_ORDERS;
         } else {
             cmd.type = predex::operator_admin::OperatorCommandType::kUNKNOWN;
         }
@@ -55,6 +61,23 @@ namespace {
         }
     }
 
+    std::string trading_session_phase_to_string(predex::core::control::TradingSessionPhase phase){
+        switch(phase){
+            case predex::core::control::TradingSessionPhase::kTRADING:
+                return "trading";
+            case predex::core::control::TradingSessionPhase::kREDUCE_ONLY:
+                return "reduce_only";
+            case predex::core::control::TradingSessionPhase::kFLATTEN_TO_ZERO:
+                return "flatten_to_zero";
+            case predex::core::control::TradingSessionPhase::kSTOPPED:
+                return "stopped";
+            case predex::core::control::TradingSessionPhase::kUNKNOWN://NOLINT
+                return "unknown";
+            default:
+                return "unknown";
+        }
+    }
+
     std::string response_type_to_string(predex::operator_admin::OperatorResponseType type){
         switch(type){
             case predex::operator_admin::OperatorResponseType::kACK:
@@ -80,11 +103,11 @@ namespace {
                 return "trade";
             case 4:
                 return "subscription_ack";
-            case 5:
+            case 5://NOLINT
                 return "unsubscribed";
-            case 6:
+            case 6://NOLINT
                 return "lifecycle";
-            case 7:
+            case 7://NOLINT
                 return "heartbeat";
             case 0:
             default:
@@ -124,6 +147,7 @@ namespace {
             else if constexpr (std::is_same_v<T, predex::operator_admin::OperatorStatusSnapshot>){
                 json_response["payload"] = {
                     {"lifecycle", lifecycle_to_string(payload.lifecycle)},
+                    {"trading_session_phase", trading_session_phase_to_string(payload.trading_session_phase)},
                     {"trading_enabled", payload.trading_enabled},
                     {"shutdown_requested", payload.shutdown_requested},
                 };
@@ -160,6 +184,7 @@ namespace {
                 json_response["payload"] = {
                     {"status_snapshot", {
                         {"lifecycle", lifecycle_to_string(payload.status_snapshot.lifecycle)},
+                        {"trading_session_phase", trading_session_phase_to_string(payload.status_snapshot.trading_session_phase)},
                         {"trading_enabled", payload.status_snapshot.trading_enabled},
                         {"shutdown_requested", payload.status_snapshot.shutdown_requested},
                     }},
@@ -200,6 +225,50 @@ namespace {
                         {"bytes_written", payload.logger_stats.bytes_written},
                         {"write_failures", payload.logger_stats.write_failures},
                         {"recycle_failures", payload.logger_stats.recycle_failures},
+                    }},
+                    {"oms_stats", {
+                        {"trading_enabled", payload.oms_stats.trading_enabled},
+                        {"cancel_all_requested", payload.oms_stats.cancel_all_requested}, 
+                        {"installed_universe_version", payload.oms_stats.installed_universe_version},
+                        {"unknown_market_rejects", payload.oms_stats.unknown_market_rejects},
+                        {"non_tradeable_market_rejects", payload.oms_stats.non_tradeable_market_rejects},
+                        {"strategy_intents_received", payload.oms_stats.strategy_intents_received},
+                        {"strategy_intents_processed", payload.oms_stats.strategy_intents_processed},
+                        {"strategy_intents_rejected", payload.oms_stats.strategy_intents_rejected},
+                        {"kalshi_commands_sent", payload.oms_stats.kalshi_commands_sent},
+                        {"kalshi_commands_failed", payload.oms_stats.kalshi_commands_failed},
+                        {"rest_responses_seen", payload.oms_stats.rest_responses_seen},
+                        {"private_ws_events_seen", payload.oms_stats.private_ws_events_seen},
+                        {"reconciliation_events_seen", payload.oms_stats.reconciliation_events_seen},
+                        {"order_state_updates_sent", payload.oms_stats.order_state_updates_sent},
+                        {"strategy_response_backpressure", payload.oms_stats.strategy_response_backpressure},
+                        {"live_orders", payload.oms_stats.live_orders},
+                        {"pending_submit_orders", payload.oms_stats.pending_submit_orders},
+                        {"uncertain_orders", payload.oms_stats.uncertain_orders},
+                        {"last_error", payload.oms_stats.last_error},
+                    }},
+                    {"private_order_feed_stats", {
+                        {"connected", payload.private_order_feed_stats.connected},
+                        {"installed_universe_version", payload.private_order_feed_stats.installed_universe_version},
+                        {"subscribed_universe_version", payload.private_order_feed_stats.subscribed_universe_version},
+                        {"messages_received", payload.private_order_feed_stats.messages_received},
+                        {"messages_decoded", payload.private_order_feed_stats.messages_decoded},
+                        {"messages_dropped", payload.private_order_feed_stats.messages_dropped},
+                        {"parse_failures", payload.private_order_feed_stats.parse_failures},
+                        {"oms_enqueue_failures", payload.private_order_feed_stats.oms_enqueue_failures},
+                        {"reconnects", payload.private_order_feed_stats.reconnects},
+                        {"last_error", payload.private_order_feed_stats.last_error},
+                    }},
+                    {"order_rest_stats", {
+                        {"enabled", payload.order_rest_stats.enabled},
+                        {"installed_universe_version", payload.order_rest_stats.installed_universe_version},
+                        {"commands_received", payload.order_rest_stats.commands_received},
+                        {"requests_sent", payload.order_rest_stats.requests_sent},
+                        {"responses_received", payload.order_rest_stats.responses_received},
+                        {"requests_failed", payload.order_rest_stats.requests_failed},
+                        {"retry_count", payload.order_rest_stats.retry_count},
+                        {"oms_enqueue_failures", payload.order_rest_stats.oms_enqueue_failures},
+                        {"last_error", payload.order_rest_stats.last_error},
                     }},
                 };
             }

@@ -37,6 +37,9 @@ namespace{
             <<"usage:\n"
             <<" predexctl [--socket PATH] status\n"
             <<" predexctl [--socket PATH] counterstats\n"
+            <<" predexctl [--socket PATH] allow-trading\n"
+            <<" predexctl [--socket PATH] disable-trading\n"
+            <<" predexctl [--socket PATH] cancel-all-orders\n"
             <<" predexctl [--socket PATH] shutdown-graceful\n";
             
     }
@@ -82,7 +85,7 @@ namespace{
     };
 
 }
-
+//NOLINTNEXTLINE
 int main(int argc, char** argv){
         std::string socket_path = std::string(predexctl::kDefaultSocketPath);
         int arg_index = 1;
@@ -117,6 +120,12 @@ int main(int argc, char** argv){
             type = "shutdown-graceful";
         }else if(command == "shutdown-forceful" || command == "shutdown_forceful"){
             type = "shutdown-forceful";
+        }else if(command == "allow-trading" || command == "allow_trading"){
+            type = "allow-trading";
+        }else if(command == "disable-trading" || command == "disable_trading"){
+            type = "disable-trading";
+        }else if(command == "cancel-all-orders" || command == "cancel_all_orders"){
+            type = "cancel-all-orders";
         }else{
             predexctl::usage();
             return static_cast<int>(predexctl::SocketExitCode::kInvalidArgs);

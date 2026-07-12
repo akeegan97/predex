@@ -20,6 +20,14 @@ namespace predex::core::control {
         kFAULTED = 7,
     };
 
+    enum class TradingSessionPhase : std::uint8_t{
+        kUNKNOWN = 0,
+        kTRADING = 1,
+        kREDUCE_ONLY = 2,
+        kFLATTEN_TO_ZERO = 3,
+        kSTOPPED = 4,
+    };
+
     struct UnknownMarketTickerStats{
         std::string market_ticker;
         std::uint8_t frame_kind{};
@@ -80,6 +88,9 @@ namespace predex::core::control {
     };
 
     struct OmsTelemetrySnapshot{
+        std::uint64_t installed_universe_version{0};
+        std::uint64_t unknown_market_rejects{0};
+        std::uint64_t non_tradeable_market_rejects{0};
         std::uint64_t strategy_intents_received{0};
         std::uint64_t strategy_intents_processed{0};
         std::uint64_t strategy_intents_rejected{0};
@@ -150,8 +161,9 @@ namespace predex::core::control {
 
     struct OmsComponentState{
         ComponentStatus status{ComponentStatus::kUNKNOWN};
+        std::uint64_t installed_universe_version{0};
         bool trading_enabled{false};
-        bool flatten_requested{false};
+        bool cancel_all_requested{false};
         OmsTelemetrySnapshot telemetry;
         std::string last_error;
     };
@@ -175,6 +187,7 @@ namespace predex::core::control {
 
     struct ProcessState {
         LifecyclePhase lifecycle{LifecyclePhase::kBOOTING};
+        TradingSessionPhase trading_session_phase{TradingSessionPhase::kTRADING};
         bool trading_enabled{false};
         bool shutdown_requested{false};
         
@@ -391,9 +404,9 @@ namespace predex::core::control {
     struct AllowTrading{};
     struct DisableTrading{};
 
-    struct FlattenAllOrders{}; // either cancel/remove any resting orders, and decide what to do with any inventory/filled positions
+    struct CancelAllOrders{}; // removes all resting orders if possible/still open at time of command req
 
-    using ControlToOmsCommand = std::variant<AllowTrading, DisableTrading, FlattenAllOrders>;
+    using ControlToOmsCommand = std::variant<ApplyOrderRouteUniverse, AllowTrading, DisableTrading, CancelAllOrders>;
 
     struct OmsReady{};
     struct OmsFaulted{
@@ -406,8 +419,8 @@ namespace predex::core::control {
         bool trading_enabled{false};
     };
 
-    struct OmsFlattenStateChanged{
-        bool flatten_requested{false};
+    struct OmsCancelAllStateChanged{
+        bool cancel_all_requested{false};
         std::uint64_t live_orders{0};
     };
 
@@ -423,7 +436,7 @@ namespace predex::core::control {
         OmsFaulted,
         OmsTelemetry,
         OmsTradingEnabledChanged,
-        OmsFlattenStateChanged,
+        OmsCancelAllStateChanged,
         OmsRestEgressDrained
     >;
 

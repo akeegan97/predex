@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <optional>
 #include <vector>
+#include <memory>
 
 #include <unordered_map>
 #include "predex/oms/order_intents.hpp"
@@ -68,7 +69,8 @@ namespace predex::oms{
             
             void handle_control_command(const core::control::AllowTrading& command) noexcept;
             void handle_control_command(const core::control::DisableTrading& command) noexcept;
-            void handle_control_command(const core::control::FlattenAllOrders& command) noexcept;
+            void handle_control_command(const core::control::CancelAllOrders& command) noexcept;
+            void handle_control_command(const core::control::ApplyOrderRouteUniverse& command) noexcept;
 
             [[nodiscard]] static bool is_terminal(OrderState state) noexcept;
             [[nodiscard]] static bool is_live(OrderState state) noexcept;
@@ -81,6 +83,8 @@ namespace predex::oms{
             [[nodiscard]] OrderRecord* find_order(const ClientOrderId& client_order_id) noexcept;
             [[nodiscard]] OrderRecord* find_order(const ExchangeOrderId& exchange_order_id) noexcept;
             [[nodiscard]] OrderRecord* find_order_for_rest_response(const RestOrderResponse& response) noexcept;
+            [[nodiscard]] const core::control::OrderMarketRoute* find_market_route(intent::MarketId market_id) const noexcept;
+            [[nodiscard]] bool is_tradeable_market(intent::MarketId market_id) const noexcept;
             [[nodiscard]] bool send_strategy_message(std::uint16_t strategy_index, OmsToStrategyMessage message) noexcept;
             [[nodiscard]] bool send_kalshi_command(OmsToKalshiCommand command) noexcept;
             [[nodiscard]] bool send_control_status(core::control::OmsToControlStatus status) noexcept;
@@ -98,11 +102,14 @@ namespace predex::oms{
             std::unordered_map<ClientOrderId, intent::OmsRequestId> client_order_id_to_oms_request_id_map_;
             std::unordered_map<ExchangeOrderId, intent::OmsRequestId> exchange_order_id_to_oms_request_id_map_;
             std::unordered_map<intent::OmsRequestId, OrderRecord> oms_request_id_to_order_record_map_;
+            std::unordered_map<intent::MarketId, core::control::OrderMarketRoute> market_route_by_id_;
+            std::shared_ptr<const core::control::OrderRouteUniverse> active_order_universe_;
 
             OmsQueues queues_;
             core::control::OmsTelemetrySnapshot telemetry_;
             bool trading_enabled_{false};
-            bool flatten_requested_{false};
+            bool cancel_all_requested_{false};
+            bool ready_reported_{false};
             intent::OmsRequestId next_oms_request_id_{1};
             std::optional<core::control::OmsRestEgressDrained> pending_rest_egress_drained_;
 

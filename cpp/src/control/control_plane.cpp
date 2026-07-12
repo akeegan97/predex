@@ -2,6 +2,7 @@
 #include "predex/control/control_types.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <type_traits>
 #include <utility>
 
@@ -134,10 +135,14 @@ namespace predex::core::control{
             const auto& io_state = process_state.io_component_state;
             const auto& router_state = process_state.router_component_state;
             const auto& logger_state = process_state.logger_component_state;
+            const auto& oms_state = process_state.oms_component_state;
+            const auto& private_order_feed_state = process_state.private_order_feed_component_state;
+            const auto& order_rest_state = process_state.order_rest_component_state;
 
             return operator_admin::OperatorCounterStatsSnapshot{
                 .status_snapshot = operator_admin::OperatorStatusSnapshot{
                     .lifecycle = process_state.lifecycle,
+                    .trading_session_phase = process_state.trading_session_phase,
                     .trading_enabled = process_state.trading_enabled,
                     .shutdown_requested = process_state.shutdown_requested,
                 },
@@ -179,6 +184,50 @@ namespace predex::core::control{
                     .write_failures = logger_state.telemetry.write_failures,
                     .recycle_failures = logger_state.telemetry.recycle_failures,
                 },
+                .oms_stats = operator_admin::OmsCounterStats{
+                    .trading_enabled = oms_state.trading_enabled,
+                    .cancel_all_requested = oms_state.cancel_all_requested,
+                    .installed_universe_version = oms_state.installed_universe_version,
+                    .unknown_market_rejects = oms_state.telemetry.unknown_market_rejects,
+                    .non_tradeable_market_rejects = oms_state.telemetry.non_tradeable_market_rejects,
+                    .strategy_intents_received = oms_state.telemetry.strategy_intents_received,
+                    .strategy_intents_processed = oms_state.telemetry.strategy_intents_processed,
+                    .strategy_intents_rejected = oms_state.telemetry.strategy_intents_rejected,
+                    .kalshi_commands_sent = oms_state.telemetry.kalshi_commands_sent,
+                    .kalshi_commands_failed = oms_state.telemetry.kalshi_commands_failed,
+                    .rest_responses_seen = oms_state.telemetry.rest_responses_seen,
+                    .private_ws_events_seen = oms_state.telemetry.private_ws_events_seen,
+                    .reconciliation_events_seen = oms_state.telemetry.reconciliation_events_seen,
+                    .order_state_updates_sent = oms_state.telemetry.order_state_updates_sent,
+                    .strategy_response_backpressure = oms_state.telemetry.strategy_response_backpressure,
+                    .live_orders = oms_state.telemetry.live_orders,
+                    .pending_submit_orders = oms_state.telemetry.pending_submit_orders,
+                    .uncertain_orders = oms_state.telemetry.uncertain_orders,
+                    .last_error = oms_state.last_error,
+                },
+                .private_order_feed_stats = operator_admin::PrivateOrderFeedCounterStats{
+                    .connected = private_order_feed_state.connected,
+                    .installed_universe_version = private_order_feed_state.installed_universe_version,
+                    .subscribed_universe_version = private_order_feed_state.subscribed_universe_version,
+                    .messages_received = private_order_feed_state.telemetry.messages_received,
+                    .messages_decoded = private_order_feed_state.telemetry.messages_decoded,
+                    .messages_dropped = private_order_feed_state.telemetry.messages_dropped,
+                    .parse_failures = private_order_feed_state.telemetry.parse_failures,
+                    .oms_enqueue_failures = private_order_feed_state.telemetry.oms_enqueue_failures,
+                    .reconnects = private_order_feed_state.telemetry.reconnects,
+                    .last_error = private_order_feed_state.last_error,
+                },
+                .order_rest_stats = operator_admin::OrderRestCounterStats{
+                    .enabled = order_rest_state.enabled,
+                    .installed_universe_version = order_rest_state.installed_universe_version,
+                    .commands_received = order_rest_state.telemetry.commands_received,
+                    .requests_sent = order_rest_state.telemetry.requests_sent,
+                    .responses_received = order_rest_state.telemetry.responses_received,
+                    .requests_failed = order_rest_state.telemetry.requests_failed,
+                    .retry_count = order_rest_state.telemetry.retry_count,
+                    .oms_enqueue_failures = order_rest_state.telemetry.oms_enqueue_failures,
+                    .last_error = order_rest_state.last_error,
+                },
             };
         }
 
@@ -192,7 +241,9 @@ namespace predex::core::control{
         ControlLoggerQueue logger_queue,
         ControlOmsQueues oms_queues,
         ControlPrivateOrderFeedQueues private_order_feed_queues,
-        ControlOrderRestQueues order_rest_queues
+        ControlOrderRestQueues order_rest_queues,
+        RequiredComponents required_components,
+        SyntheticTradingSessionConfig synthetic_session_config
     ) : queues_(queues),
         io_queues_(io_queues),
         router_queue_(router_queue),
@@ -200,13 +251,41 @@ namespace predex::core::control{
         logger_queue_(logger_queue),
         oms_queues_(oms_queues),
         private_order_feed_queues_(private_order_feed_queues),
-        order_rest_queues_(order_rest_queues){
+        order_rest_queues_(order_rest_queues),
+        required_components_(required_components),
+        synthetic_session_config_(synthetic_session_config){
         process_state_.shard_component_states.resize(shard_queues_.control_to_shard_queues.size());
+        process_state_.trading_session_phase = compute_trading_session_phase();
     }
-
+//NOLINTNEXTLINE
     OperatorPumpResult ControlPlane::process_operator_commands(){
+        (void)update_trading_session_phase();
         OperatorPumpResult result{};
         operator_admin::OperatorCommand item{};
+        const auto push_ack = [&](operator_admin::OperatorCommandId request_id){
+            if(push_operator_response(operator_admin::OperatorResponse{
+                .request_id = request_id,
+                .type = operator_admin::OperatorResponseType::kACK,
+                .payload = operator_admin::AckPayload{},
+            })){
+                result.responses_pushed_success++;
+            }else{
+                result.responses_pushed_failure++;
+            }
+        };
+
+        const auto push_error = [&](operator_admin::OperatorCommandId request_id, std::string message){
+            if(push_operator_response(operator_admin::OperatorResponse{
+                .request_id = request_id,
+                .type = operator_admin::OperatorResponseType::kERROR,
+                .payload = operator_admin::ErrorPayload{.message = std::move(message)},
+            })){
+                result.responses_pushed_success++;
+            }else{
+                result.responses_pushed_failure++;
+            }
+        };
+
         while(queues_.operator_command_queue.try_pop(item)){
             result.commands_processed++;
             switch(item.type){
@@ -216,6 +295,7 @@ namespace predex::core::control{
                         .type = operator_admin::OperatorResponseType::kSTATUS,
                         .payload = operator_admin::OperatorStatusSnapshot{
                             .lifecycle = process_state_.lifecycle,
+                            .trading_session_phase = process_state_.trading_session_phase,
                             .trading_enabled = process_state_.trading_enabled,
                             .shutdown_requested = process_state_.shutdown_requested,
                         }
@@ -239,17 +319,7 @@ namespace predex::core::control{
                     break;
                 }
                 case operator_admin::OperatorCommandType::kUNKNOWN:{
-                     if(push_operator_response(operator_admin::OperatorResponse{
-                        .request_id = item.request_id,
-                        .type = operator_admin::OperatorResponseType::kERROR,
-                        .payload = operator_admin::ErrorPayload{
-                            .message = "unknown command",
-                        }
-                    })){
-                        result.responses_pushed_success++;
-                    }else{
-                        result.responses_pushed_failure++;
-                    }
+                     push_error(item.request_id, "unknown command");
                      break;
                 }
                 case operator_admin::OperatorCommandType::kSHUTDOWN_GRACEFUL:{
@@ -257,22 +327,65 @@ namespace predex::core::control{
                     process_state_.shutdown_requested = true;
                     process_state_.trading_enabled = false;
 
-                    bool success = push_operator_response(operator_admin::OperatorResponse{
-                        .request_id = item.request_id,
-                        .type = operator_admin::OperatorResponseType::kACK,
-                        .payload = operator_admin::AckPayload{},
-                    });
-
-                    if(success){
-                        result.responses_pushed_success++;
-                    }else{
-                        //handle failed push
-                        result.responses_pushed_failure++;
+                    if(required_components_.oms){
+                        (void)push_oms_command(ControlToOmsCommand{DisableTrading{}});
                     }
+                    push_ack(item.request_id);
                     break;
                 }
                 case operator_admin::OperatorCommandType::kSHUTDOWN_FORCEFUL:{
-                    //initiate forceful shutdown sequence
+                    process_state_.lifecycle = LifecyclePhase::kSHUTTING_DOWN;
+                    process_state_.shutdown_requested = true;
+                    process_state_.trading_enabled = false;
+                    process_state_.oms_component_state.trading_enabled = false;
+                    push_ack(item.request_id);
+                    break;
+                }
+                case operator_admin::OperatorCommandType::kALLOW_TRADING:{
+                    if(!required_components_.oms){
+                        push_error(item.request_id, "cannot allow trading: OMS is not enabled");
+                        break;
+                    }
+                    if(process_state_.trading_session_phase != TradingSessionPhase::kTRADING){
+                        push_error(item.request_id, "cannot allow trading: synthetic trading session is no longer in trading phase");
+                        break;
+                    }
+                    if(!required_components_ready_for_trading()){
+                        push_error(item.request_id, "cannot allow trading: required trading components are not ready");
+                        break;
+                    }
+                    if(!push_oms_command(ControlToOmsCommand{AllowTrading{}})){
+                        push_error(item.request_id, "cannot allow trading: failed to enqueue OMS command");
+                        break;
+                    }
+                    push_ack(item.request_id);
+                    break;
+                }
+                case operator_admin::OperatorCommandType::kDISABLE_TRADING:{
+                    process_state_.trading_enabled = false;
+                    process_state_.oms_component_state.trading_enabled = false;
+                    if(required_components_.oms && !push_oms_command(ControlToOmsCommand{DisableTrading{}})){
+                        push_error(item.request_id, "failed to enqueue OMS disable-trading command");
+                        break;
+                    }
+                    recompute_process_state();
+                    push_ack(item.request_id);
+                    break;
+                }
+                case operator_admin::OperatorCommandType::kCANCEL_ALL_ORDERS:{
+                    if(!required_components_.oms){
+                        push_error(item.request_id, "cannot cancel all orders: OMS is not enabled");
+                        break;
+                    }
+                    if(!push_oms_command(ControlToOmsCommand{CancelAllOrders{}})){
+                        push_error(item.request_id, "cannot cancel all orders: failed to enqueue OMS command");
+                        break;
+                    }
+                    process_state_.oms_component_state.cancel_all_requested = true;
+                    process_state_.trading_enabled = false;
+                    process_state_.oms_component_state.trading_enabled = false;
+                    recompute_process_state();
+                    push_ack(item.request_id);
                     break;
                 }
 
@@ -323,9 +436,58 @@ namespace predex::core::control{
         }, status);
     }
 
+    TradingSessionPhase ControlPlane::compute_trading_session_phase() const noexcept{
+        if(!synthetic_session_config_.enabled){
+            return TradingSessionPhase::kTRADING;
+        }
+
+        const auto elapsed = std::chrono::steady_clock::now() - session_start_time_;
+        const auto elapsed_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()
+        );
+
+        if(synthetic_session_config_.stopped_after_ns != 0 &&
+           elapsed_ns >= synthetic_session_config_.stopped_after_ns){
+            return TradingSessionPhase::kSTOPPED;
+        }
+        if(synthetic_session_config_.flatten_to_zero_after_ns != 0 &&
+           elapsed_ns >= synthetic_session_config_.flatten_to_zero_after_ns){
+            return TradingSessionPhase::kFLATTEN_TO_ZERO;
+        }
+        if(synthetic_session_config_.reduce_only_after_ns != 0 &&
+           elapsed_ns >= synthetic_session_config_.reduce_only_after_ns){
+            return TradingSessionPhase::kREDUCE_ONLY;
+        }
+        return TradingSessionPhase::kTRADING;
+    }
+
+    void ControlPlane::apply_trading_session_phase(TradingSessionPhase phase) noexcept{
+        if(process_state_.trading_session_phase == phase){
+            return;
+        }
+
+        process_state_.trading_session_phase = phase;
+        if(phase != TradingSessionPhase::kTRADING){
+            process_state_.trading_enabled = false;
+            process_state_.oms_component_state.trading_enabled = false;
+            if(required_components_.oms){
+                (void)push_oms_command(ControlToOmsCommand{DisableTrading{}});
+            }
+        }
+        recompute_process_state();
+    }
+
+    bool ControlPlane::update_trading_session_phase() noexcept{
+        const TradingSessionPhase previous = process_state_.trading_session_phase;
+        apply_trading_session_phase(compute_trading_session_phase());
+        return process_state_.trading_session_phase != previous;
+    }
+
     void ControlPlane::recompute_process_state() noexcept{
         if(process_state_.shutdown_requested){
-            if(process_state_.io_component_state.status == ComponentStatus::kSTOPPED){
+            if((!required_components_.market_data || process_state_.io_component_state.status == ComponentStatus::kSTOPPED) &&
+               (!required_components_.private_order_feed || process_state_.private_order_feed_component_state.status == ComponentStatus::kSTOPPED) &&
+               (!required_components_.order_rest || process_state_.order_rest_component_state.status == ComponentStatus::kSTOPPED)){
                 process_state_.lifecycle = LifecyclePhase::kSTOPPED;
             }else{
                 process_state_.lifecycle = LifecyclePhase::kSHUTTING_DOWN;
@@ -333,39 +495,130 @@ namespace predex::core::control{
             return;
         }
 
-        if(process_state_.io_component_state.status == ComponentStatus::kFAULTED ||
-           process_state_.router_component_state.status == ComponentStatus::kFAULTED ||
-           process_state_.logger_component_state.status == ComponentStatus::kFAULTED ||
-           std::any_of(
+        if(required_components_faulted()){
+            process_state_.lifecycle = LifecyclePhase::kFAULTED;
+            process_state_.trading_enabled = false;
+            process_state_.oms_component_state.trading_enabled = false;
+            return;
+        }
+
+        if(required_components_ready_for_trading() && process_state_.trading_enabled){
+            process_state_.lifecycle = LifecyclePhase::kLIVE_TRADING;
+            process_state_.active_universe_version = process_state_.target_universe_version;
+            return;
+        }
+
+        if(required_components_ready_for_capture()){
+            process_state_.lifecycle = LifecyclePhase::kREADY;
+            process_state_.active_universe_version = process_state_.target_universe_version;
+            return;
+        }
+
+        if(!required_components_.market_data ||
+           process_state_.io_component_state.status == ComponentStatus::kREADY ||
+           process_state_.io_component_state.status == ComponentStatus::kLIVE){
+            process_state_.lifecycle = LifecyclePhase::kIO_CONNECTED;
+            return;
+        }
+
+        process_state_.lifecycle = LifecyclePhase::kWAITING_FOR_IO;
+    }
+
+    bool ControlPlane::required_components_faulted() const{
+        if(required_components_.market_data && process_state_.io_component_state.status == ComponentStatus::kFAULTED){
+            return true;
+        }
+        if(process_state_.router_component_state.status == ComponentStatus::kFAULTED){
+            return true;
+        }
+        if(required_components_.logger && process_state_.logger_component_state.status == ComponentStatus::kFAULTED){
+            return true;
+        }
+        if(required_components_.oms && process_state_.oms_component_state.status == ComponentStatus::kFAULTED){
+            return true;
+        }
+        if(required_components_.private_order_feed && process_state_.private_order_feed_component_state.status == ComponentStatus::kFAULTED){
+            return true;
+        }
+        if(required_components_.order_rest && process_state_.order_rest_component_state.status == ComponentStatus::kFAULTED){
+            return true;
+        }
+        if(required_components_.shards){
+            return std::any_of(
                 process_state_.shard_component_states.begin(),
                 process_state_.shard_component_states.end(),
                 [](const ShardComponentState& shard_state){
                     return shard_state.status == ComponentStatus::kFAULTED;
                 }
-            )){
-            process_state_.lifecycle = LifecyclePhase::kFAULTED;
-            process_state_.trading_enabled = false;
-            return;
+            );
+        }
+        return false;
+    }
+
+    bool ControlPlane::required_components_ready_for_capture() const{
+        const std::uint64_t target_version = process_state_.target_universe_version;
+        if(target_version == 0){
+            return false;
         }
 
-        switch(process_state_.io_component_state.status){
-            case ComponentStatus::kUNKNOWN:
-            case ComponentStatus::kSTOPPED:
-            case ComponentStatus::kSTARTING:
-            case ComponentStatus::kQUIESCING:
-                process_state_.lifecycle = LifecyclePhase::kWAITING_FOR_IO;
-                break;
-            case ComponentStatus::kINSTALLING_UNIVERSE:
-            case ComponentStatus::kREADY:
-                process_state_.lifecycle = LifecyclePhase::kIO_CONNECTED;
-                break;
-            case ComponentStatus::kLIVE:
-                process_state_.lifecycle = LifecyclePhase::kREADY;
-                break;
-            case ComponentStatus::kFAULTED:
-                process_state_.lifecycle = LifecyclePhase::kFAULTED;
-                break;
+        if(required_components_.market_data &&
+           (process_state_.io_component_state.status != ComponentStatus::kLIVE ||
+            process_state_.io_component_state.installed_universe_version != target_version ||
+            process_state_.io_component_state.subscribed_universe_version != target_version)){
+            return false;
         }
+
+        if(required_components_.shards){
+            if(process_state_.shard_component_states.empty()){
+                return false;
+            }
+            const bool shards_ready = std::all_of(
+                process_state_.shard_component_states.begin(),
+                process_state_.shard_component_states.end(),
+                [target_version](const ShardComponentState& shard_state){
+                    return shard_state.status == ComponentStatus::kLIVE &&
+                           shard_state.installed_universe_version == target_version;
+                }
+            );
+            if(!shards_ready){
+                return false;
+            }
+        }
+
+        if(required_components_.logger &&
+           process_state_.logger_component_state.status != ComponentStatus::kLIVE){
+            return false;
+        }
+
+        return true;
+    }
+
+    bool ControlPlane::required_components_ready_for_trading() const{
+        const std::uint64_t target_version = process_state_.target_universe_version;
+        if(!required_components_ready_for_capture()){
+            return false;
+        }
+
+        if(required_components_.oms &&
+           (process_state_.oms_component_state.status != ComponentStatus::kREADY ||
+            process_state_.oms_component_state.installed_universe_version != target_version)){
+            return false;
+        }
+
+        if(required_components_.order_rest &&
+           (process_state_.order_rest_component_state.status != ComponentStatus::kREADY ||
+            process_state_.order_rest_component_state.installed_universe_version != target_version)){
+            return false;
+        }
+
+        if(required_components_.private_order_feed &&
+           (process_state_.private_order_feed_component_state.status != ComponentStatus::kLIVE ||
+            process_state_.private_order_feed_component_state.installed_universe_version != target_version ||
+            process_state_.private_order_feed_component_state.subscribed_universe_version != target_version)){
+            return false;
+        }
+
+        return true;
     }
 
     std::uint64_t ControlPlane::install_universe(UniverseSnapshot snapshot){
@@ -382,6 +635,15 @@ namespace predex::core::control{
             return false;
         }
         return push_io_command(ApplyUniverseSnapshotIo{.snapshot = active_universe_});
+    }
+
+    bool ControlPlane::send_active_order_universe_to_oms(){
+        if(active_order_universe_ == nullptr || oms_queues_.control_to_oms_queue == nullptr){
+            return false;
+        }
+        return oms_queues_.control_to_oms_queue->try_push(
+            ControlToOmsCommand{ApplyOrderRouteUniverse{.snapshot = active_order_universe_}}
+        );
     }
 
     bool ControlPlane::send_active_order_universe_to_private_order_feed(){
@@ -402,21 +664,21 @@ namespace predex::core::control{
         );
     }
 
-    bool ControlPlane::push_private_order_feed_command(const ControlToPrivateOrderFeedCommand& cmd){
+    bool ControlPlane::push_private_order_feed_command(const ControlToPrivateOrderFeedCommand& cmd){//NOLINT
         if(private_order_feed_queues_.control_to_private_order_feed_queue == nullptr){
             return false;
         }
         return private_order_feed_queues_.control_to_private_order_feed_queue->try_push(cmd);
     }
 
-    bool ControlPlane::push_order_rest_command(const ControlToOrderRestCommand& cmd){
+    bool ControlPlane::push_order_rest_command(const ControlToOrderRestCommand& cmd){//NOLINT
         if(order_rest_queues_.control_to_order_rest_queue == nullptr){
             return false;
         }
         return order_rest_queues_.control_to_order_rest_queue->try_push(cmd);
     }
 
-    bool ControlPlane::push_oms_command(const ControlToOmsCommand& cmd){
+    bool ControlPlane::push_oms_command(const ControlToOmsCommand& cmd){//NOLINT 
         if(oms_queues_.control_to_oms_queue == nullptr){
             return false;
         }
@@ -702,11 +964,12 @@ namespace predex::core::control{
                 process_state_.oms_component_state.trading_enabled = false;
             }else if constexpr(std::is_same_v<T, OmsTelemetry>){
                 process_state_.oms_component_state.telemetry = stat.telemetry;
+                process_state_.oms_component_state.installed_universe_version = stat.telemetry.installed_universe_version;
             }else if constexpr(std::is_same_v<T, OmsTradingEnabledChanged>){
                 process_state_.oms_component_state.trading_enabled = stat.trading_enabled;
                 process_state_.trading_enabled = stat.trading_enabled;
-            }else if constexpr(std::is_same_v<T, OmsFlattenStateChanged>){
-                process_state_.oms_component_state.flatten_requested = stat.flatten_requested;
+            }else if constexpr(std::is_same_v<T, OmsCancelAllStateChanged>){
+                process_state_.oms_component_state.cancel_all_requested = stat.cancel_all_requested;
             }else if constexpr(std::is_same_v<T, OmsRestEgressDrained>){
                 process_state_.oms_component_state.telemetry.live_orders = stat.live_orders;
                 process_state_.oms_component_state.telemetry.uncertain_orders = stat.uncertain_orders;

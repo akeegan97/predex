@@ -6,7 +6,7 @@
 #include "predex/exchange/kalshi/kalshi_ws_protocol.hpp"
 
 namespace predex::exchange::kalshi{
-    inline constexpr std::string_view kWEBSOCKET_ENDPOINT = "wss://api.elections.kalshi.com/trade-api/ws/v2";
+    inline constexpr std::string_view kORDER_DATA_WEBSOCKET_ENDPOINT = "wss://api.elections.kalshi.com/trade-api/ws/v2";
     class KalshiOrderDataHandler final : public IWsAdapter {
     public:
         explicit KalshiOrderDataHandler(AuthSigner signer);

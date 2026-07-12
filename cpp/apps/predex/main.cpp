@@ -16,11 +16,15 @@
 #include <optional>
 #include <ranges>
 
+#include <curl/curl.h>
+
 #include "predex/config/app_config.hpp"
 #include "predex/config/universe_builder.hpp"
 #include "predex/control/control_plane.hpp"
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
+#include "predex/ingest/kalshi/order_data/order_session.hpp"
 #include "predex/operator/operator_command_handler.hpp"
+#include "predex/oms/oms.hpp"
 #include "predex/router/router.hpp"
 #include "predex/shard/shard.hpp"
 #include "predex/socket/unix_command_server.hpp"
@@ -28,6 +32,10 @@
 #include "predex/logging/market_data_logger.hpp"
 #include "predex/exchange/kalshi/adapters/auth_signer.hpp"
 #include "predex/exchange/kalshi/adapters/market_data_handler.hpp"
+#include "predex/exchange/kalshi/adapters/order_data_handler.hpp"
+#include "predex/exchange/kalshi/adapters/order_rest_adapter.hpp"
+#include "predex/exchange/kalshi/http2_session.hpp"
+#include "predex/exchange/kalshi/order_rest_session.hpp"
 #include "predex/ingest/kalshi/market_data/wire_session.hpp"
 
 namespace {
@@ -42,6 +50,8 @@ namespace utils = predex::utils;
 namespace logging = predex::logging;
 namespace kalshi_exchange = predex::exchange::kalshi;
 namespace market_data = predex::ingest::kalshi::market_data;
+namespace order_data = predex::ingest::kalshi::order_data;
+namespace oms = predex::oms;
 
 std::atomic<bool> g_signal_stop_requested{false};
 
@@ -59,9 +69,34 @@ using RouterToControlQueue = utils::SPSCQueue<router::RouterToControl>;
 using ControlToShardQueue = utils::SPSCQueue<shard::ControlToShardCommand>;
 using ShardToControlQueue = utils::SPSCQueue<shard::ShardToControlMessage>;
 using RouterToShardQueue = utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>;
+using ControlToOmsQueue = utils::SPSCQueue<control::ControlToOmsCommand>;
+using OmsToControlStatusQueue = utils::SPSCQueue<control::OmsToControlStatus>;
+using StrategyIntentQueue = utils::SPSCQueue<oms::intent::StrategyIntent>;
+using OmsToStrategyQueue = utils::SPSCQueue<oms::OmsToStrategyMessage>;
+using OmsToKalshiQueue = utils::SPSCQueue<oms::OmsToKalshiCommand>;
+using KalshiToOmsQueue = utils::SPSCQueue<oms::KalshiToOmsEvent>;
+using ControlToOrderRestQueue = utils::SPSCQueue<control::ControlToOrderRestCommand>;
+using OrderRestToControlStatusQueue = utils::SPSCQueue<control::OrderRestToControlStatus>;
+using ControlToPrivateOrderFeedQueue = utils::SPSCQueue<control::ControlToPrivateOrderFeedCommand>;
+using PrivateOrderFeedToControlStatusQueue = utils::SPSCQueue<control::PrivateOrderFeedToControlStatus>;
 using FrameHandle = predex::ingest::kalshi::FrameHandle;
 using FrameHandleQueue = utils::SPSCQueue<FrameHandle>;
 using FramePool = predex::ingest::kalshi::FramePool;
+
+struct CurlGlobalGuard {
+    CurlGlobalGuard() {
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+            throw std::runtime_error("curl_global_init failed");
+        }
+    }
+
+    ~CurlGlobalGuard() {
+        curl_global_cleanup();
+    }
+
+    CurlGlobalGuard(const CurlGlobalGuard&) = delete;
+    CurlGlobalGuard& operator=(const CurlGlobalGuard&) = delete;
+};
 
 void signal_handler(int /*signal_number*/) {
     g_signal_stop_requested.store(true);
@@ -93,16 +128,46 @@ std::string required_env_value(const std::string& env_name) {
     return std::string{value};
 }
 
-kalshi_exchange::KalshiMarketDataHandler make_market_data_handler(
-    const config::KalshiAuthConfig& auth_config
-) {
-    kalshi_exchange::Credentials credentials{
+kalshi_exchange::Credentials make_kalshi_credentials(const config::KalshiAuthConfig& auth_config) {
+    return kalshi_exchange::Credentials{
         .key_id = required_env_value(auth_config.key_id_env),
         .private_key_pem = required_env_value(auth_config.private_key_pem_env),
     };
+}
+
+kalshi_exchange::KalshiMarketDataHandler make_market_data_handler(
+    const config::KalshiAuthConfig& auth_config
+) {
+    kalshi_exchange::Credentials credentials = make_kalshi_credentials(auth_config);
 
     return kalshi_exchange::KalshiMarketDataHandler{
         kalshi_exchange::AuthSigner{std::move(credentials)}
+    };
+}
+
+kalshi_exchange::KalshiOrderDataHandler make_order_data_handler(
+    const config::KalshiAuthConfig& auth_config
+) {
+    kalshi_exchange::Credentials credentials = make_kalshi_credentials(auth_config);
+
+    return kalshi_exchange::KalshiOrderDataHandler{
+        kalshi_exchange::AuthSigner{std::move(credentials)}
+    };
+}
+
+kalshi_exchange::Http2Session make_http_session(
+    const config::KalshiAuthConfig& auth_config,
+    const config::KalshiOrderRestConfig& order_rest_config
+) {
+    kalshi_exchange::Http2SessionConfig http_config{};
+    if(!order_rest_config.endpoint.empty()){
+        http_config.endpoint = order_rest_config.endpoint;
+    }
+    http_config.max_concurrent_streams = static_cast<std::uint16_t>(order_rest_config.max_concurrent_streams);
+
+    return kalshi_exchange::Http2Session{
+        kalshi_exchange::AuthSigner{make_kalshi_credentials(auth_config)},
+        std::move(http_config),
     };
 }
 struct AppQueues {
@@ -112,6 +177,15 @@ struct AppQueues {
           control_to_io(runtime_config.operator_queue_capacity),
           io_to_control_status(runtime_config.operator_queue_capacity),
           logger_to_control_status(runtime_config.operator_queue_capacity),
+          control_to_oms(runtime_config.operator_queue_capacity),
+          oms_to_control_status(runtime_config.operator_queue_capacity),
+          oms_to_order_rest(runtime_config.shard_queue_capacity),
+          order_rest_to_oms(runtime_config.shard_queue_capacity),
+          private_order_feed_to_oms(runtime_config.shard_queue_capacity),
+          control_to_order_rest(runtime_config.operator_queue_capacity),
+          order_rest_to_control_status(runtime_config.operator_queue_capacity),
+          control_to_private_order_feed(runtime_config.operator_queue_capacity),
+          private_order_feed_to_control_status(runtime_config.operator_queue_capacity),
           router_to_control(runtime_config.operator_queue_capacity),
           wire_to_router(runtime_config.router_queue_capacity),
           router_to_logger(runtime_config.router_queue_capacity),
@@ -123,6 +197,8 @@ struct AppQueues {
         router_to_shard.reserve(runtime_config.shard_count);
         shard_to_logger.reserve(runtime_config.shard_count);
         shard_recycle.reserve(runtime_config.shard_count);
+        strategy_to_oms.reserve(runtime_config.shard_count);
+        oms_to_strategy.reserve(runtime_config.shard_count);
 
         for (std::size_t shard_index = 0; shard_index < runtime_config.shard_count; ++shard_index) {
             control_to_shard.push_back(std::make_unique<ControlToShardQueue>(runtime_config.shard_queue_capacity));
@@ -130,6 +206,8 @@ struct AppQueues {
             router_to_shard.push_back(std::make_unique<RouterToShardQueue>(runtime_config.shard_queue_capacity));
             shard_to_logger.push_back(std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
             shard_recycle.push_back(std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
+            strategy_to_oms.push_back(std::make_unique<StrategyIntentQueue>(runtime_config.shard_queue_capacity));
+            oms_to_strategy.push_back(std::make_unique<OmsToStrategyQueue>(runtime_config.shard_queue_capacity));
         }
     }
 
@@ -138,6 +216,15 @@ struct AppQueues {
     ControlToIoQueue control_to_io;
     IoToControlStatusQueue io_to_control_status;
     LoggerToControlStatusQueue logger_to_control_status;
+    ControlToOmsQueue control_to_oms;
+    OmsToControlStatusQueue oms_to_control_status;
+    OmsToKalshiQueue oms_to_order_rest;
+    KalshiToOmsQueue order_rest_to_oms;
+    KalshiToOmsQueue private_order_feed_to_oms;
+    ControlToOrderRestQueue control_to_order_rest;
+    OrderRestToControlStatusQueue order_rest_to_control_status;
+    ControlToPrivateOrderFeedQueue control_to_private_order_feed;
+    PrivateOrderFeedToControlStatusQueue private_order_feed_to_control_status;
     RouterToControlQueue router_to_control;
     FrameHandleQueue wire_to_router;
     FrameHandleQueue router_to_logger;
@@ -147,6 +234,8 @@ struct AppQueues {
 
     std::vector<std::unique_ptr<ControlToShardQueue>> control_to_shard;
     std::vector<std::unique_ptr<ShardToControlQueue>> shard_to_control;
+    std::vector<std::unique_ptr<StrategyIntentQueue>> strategy_to_oms;
+    std::vector<std::unique_ptr<OmsToStrategyQueue>> oms_to_strategy;
 
     std::vector<std::unique_ptr<RouterToShardQueue>> router_to_shard;
     std::vector<std::unique_ptr<FrameHandleQueue>> shard_to_logger;
@@ -176,6 +265,27 @@ control::RouterQueue make_router_queue(AppQueues& queues) {
 control::ControlLoggerQueue make_logger_queue(AppQueues& queues) {
     return control::ControlLoggerQueue{
         .logger_to_control_status_queue = &queues.logger_to_control_status,
+    };
+}
+
+control::ControlOmsQueues make_control_oms_queues(AppQueues& queues) {
+    return control::ControlOmsQueues{
+        .control_to_oms_queue = &queues.control_to_oms,
+        .oms_to_control_status_queue = &queues.oms_to_control_status,
+    };
+}
+
+control::ControlPrivateOrderFeedQueues make_control_private_order_feed_queues(AppQueues& queues) {
+    return control::ControlPrivateOrderFeedQueues{
+        .control_to_private_order_feed_queue = &queues.control_to_private_order_feed,
+        .private_order_feed_to_control_status_queue = &queues.private_order_feed_to_control_status,
+    };
+}
+
+control::ControlOrderRestQueues make_control_order_rest_queues(AppQueues& queues) {
+    return control::ControlOrderRestQueues{
+        .control_to_order_rest_queue = &queues.control_to_order_rest,
+        .order_rest_to_control_status_queue = &queues.order_rest_to_control_status,
     };
 }
 
@@ -210,6 +320,55 @@ predex::router::RouterQueues make_router_queues(AppQueues& queues){
     }
 
     return router_queues;
+}
+
+oms::OmsQueues make_oms_queues(AppQueues& queues){
+    oms::OmsQueues oms_queues{
+        .control_command_queue = queues.control_to_oms,
+        .oms_status_queue = queues.oms_to_control_status,
+        .kalshi_command_queue = queues.oms_to_order_rest,
+    };
+
+    oms_queues.strategy_intent_queues.reserve(queues.strategy_to_oms.size());
+    oms_queues.strategy_response_queues.reserve(queues.oms_to_strategy.size());
+    for(const auto& strategy_queue : queues.strategy_to_oms){
+        oms_queues.strategy_intent_queues.push_back(strategy_queue.get());
+    }
+    for(const auto& response_queue : queues.oms_to_strategy){
+        oms_queues.strategy_response_queues.push_back(response_queue.get());
+    }
+
+    oms_queues.venue_event_queues.push_back(&queues.order_rest_to_oms);
+    oms_queues.venue_event_queues.push_back(&queues.private_order_feed_to_oms);
+
+    return oms_queues;
+}
+
+kalshi_exchange::OrderRestControlQueues make_order_rest_control_queues(AppQueues& queues){
+    return kalshi_exchange::OrderRestControlQueues{
+        .control_to_order_rest_queue = queues.control_to_order_rest,
+        .order_rest_to_control_queue = queues.order_rest_to_control_status,
+    };
+}
+
+kalshi_exchange::OrderRestOmsQueues make_order_rest_oms_queues(AppQueues& queues){
+    return kalshi_exchange::OrderRestOmsQueues{
+        .oms_to_order_rest_queue = queues.oms_to_order_rest,
+        .order_rest_to_oms_queue = queues.order_rest_to_oms,
+    };
+}
+
+order_data::OrderSessionControlQueues make_order_session_control_queues(AppQueues& queues){
+    return order_data::OrderSessionControlQueues{
+        .control_to_order_session_queue = queues.control_to_private_order_feed,
+        .order_session_to_control_queue = queues.private_order_feed_to_control_status,
+    };
+}
+
+order_data::OrderSessionOmsQueues make_order_session_oms_queues(AppQueues& queues){
+    return order_data::OrderSessionOmsQueues{
+        .private_ws_to_oms_queue = queues.private_order_feed_to_oms,
+    };
 }
 
 shard::ShardQueues make_single_shard_queues(AppQueues& queues, std::size_t shard_index) {
@@ -326,6 +485,27 @@ std::jthread start_wire_session_thread(market_data::KalshiWireSession& wire_sess
     });
 }
 
+std::jthread start_private_order_feed_thread(order_data::KalshiOrderSession& order_session) {
+    return std::jthread([&order_session](const std::stop_token& stop_token) {
+        order_session.run(stop_token);
+    });
+}
+
+std::jthread start_order_rest_thread(kalshi_exchange::OrderRestSession& order_rest_session) {
+    return std::jthread([&order_rest_session](const std::stop_token& stop_token) {
+        order_rest_session.run(stop_token);
+    });
+}
+
+std::jthread start_oms_thread(oms::Oms& oms_instance) {
+    return std::jthread([&oms_instance](const std::stop_token& stop_token) {
+        while (!stop_token.stop_requested()) {
+            if (oms_instance.pump_once() == oms::OmsPumpResult::kNoWork) {
+                std::this_thread::yield();
+            }
+        }
+    });
+}
 
 std::jthread start_market_data_logger_thread(logging::MarketDataLogger& market_data_logger) {
     return std::jthread([&market_data_logger](const std::stop_token& stop_token) {
@@ -345,16 +525,22 @@ bool pump_control_plane_once(control::ControlPlane& control_plane) {
     const bool processed_router_messages = control_plane.process_router_messages();
     const bool processed_shard_messages = control_plane.process_shard_messages();
     const bool processed_logger_messages = control_plane.process_logger_messages();
+    const bool processed_oms_messages = control_plane.process_oms_status();
+    const bool processed_order_rest_messages = control_plane.process_order_rest_status();
+    const bool processed_private_order_feed_messages = control_plane.process_private_order_feed_status();
 
     return operator_result.commands_processed > 0 ||
            io_result.statuses_processed > 0 ||
            processed_router_messages ||
            processed_shard_messages ||
-           processed_logger_messages;
+           processed_logger_messages ||
+           processed_oms_messages ||
+           processed_order_rest_messages ||
+           processed_private_order_feed_messages;
 }
 
 }  // namespace
-
+//NOLINTNEXTLINE
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
 
@@ -367,6 +553,16 @@ int main(int argc, char** argv) {
     }
 
     install_signal_handlers();
+
+    std::optional<CurlGlobalGuard> curl_global;
+    if(app_config.kalshi.order_rest.enable_order_rest){
+        try {
+            curl_global.emplace();
+        } catch (const std::exception& e) {
+            std::cerr << "predex curl init error: " << e.what() << '\n';
+            return 1;
+        }
+    }
 
     std::uint32_t shard_count{0};
     try {
@@ -382,10 +578,23 @@ int main(int argc, char** argv) {
     auto router_queue = make_router_queue(app_queues);
     auto shard_queues = make_shard_queues(app_queues);
     auto logger_queue = make_logger_queue(app_queues);
+    auto control_oms_queues = make_control_oms_queues(app_queues);
+    auto control_private_order_feed_queues = make_control_private_order_feed_queues(app_queues);
+    auto control_order_rest_queues = make_control_order_rest_queues(app_queues);
     auto handler_queues = make_operator_handler_queues(app_queues);
     auto router_queues = make_router_queues(app_queues);
+    auto oms_queues = make_oms_queues(app_queues);
 
-    control::ControlPlane control_plane{operator_queues, io_queues, router_queue, shard_queues, logger_queue};
+    control::ControlPlane control_plane{
+        operator_queues,
+        io_queues,
+        router_queue,
+        shard_queues,
+        logger_queue,
+        control_oms_queues,
+        control_private_order_feed_queues,
+        control_order_rest_queues,
+    };
     operator_admin::OperatorCommandHandler command_handler{handler_queues};
     socket::OperatorSocketConfig socket_config{};
     socket_config.socket_path = app_config.runtime.operator_socket_path;
@@ -438,6 +647,65 @@ int main(int argc, char** argv) {
     };
     std::jthread market_data_logger_thread = start_market_data_logger_thread(market_data_logger);
 
+    const bool order_graph_enabled =
+        app_config.kalshi.order_rest.enable_order_rest ||
+        app_config.kalshi.private_order_feed.enable_private_order_feed;
+
+    std::optional<oms::Oms> oms_instance;
+    std::optional<std::jthread> oms_thread;
+    if(order_graph_enabled){
+        oms_instance.emplace(oms_queues);
+        oms_thread.emplace(start_oms_thread(*oms_instance));
+    }
+
+    std::optional<kalshi_exchange::OrderRestSession> order_rest_session;
+    std::optional<std::jthread> order_rest_thread;
+    if(app_config.kalshi.order_rest.enable_order_rest){
+        try{
+            order_rest_session.emplace(kalshi_exchange::OrderRestSessionDeps{
+                .http_session = make_http_session(app_config.kalshi.auth, app_config.kalshi.order_rest),
+                .order_rest_adapter = kalshi_exchange::KalshiOrderRestAdapter{},
+                .control_queues = make_order_rest_control_queues(app_queues),
+                .oms_queues = make_order_rest_oms_queues(app_queues),
+            });
+            order_rest_thread.emplace(start_order_rest_thread(*order_rest_session));
+
+            if(!control_plane.send_active_order_universe_to_order_rest()){
+                throw std::runtime_error("Failed to enqueue active order universe to order REST");
+            }
+            if(!control_plane.push_order_rest_command(control::ControlToOrderRestCommand{control::EnableOrderRest{}})){
+                throw std::runtime_error("Failed to enqueue order REST enable command");
+            }
+        } catch(const std::exception& e){
+            std::cerr << "predex order REST init error: " << e.what() << '\n';
+            return 1;
+        }
+    }
+
+    std::optional<order_data::KalshiOrderSession> private_order_feed_session;
+    std::optional<std::jthread> private_order_feed_thread;
+    if(app_config.kalshi.private_order_feed.enable_private_order_feed){
+        try{
+            private_order_feed_session.emplace(order_data::OrderSessionDeps{
+                .order_data_handler = make_order_data_handler(app_config.kalshi.auth),
+                .desired_channels = app_config.kalshi.private_order_feed.channels,
+                .control_queues = make_order_session_control_queues(app_queues),
+                .oms_queues = make_order_session_oms_queues(app_queues),
+            });
+            private_order_feed_thread.emplace(start_private_order_feed_thread(*private_order_feed_session));
+
+            if(!control_plane.send_active_order_universe_to_private_order_feed()){
+                throw std::runtime_error("Failed to enqueue active order universe to private order feed");
+            }
+            if(!control_plane.push_private_order_feed_command(control::ControlToPrivateOrderFeedCommand{control::ConnectPrivateOrderFeed{}})){
+                throw std::runtime_error("Failed to enqueue private order feed connect command");
+            }
+        } catch(const std::exception& e){
+            std::cerr << "predex private order feed init error: " << e.what() << '\n';
+            return 1;
+        }
+    }
+
     std::optional<market_data::KalshiWireSession> wire_session;
     std::optional<std::jthread> wire_session_thread;
 
@@ -489,6 +757,15 @@ int main(int argc, char** argv) {
     if (wire_session_thread.has_value()) {
         wire_session_thread->request_stop();
     }
+    if (private_order_feed_thread.has_value()) {
+        private_order_feed_thread->request_stop();
+    }
+    if (order_rest_thread.has_value()) {
+        order_rest_thread->request_stop();
+    }
+    if (oms_thread.has_value()) {
+        oms_thread->request_stop();
+    }
     router_thread.request_stop();
     for(auto& shard_thread : shard_threads){
         shard_thread.request_stop();
@@ -499,6 +776,15 @@ int main(int argc, char** argv) {
 
     if (wire_session_thread.has_value()) {
         wire_session_thread->join();
+    }
+    if (private_order_feed_thread.has_value()) {
+        private_order_feed_thread->join();
+    }
+    if (order_rest_thread.has_value()) {
+        order_rest_thread->join();
+    }
+    if (oms_thread.has_value()) {
+        oms_thread->join();
     }
     router_thread.join();
     for(auto& shard_thread : shard_threads){

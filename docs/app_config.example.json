@@ -19,6 +19,18 @@
         "orderbook_delta",
         "trade"
       ]
+    },
+    "order_rest": {
+      "enable_order_rest": false,
+      "endpoint": "https://api.elections.kalshi.com",
+      "max_concurrent_streams": 10
+    },
+    "private_order_feed": {
+      "enable_private_order_feed": false,
+      "channels": [
+        "user_orders",
+        "fill"
+      ]
     }
   },
   "universe": {

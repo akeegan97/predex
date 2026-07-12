@@ -45,6 +45,19 @@ namespace {
         }
         throw std::runtime_error("Unknown Kalshi market data channel: " + channel);
     }
+
+    predex::exchange::kalshi::KalshiOrderDataChannel parse_order_data_channel(const std::string& channel){
+        if(channel == "fill"){
+            return predex::exchange::kalshi::KalshiOrderDataChannel::kFILL;
+        }
+        if(channel == "market_positions"){
+            return predex::exchange::kalshi::KalshiOrderDataChannel::kMARKET_POSITIONS;
+        }
+        if(channel == "user_orders"){
+            return predex::exchange::kalshi::KalshiOrderDataChannel::kUSER_ORDERS;
+        }
+        throw std::runtime_error("Unknown Kalshi private order feed channel: " + channel);
+    }
 }
 namespace predex::config{
 
@@ -123,6 +136,39 @@ namespace predex::config{
                         }
                     }
                     kalshi_config.market_data = std::move(market_data_config);
+                }
+
+                if(kalshi_json.contains("order_rest")){
+                    const auto& order_rest_json = kalshi_json["order_rest"];
+                    KalshiOrderRestConfig order_rest_config{};
+                    if(order_rest_json.contains("enable_order_rest")){
+                        order_rest_config.enable_order_rest = order_rest_json["enable_order_rest"].get<bool>();
+                    }
+                    if(order_rest_json.contains("endpoint")){
+                        order_rest_config.endpoint = order_rest_json["endpoint"].get<std::string>();
+                    }
+                    if(order_rest_json.contains("max_concurrent_streams")){
+                        order_rest_config.max_concurrent_streams = order_rest_json["max_concurrent_streams"].get<std::size_t>();
+                    }
+                    kalshi_config.order_rest = std::move(order_rest_config);
+                }
+
+                if(kalshi_json.contains("private_order_feed")){
+                    const auto& private_order_feed_json = kalshi_json["private_order_feed"];
+                    KalshiPrivateOrderFeedConfig private_order_feed_config{};
+                    if(private_order_feed_json.contains("enable_private_order_feed")){
+                        private_order_feed_config.enable_private_order_feed = private_order_feed_json["enable_private_order_feed"].get<bool>();
+                    }
+                    if(private_order_feed_json.contains("channels")){
+                        for(const auto& channel_str : private_order_feed_json["channels"]){
+                            if(!channel_str.is_string()){
+                                throw std::runtime_error("Invalid Kalshi private order feed channel: expected string");
+                            }
+                            const std::string channel_name = channel_str.get<std::string>();
+                            private_order_feed_config.channels.push_back(parse_order_data_channel(channel_name));
+                        }
+                    }
+                    kalshi_config.private_order_feed = std::move(private_order_feed_config);
                 }
 
                 config.kalshi = std::move(kalshi_config);
@@ -225,6 +271,28 @@ namespace predex::config{
             }
             if(config.kalshi.market_data.channels.empty()){
                 throw std::runtime_error("Invalid configuration: kalshi.market_data.channels must not be empty when market data is enabled");
+            }
+        }
+        if(config.kalshi.order_rest.enable_order_rest){
+            if(config.kalshi.auth.key_id_env.empty()){
+                throw std::runtime_error("Invalid configuration: kalshi.auth.key_id_env must not be empty when order REST is enabled");
+            }
+            if(config.kalshi.auth.private_key_pem_env.empty()){
+                throw std::runtime_error("Invalid configuration: kalshi.auth.private_key_pem_env must not be empty when order REST is enabled");
+            }
+            if(config.kalshi.order_rest.max_concurrent_streams == 0){
+                throw std::runtime_error("Invalid configuration: kalshi.order_rest.max_concurrent_streams must be greater than 0 when order REST is enabled");
+            }
+        }
+        if(config.kalshi.private_order_feed.enable_private_order_feed){
+            if(config.kalshi.auth.key_id_env.empty()){
+                throw std::runtime_error("Invalid configuration: kalshi.auth.key_id_env must not be empty when private order feed is enabled");
+            }
+            if(config.kalshi.auth.private_key_pem_env.empty()){
+                throw std::runtime_error("Invalid configuration: kalshi.auth.private_key_pem_env must not be empty when private order feed is enabled");
+            }
+            if(config.kalshi.private_order_feed.channels.empty()){
+                throw std::runtime_error("Invalid configuration: kalshi.private_order_feed.channels must not be empty when private order feed is enabled");
             }
         }
     }

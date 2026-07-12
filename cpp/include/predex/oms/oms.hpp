@@ -41,7 +41,7 @@ namespace predex::oms{
         utils::SPSCQueue<core::control::ControlToOmsCommand>& control_command_queue;
         utils::SPSCQueue<core::control::OmsToControlStatus>& oms_status_queue;
         utils::SPSCQueue<OmsToKalshiCommand>& kalshi_command_queue;
-        utils::SPSCQueue<KalshiToOmsEvent>& venue_event_queue;
+        std::vector<utils::SPSCQueue<KalshiToOmsEvent>*> venue_event_queues;
 
     };
 

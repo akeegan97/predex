@@ -31,7 +31,7 @@ namespace predex::exchange::kalshi{
     WsConnectRequest KalshiOrderDataHandler::build_connect_request() const {
         const auto auth_headers = signer_.make_ws_headers("/trade-api/ws/v2");
         return WsConnectRequest{
-            .endpoint = std::string(kWEBSOCKET_ENDPOINT),
+            .endpoint = std::string(kORDER_DATA_WEBSOCKET_ENDPOINT),
             .headers =
                 {
                     {"KALSHI-ACCESS-KEY", auth_headers.key_id},

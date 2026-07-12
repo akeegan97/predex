@@ -27,7 +27,7 @@ struct OmsHarness {
         .control_command_queue = control_to_oms,
         .oms_status_queue = oms_to_control,
         .kalshi_command_queue = oms_to_kalshi,
-        .venue_event_queue = kalshi_to_oms,
+        .venue_event_queues = {&kalshi_to_oms},
     };
 
     oms::Oms uut{queues};

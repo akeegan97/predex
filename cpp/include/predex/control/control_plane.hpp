@@ -30,6 +30,21 @@ namespace predex::core::control{
         utils::SPSCQueue<LoggerToControlStatus>* logger_to_control_status_queue{nullptr};
     };
 
+    struct ControlOmsQueues{
+        utils::SPSCQueue<ControlToOmsCommand>* control_to_oms_queue{nullptr};
+        utils::SPSCQueue<OmsToControlStatus>* oms_to_control_status_queue{nullptr};
+    };
+
+    struct ControlPrivateOrderFeedQueues{
+        utils::SPSCQueue<ControlToPrivateOrderFeedCommand>* control_to_private_order_feed_queue{nullptr};
+        utils::SPSCQueue<PrivateOrderFeedToControlStatus>* private_order_feed_to_control_status_queue{nullptr};
+    };
+
+    struct ControlOrderRestQueues{
+        utils::SPSCQueue<ControlToOrderRestCommand>* control_to_order_rest_queue{nullptr};
+        utils::SPSCQueue<OrderRestToControlStatus>* order_rest_to_control_status_queue{nullptr};
+    };
+
     struct ControlShardQueues{
         std::vector<utils::SPSCQueue<shard::ControlToShardCommand>*> control_to_shard_queues;
         std::vector<utils::SPSCQueue<shard::ShardToControlMessage>*> shard_to_control_queues;
@@ -61,7 +76,10 @@ namespace predex::core::control{
                 ControlIoQueues io_queues,
                 RouterQueue router_queue,
                 ControlShardQueues shard_queues = {},
-                ControlLoggerQueue logger_queue = {}
+                ControlLoggerQueue logger_queue = {},
+                ControlOmsQueues oms_queues = {},
+                ControlPrivateOrderFeedQueues private_order_feed_queues = {},
+                ControlOrderRestQueues order_rest_queues = {}
             );
         
             [[nodiscard]] OperatorPumpResult process_operator_commands();
@@ -84,8 +102,17 @@ namespace predex::core::control{
                 return active_universe_;
             }
 
+            [[nodiscard]] std::shared_ptr<const OrderRouteUniverse> active_order_universe() const noexcept{
+                return active_order_universe_;
+            }
+
             [[nodiscard]] std::uint64_t install_universe(UniverseSnapshot snapshot);
             [[nodiscard]] bool send_active_universe_to_io();
+            [[nodiscard]] bool send_active_order_universe_to_private_order_feed();
+            [[nodiscard]] bool send_active_order_universe_to_order_rest();
+            [[nodiscard]] bool push_private_order_feed_command(const ControlToPrivateOrderFeedCommand& cmd);
+            [[nodiscard]] bool push_order_rest_command(const ControlToOrderRestCommand& cmd);
+            [[nodiscard]] bool push_oms_command(const ControlToOmsCommand& cmd);
             [[nodiscard]] ShardPumpResult send_active_universe_to_shards();
             [[nodiscard]] ShardPumpResult prepare_active_universe_stop_on_shards();
             [[nodiscard]] ShardPumpResult drain_active_universe_on_shards();
@@ -101,6 +128,15 @@ namespace predex::core::control{
             [[nodiscard]] bool process_one_logger_message() noexcept;
             [[nodiscard]] bool process_logger_messages() noexcept;
 
+            [[nodiscard]] bool process_one_oms_status() noexcept;
+            [[nodiscard]] bool process_oms_status() noexcept;
+
+            [[nodiscard]] bool process_one_private_order_feed_status() noexcept;
+            [[nodiscard]] bool process_private_order_feed_status() noexcept;
+
+            [[nodiscard]] bool process_one_order_rest_status() noexcept;
+            [[nodiscard]] bool process_order_rest_status() noexcept;
+
 
         private:
             OperatorQueues queues_;
@@ -111,13 +147,20 @@ namespace predex::core::control{
             void apply_io_status(const IoToControlStatus& status) noexcept;
             void apply_shard_status(const shard::ShardToControlMessage& status) noexcept;
             void apply_logger_status(const LoggerToControlStatus& status) noexcept;
+            void apply_oms_status(const OmsToControlStatus& status) noexcept;
+            void apply_private_order_feed_status(const PrivateOrderFeedToControlStatus& status) noexcept;
+            void apply_order_rest_status(const OrderRestToControlStatus& status) noexcept;
             [[nodiscard]] bool push_shard_command(std::uint32_t shard_index, shard::ControlToShardCommand command);
 
             std::shared_ptr<const UniverseSnapshot> active_universe_;
+            std::shared_ptr<const OrderRouteUniverse> active_order_universe_;
             std::uint64_t next_universe_version_{1};
             RouterQueue router_queue_;
             ControlShardQueues shard_queues_;
             ControlLoggerQueue logger_queue_;
+            ControlOmsQueues oms_queues_;
+            ControlPrivateOrderFeedQueues private_order_feed_queues_;
+            ControlOrderRestQueues order_rest_queues_;
     };
 
 }

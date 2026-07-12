@@ -74,17 +74,27 @@ constexpr std::size_t kMAX_DRAIN = 100;
     std::size_t Oms::drain_venue_events(std::size_t max) noexcept{
         std::size_t processed{0};
         while(processed < max){
-            KalshiToOmsEvent event{};
-            if(!queues_.venue_event_queue.try_pop(event)){
+            bool did_work{false};
+            for(auto* queue : queues_.venue_event_queues){
+                if(queue == nullptr || processed >= max){
+                    continue;
+                }
+                KalshiToOmsEvent event{};
+                if(!queue->try_pop(event)){
+                    continue;
+                }
+                std::visit(Overloaded{
+                    [this](const RestOrderResponse& response){ handle_venue_event(response); },
+                    [this](const PrivateWsOrderEvent& event){ handle_venue_event(event); },
+                    [this](const ReconciledOrderSnapshot& snapshot){ handle_venue_event(snapshot); },
+                    [this](const OrderRestEgressDrained& drained){ handle_venue_event(drained); }
+                }, event);
+                ++processed;
+                did_work = true;
+            }
+            if(!did_work){
                 break;
             }
-            std::visit(Overloaded{
-                [this](const RestOrderResponse& response){ handle_venue_event(response); },
-                [this](const PrivateWsOrderEvent& event){ handle_venue_event(event); },
-                [this](const ReconciledOrderSnapshot& snapshot){ handle_venue_event(snapshot); },
-                [this](const OrderRestEgressDrained& drained){ handle_venue_event(drained); }
-            }, event);
-            ++processed;
         }
         return processed;
     }

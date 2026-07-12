@@ -36,9 +36,22 @@ namespace predex::config{
         std::vector<exchange::kalshi::KalshiMarketDataChannel> channels;
     };
 
+    struct KalshiOrderRestConfig{
+        bool enable_order_rest{false};
+        std::string endpoint;
+        std::size_t max_concurrent_streams{10};
+    };
+
+    struct KalshiPrivateOrderFeedConfig{
+        bool enable_private_order_feed{false};
+        std::vector<exchange::kalshi::KalshiOrderDataChannel> channels;
+    };
+
     struct KalshiConfig{
         KalshiAuthConfig auth;
         KalshiMarketDataConfig market_data;
+        KalshiOrderRestConfig order_rest;
+        KalshiPrivateOrderFeedConfig private_order_feed;
     };
 
     struct MarketConfig{

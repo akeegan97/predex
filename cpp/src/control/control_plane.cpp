@@ -88,6 +88,26 @@ namespace predex::core::control{
             return events_by_shard;
         }
 
+        [[nodiscard]] std::shared_ptr<const OrderRouteUniverse> build_order_route_universe(
+            const UniverseSnapshot& snapshot
+        ){
+            auto order_universe = std::make_shared<OrderRouteUniverse>();
+            order_universe->version = snapshot.version;
+            order_universe->market_routes.reserve(snapshot.market_routes.size());
+
+            for(const auto& route : snapshot.market_routes){
+                order_universe->market_routes.push_back(OrderMarketRoute{
+                    .market_id = route.market_id,
+                    .event_id = route.event_id,
+                    .kalshi_ticker = route.kalshi_ticker,
+                    .tradeable = route.tradeable,
+                    .price_level_structure = route.price_level_structure,
+                });
+            }
+
+            return order_universe;
+        }
+
         [[nodiscard]] operator_admin::OperatorCounterStatsSnapshot build_counter_stats_snapshot(
             const ProcessState& process_state
         ){
@@ -169,12 +189,18 @@ namespace predex::core::control{
         ControlIoQueues io_queues,
         RouterQueue router_queue,
         ControlShardQueues shard_queues,
-        ControlLoggerQueue logger_queue
+        ControlLoggerQueue logger_queue,
+        ControlOmsQueues oms_queues,
+        ControlPrivateOrderFeedQueues private_order_feed_queues,
+        ControlOrderRestQueues order_rest_queues
     ) : queues_(queues),
         io_queues_(io_queues),
         router_queue_(router_queue),
         shard_queues_(std::move(shard_queues)),
-        logger_queue_(logger_queue){
+        logger_queue_(logger_queue),
+        oms_queues_(oms_queues),
+        private_order_feed_queues_(private_order_feed_queues),
+        order_rest_queues_(order_rest_queues){
         process_state_.shard_component_states.resize(shard_queues_.control_to_shard_queues.size());
     }
 
@@ -345,6 +371,7 @@ namespace predex::core::control{
     std::uint64_t ControlPlane::install_universe(UniverseSnapshot snapshot){
         snapshot.version = next_universe_version_++;
         active_universe_ = std::make_shared<const UniverseSnapshot>(std::move(snapshot));
+        active_order_universe_ = build_order_route_universe(*active_universe_);
         process_state_.target_universe_version = active_universe_->version;
         recompute_process_state();
         return active_universe_->version;
@@ -355,6 +382,45 @@ namespace predex::core::control{
             return false;
         }
         return push_io_command(ApplyUniverseSnapshotIo{.snapshot = active_universe_});
+    }
+
+    bool ControlPlane::send_active_order_universe_to_private_order_feed(){
+        if(active_order_universe_ == nullptr || private_order_feed_queues_.control_to_private_order_feed_queue == nullptr){
+            return false;
+        }
+        return private_order_feed_queues_.control_to_private_order_feed_queue->try_push(
+            ControlToPrivateOrderFeedCommand{ApplyOrderRouteUniverse{.snapshot = active_order_universe_}}
+        );
+    }
+
+    bool ControlPlane::send_active_order_universe_to_order_rest(){
+        if(active_order_universe_ == nullptr || order_rest_queues_.control_to_order_rest_queue == nullptr){
+            return false;
+        }
+        return order_rest_queues_.control_to_order_rest_queue->try_push(
+            ControlToOrderRestCommand{ApplyOrderRouteUniverse{.snapshot = active_order_universe_}}
+        );
+    }
+
+    bool ControlPlane::push_private_order_feed_command(const ControlToPrivateOrderFeedCommand& cmd){
+        if(private_order_feed_queues_.control_to_private_order_feed_queue == nullptr){
+            return false;
+        }
+        return private_order_feed_queues_.control_to_private_order_feed_queue->try_push(cmd);
+    }
+
+    bool ControlPlane::push_order_rest_command(const ControlToOrderRestCommand& cmd){
+        if(order_rest_queues_.control_to_order_rest_queue == nullptr){
+            return false;
+        }
+        return order_rest_queues_.control_to_order_rest_queue->try_push(cmd);
+    }
+
+    bool ControlPlane::push_oms_command(const ControlToOmsCommand& cmd){
+        if(oms_queues_.control_to_oms_queue == nullptr){
+            return false;
+        }
+        return oms_queues_.control_to_oms_queue->try_push(cmd);
     }
 
     bool ControlPlane::push_shard_command(std::uint32_t shard_index, shard::ControlToShardCommand command){
@@ -619,6 +685,150 @@ namespace predex::core::control{
     bool ControlPlane::process_logger_messages() noexcept{
         bool processed_any = false;
         while(process_one_logger_message()){
+            processed_any = true;
+        }
+        return processed_any;
+    }
+
+    void ControlPlane::apply_oms_status(const OmsToControlStatus& status) noexcept{
+        std::visit([&](auto&& stat){
+            using T = std::decay_t<decltype(stat)>;
+            if constexpr(std::is_same_v<T, OmsReady>){
+                process_state_.oms_component_state.status = ComponentStatus::kREADY;
+                process_state_.oms_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, OmsFaulted>){
+                process_state_.oms_component_state.status = ComponentStatus::kFAULTED;
+                process_state_.oms_component_state.last_error = stat.error_message;
+                process_state_.oms_component_state.trading_enabled = false;
+            }else if constexpr(std::is_same_v<T, OmsTelemetry>){
+                process_state_.oms_component_state.telemetry = stat.telemetry;
+            }else if constexpr(std::is_same_v<T, OmsTradingEnabledChanged>){
+                process_state_.oms_component_state.trading_enabled = stat.trading_enabled;
+                process_state_.trading_enabled = stat.trading_enabled;
+            }else if constexpr(std::is_same_v<T, OmsFlattenStateChanged>){
+                process_state_.oms_component_state.flatten_requested = stat.flatten_requested;
+            }else if constexpr(std::is_same_v<T, OmsRestEgressDrained>){
+                process_state_.oms_component_state.telemetry.live_orders = stat.live_orders;
+                process_state_.oms_component_state.telemetry.uncertain_orders = stat.uncertain_orders;
+            }
+        }, status);
+    }
+
+    bool ControlPlane::process_one_oms_status() noexcept{
+        if(oms_queues_.oms_to_control_status_queue == nullptr){
+            return false;
+        }
+
+        OmsToControlStatus status{};
+        if(oms_queues_.oms_to_control_status_queue->try_pop(status)){
+            apply_oms_status(status);
+            recompute_process_state();
+            return true;
+        }
+        return false;
+    }
+
+    bool ControlPlane::process_oms_status() noexcept{
+        bool processed_any = false;
+        while(process_one_oms_status()){
+            processed_any = true;
+        }
+        return processed_any;
+    }
+
+    void ControlPlane::apply_private_order_feed_status(const PrivateOrderFeedToControlStatus& status) noexcept{
+        std::visit([&](auto&& stat){
+            using T = std::decay_t<decltype(stat)>;
+            if constexpr(std::is_same_v<T, PrivateOrderFeedConnected>){
+                process_state_.private_order_feed_component_state.status = ComponentStatus::kREADY;
+                process_state_.private_order_feed_component_state.connected = true;
+                process_state_.private_order_feed_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, PrivateOrderFeedDisconnected>){
+                process_state_.private_order_feed_component_state.status = ComponentStatus::kSTOPPED;
+                process_state_.private_order_feed_component_state.connected = false;
+                process_state_.private_order_feed_component_state.last_error = stat.reason;
+                process_state_.private_order_feed_component_state.subscribed_universe_version = 0;
+            }else if constexpr(std::is_same_v<T, PrivateOrderFeedUniverseApplied>){
+                process_state_.private_order_feed_component_state.status = ComponentStatus::kREADY;
+                process_state_.private_order_feed_component_state.installed_universe_version = stat.version;
+                process_state_.private_order_feed_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, PrivateOrderFeedSubscriptionReady>){
+                process_state_.private_order_feed_component_state.status = ComponentStatus::kLIVE;
+                process_state_.private_order_feed_component_state.subscribed_universe_version = stat.version;
+                process_state_.private_order_feed_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, PrivateOrderFeedFaulted>){
+                process_state_.private_order_feed_component_state.status = ComponentStatus::kFAULTED;
+                process_state_.private_order_feed_component_state.connected = false;
+                process_state_.private_order_feed_component_state.last_error = stat.error_message;
+            }else if constexpr(std::is_same_v<T, PrivateOrderFeedTelemetry>){
+                process_state_.private_order_feed_component_state.telemetry = stat.telemetry;
+            }
+        }, status);
+    }
+
+    bool ControlPlane::process_one_private_order_feed_status() noexcept{
+        if(private_order_feed_queues_.private_order_feed_to_control_status_queue == nullptr){
+            return false;
+        }
+
+        PrivateOrderFeedToControlStatus status{};
+        if(private_order_feed_queues_.private_order_feed_to_control_status_queue->try_pop(status)){
+            apply_private_order_feed_status(status);
+            recompute_process_state();
+            return true;
+        }
+        return false;
+    }
+
+    bool ControlPlane::process_private_order_feed_status() noexcept{
+        bool processed_any = false;
+        while(process_one_private_order_feed_status()){
+            processed_any = true;
+        }
+        return processed_any;
+    }
+
+    void ControlPlane::apply_order_rest_status(const OrderRestToControlStatus& status) noexcept{
+        std::visit([&](auto&& stat){
+            using T = std::decay_t<decltype(stat)>;
+            if constexpr(std::is_same_v<T, OrderRestReady>){
+                process_state_.order_rest_component_state.status = ComponentStatus::kREADY;
+                process_state_.order_rest_component_state.enabled = true;
+                process_state_.order_rest_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, OrderRestDisabled>){
+                process_state_.order_rest_component_state.status = ComponentStatus::kSTOPPED;
+                process_state_.order_rest_component_state.enabled = false;
+            }else if constexpr(std::is_same_v<T, OrderRestUniverseApplied>){
+                process_state_.order_rest_component_state.status = ComponentStatus::kREADY;
+                process_state_.order_rest_component_state.installed_universe_version = stat.version;
+                process_state_.order_rest_component_state.last_error.clear();
+            }else if constexpr(std::is_same_v<T, OrderRestFaulted>){
+                process_state_.order_rest_component_state.status = ComponentStatus::kFAULTED;
+                process_state_.order_rest_component_state.enabled = false;
+                process_state_.order_rest_component_state.last_error = stat.error_message;
+            }else if constexpr(std::is_same_v<T, OrderRestTelemetry>){
+                process_state_.order_rest_component_state.telemetry = stat.telemetry;
+            }
+        }, status);
+    }
+
+    bool ControlPlane::process_one_order_rest_status() noexcept{
+        if(order_rest_queues_.order_rest_to_control_status_queue == nullptr){
+            return false;
+        }
+
+        OrderRestToControlStatus status{};
+        if(order_rest_queues_.order_rest_to_control_status_queue->try_pop(status)){
+            apply_order_rest_status(status);
+            recompute_process_state();
+            return true;
+        }
+        return false;
+    }
+
+    bool ControlPlane::process_order_rest_status() noexcept{
+        bool processed_any = false;
+        while(process_one_order_rest_status()){
             processed_any = true;
         }
         return processed_any;

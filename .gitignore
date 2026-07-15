@@ -74,3 +74,6 @@ scripts/predex-research-summary
 python/src/predex/research/episode_summary.py
 python/src/predex/replay/metadata_overlay.py
 cpp/apps/testing
+research_summary/
+docs/fair_pricing_research_framework.md
+python/src/predex/research/fair_pricing.py

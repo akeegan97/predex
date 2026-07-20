@@ -196,12 +196,15 @@ def iter_updates_from_tables(
     run_dir: str | Path,
     *,
     topology_filter: Iterable[str] | None = ("monotonic_chain",),
+    event_ids_filter: Iterable[int] | None = None,
     include_trades: bool = True,
     include_lifecycle: bool = False,
     batch_size: int = 65_536,
 ) -> Iterator[MarketUpdate]:
     routes_by_event = load_routes_from_tables(run_dir, topology_filter=topology_filter)
     event_ids = frozenset(routes_by_event)
+    if event_ids_filter is not None:
+        event_ids &= frozenset(int(event_id) for event_id in event_ids_filter)
     if not event_ids:
         return
 
@@ -439,6 +442,8 @@ def _iter_table_updates(
     batch_size: int,
 ) -> Iterator[MarketUpdate]:
     try:
+        import pyarrow as pa
+        import pyarrow.compute as pc
         import pyarrow.parquet as pq
     except ModuleNotFoundError:
         pd = _require_pandas()
@@ -448,10 +453,13 @@ def _iter_table_updates(
         return
 
     parquet_file = pq.ParquetFile(path)
+    event_id_type = parquet_file.schema_arrow.field("event_id").type
+    selected_event_ids = pa.array(sorted(event_ids), type=event_id_type)
     for batch in parquet_file.iter_batches(batch_size=batch_size, columns=list(columns)):
+        event_id_column = batch.column(batch.schema.get_field_index("event_id"))
+        batch = batch.filter(pc.is_in(event_id_column, value_set=selected_event_ids))
         for row in batch.to_pylist():
-            if int(row["event_id"]) in event_ids:
-                yield build(row)
+            yield build(row)
 
 
 def _merge_sorted_update_streams(streams: Iterable[Iterator[MarketUpdate]]) -> Iterator[MarketUpdate]:

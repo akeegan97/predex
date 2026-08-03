@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_PAIRED_INVENTORY_VALUE_ROOT:-$ROOT_DIR/research_summary/paired-inventory-value}"
+GRID_CONFIG="$EXPERIMENT_ROOT/grid.json"
+DATA_ROOT="$EXPERIMENT_ROOT/data"
+MODEL_ROOT="$EXPERIMENT_ROOT/model"
+TEST_ROOT="$EXPERIMENT_ROOT/test"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+MODE="${1:-development}"
+
+case "$MODE" in
+  prepare|materialize-development|fit|development|materialize-test|evaluate-test) ;;
+  *)
+    printf 'usage: %s [prepare|materialize-development|fit|development|materialize-test|evaluate-test]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+train_runs=(
+  "predex-2026-07-04-142734-market-data-saturday-day"
+  "predex-2026-07-06-123728-market-data-monday-day"
+  "predex-2026-07-08-110639-market-data-wednesday-day"
+  "predex-2026-07-09-110643-market-data-thursday-day"
+  "predex-2026-07-10-113849-market-data-friday-day"
+  "predex-2026-07-13-114701-market-data-monday-day-wk3"
+  "predex-2026-07-14-110739-market-data-tuesday-wk3"
+  "predex-2026-07-15-112217-market-data-wednesday-day-wk3"
+)
+selection_run="predex-2026-07-16-113022-market-data-thursday-day-wk3"
+calibration_run="predex-2026-07-17-121940-market-data-friday-day-wk3"
+test_run="predex-2026-07-20-115431-market-data-monday-day-wk4"
+
+train=()
+development_runs=()
+for run in "${train_runs[@]}"; do
+  train+=("$DATA_ROOT/$run")
+  development_runs+=("$ROOT_DIR/runs/$run")
+done
+selection=("$DATA_ROOT/$selection_run")
+calibration=("$DATA_ROOT/$calibration_run")
+development_runs+=("$ROOT_DIR/runs/$selection_run" "$ROOT_DIR/runs/$calibration_run")
+
+prepare() {
+  mkdir -p "$EXPERIMENT_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/controller_grid_search.py" \
+    generate-paired-inventory-value --output "$GRID_CONFIG"
+}
+
+materialize_development() {
+  prepare
+  PREDEX_GRID_OUTPUT_ROOT="$DATA_ROOT" \
+  PREDEX_GRID_PROGRESS_EVERY_FRAMES="${PREDEX_PAIRED_INVENTORY_PROGRESS_EVERY_FRAMES:-250000}" \
+    "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+      --grid-config "$GRID_CONFIG" \
+      "${development_runs[@]}"
+}
+
+fit_model() {
+  if [[ ! -s "$GRID_CONFIG" ]]; then
+    printf 'missing experiment grid; run prepare first: %s\n' "$GRID_CONFIG" >&2
+    exit 1
+  fi
+  mkdir -p "$MODEL_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_inventory_value_model.py" fit \
+    --train "${train[@]}" \
+    --selection "${selection[@]}" \
+    --calibration "${calibration[@]}" \
+    --maximum-inventory-observations-per-session \
+      "${PREDEX_MAX_INVENTORY_OBSERVATIONS_PER_SESSION:-200000}" \
+    --report "$MODEL_ROOT/selection-calibration-report.json" \
+    --model "$MODEL_ROOT/frozen-model.json"
+}
+
+materialize_test() {
+  if [[ ! -s "$MODEL_ROOT/frozen-model.json" ]]; then
+    printf 'freeze the development model before materializing July 20\n' >&2
+    exit 1
+  fi
+  PREDEX_GRID_OUTPUT_ROOT="$DATA_ROOT" \
+  PREDEX_GRID_PROGRESS_EVERY_FRAMES="${PREDEX_PAIRED_INVENTORY_PROGRESS_EVERY_FRAMES:-250000}" \
+    "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+      --grid-config "$GRID_CONFIG" \
+      "$ROOT_DIR/runs/$test_run"
+}
+
+evaluate_test() {
+  if [[ ! -s "$MODEL_ROOT/frozen-model.json" || ! -s "$DATA_ROOT/$test_run/grid_summary.json" ]]; then
+    printf 'frozen model and materialized July 20 data are required\n' >&2
+    exit 1
+  fi
+  if [[ -e "$TEST_ROOT/test-report.json" ]]; then
+    printf 'test report already exists; refusing to consume July 20 twice: %s\n' \
+      "$TEST_ROOT/test-report.json" >&2
+    exit 1
+  fi
+  mkdir -p "$TEST_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_inventory_value_model.py" evaluate \
+    --model "$MODEL_ROOT/frozen-model.json" \
+    --test "$DATA_ROOT/$test_run" \
+    --report "$TEST_ROOT/test-report.json"
+}
+
+case "$MODE" in
+  prepare) prepare ;;
+  materialize-development) materialize_development ;;
+  fit) fit_model ;;
+  development)
+    materialize_development
+    fit_model
+    ;;
+  materialize-test) materialize_test ;;
+  evaluate-test) evaluate_test ;;
+esac
+
+printf '[paired-inventory-value] complete mode=%s\n' "$MODE"

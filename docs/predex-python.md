@@ -224,39 +224,6 @@ Output: text or JSON with event/market totals, markets-per-event distribution, m
 
 ---
 
-## Research harness
-
-The `predex.research` package is a lightweight strategy investigation layer over
-materialized run tables. It mirrors the eventual live boundary without placing
-orders:
-
-```text
-MarketUpdate -> EventChainState -> ChainFeatureSnapshot -> Strategy -> OrderIntent
-```
-
-For one-event debugging, use `iter_event_updates_from_tables()` and
-`load_event_routes_from_tables()`, then feed those into `run_strategy_on_event()`.
-For real scans, use `run_strategy_on_run()`: it streams materialized updates once
-in chronological order, keeps per-event state warm, and defaults to
-`topology_filter=("monotonic_chain",)`.
-
-Strategy logic implements `on_chain_snapshot(snapshot)` and returns zero or more
-`StrategyCandidate`s and, where appropriate, `OrderIntent`s. Hard monotonic
-violations can emit paired IOC intents; statistical residual scanners should
-emit candidates first so later labeling can decide whether the signal fades,
-continues, or is noise.
-
-`run_strategy_on_event()` and `run_strategy_on_run()` can optionally apply a
-candidate cooldown via `CandidateDedupConfig` and label future outcomes via
-`CandidateOutcomeConfig`. Outcome labels use explicit decision/order latency
-assumptions plus one or more horizons, which lets research compare signals
-against the latency budget the eventual C++ path must hit.
-
-This layer is intentionally Python-first and research-oriented: prove the chain
-state/features/intent semantics here, then mirror the surviving contracts in C++.
-
----
-
 #### `audit-summary`
 
 Quick statistical overview of a run.

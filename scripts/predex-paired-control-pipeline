@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_PAIRED_CONTROL_ROOT:-$ROOT_DIR/research_summary/paired-control-v2}"
+DATA_ROOT="${PREDEX_PAIRED_CONTROL_DATA_ROOT:-$ROOT_DIR/research_summary/paired-inventory-value/data}"
+ENTRY_ROOT="$EXPERIMENT_ROOT/entry"
+CONTINUATION_ROOT="$EXPERIMENT_ROOT/continuation"
+COMBINED_ROOT="$EXPERIMENT_ROOT/combined"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+MODE="${1:-development}"
+
+case "$MODE" in
+  fit-entry|fit-continuation|fit|evaluate-development|development) ;;
+  *)
+    printf 'usage: %s [fit-entry|fit-continuation|fit|evaluate-development|development]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+train_runs=(
+  "predex-2026-07-04-142734-market-data-saturday-day"
+  "predex-2026-07-06-123728-market-data-monday-day"
+  "predex-2026-07-08-110639-market-data-wednesday-day"
+  "predex-2026-07-09-110643-market-data-thursday-day"
+  "predex-2026-07-10-113849-market-data-friday-day"
+  "predex-2026-07-13-114701-market-data-monday-day-wk3"
+  "predex-2026-07-14-110739-market-data-tuesday-wk3"
+  "predex-2026-07-15-112217-market-data-wednesday-day-wk3"
+)
+selection_run="predex-2026-07-16-113022-market-data-thursday-day-wk3"
+calibration_run="predex-2026-07-17-121940-market-data-friday-day-wk3"
+development_run="predex-2026-07-20-115431-market-data-monday-day-wk4"
+
+train=()
+for run in "${train_runs[@]}"; do
+  train+=("$DATA_ROOT/$run")
+done
+selection=("$DATA_ROOT/$selection_run")
+calibration=("$DATA_ROOT/$calibration_run")
+development_data=("$DATA_ROOT/$development_run")
+
+fit_entry() {
+  mkdir -p "$ENTRY_ROOT/model"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_entry_value_model.py" fit \
+    --train "${train[@]}" \
+    --selection "${selection[@]}" \
+    --calibration "${calibration[@]}" \
+    --maximum-candidate-pairs-per-session \
+      "${PREDEX_MAX_PAIRED_CONTROL_ENTRY_PAIRS_PER_SESSION:-50000}" \
+    --all-quote-geometries \
+    --report "$ENTRY_ROOT/model/selection-calibration-report.json" \
+    --model "$ENTRY_ROOT/model/frozen-model.json"
+}
+
+fit_continuation() {
+  mkdir -p "$CONTINUATION_ROOT/model"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_inventory_value_model.py" fit \
+    --train "${train[@]}" \
+    --selection "${selection[@]}" \
+    --calibration "${calibration[@]}" \
+    --maximum-inventory-observations-per-session \
+      "${PREDEX_MAX_PAIRED_CONTROL_INVENTORY_STATES_PER_SESSION:-50000}" \
+    --all-quote-geometries \
+    --report "$CONTINUATION_ROOT/model/selection-calibration-report.json" \
+    --model "$CONTINUATION_ROOT/model/frozen-model.json"
+}
+
+evaluate_development() {
+  if [[ ! -s "$ENTRY_ROOT/model/frozen-model.json" ||
+        ! -s "$CONTINUATION_ROOT/model/frozen-model.json" ]]; then
+    printf 'fit both entry and continuation models before development evaluation\n' >&2
+    exit 1
+  fi
+  mkdir -p "$ENTRY_ROOT/development" "$CONTINUATION_ROOT/development"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_entry_value_model.py" evaluate-development \
+    --model "$ENTRY_ROOT/model/frozen-model.json" \
+    --data "${development_data[@]}" \
+    --maximum-candidate-pairs-per-session \
+      "${PREDEX_MAX_PAIRED_CONTROL_ENTRY_PAIRS_PER_SESSION:-0}" \
+    --all-quote-geometries \
+    --report "$ENTRY_ROOT/development/development-report.json"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_inventory_value_model.py" evaluate \
+    --model "$CONTINUATION_ROOT/model/frozen-model.json" \
+    --test "${development_data[@]}" \
+    --maximum-inventory-observations-per-session \
+      "${PREDEX_MAX_PAIRED_CONTROL_INVENTORY_STATES_PER_SESSION:-0}" \
+    --all-quote-geometries \
+    --report "$CONTINUATION_ROOT/development/development-report.json"
+  mkdir -p "$COMBINED_ROOT/development"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_control_model.py" \
+    --entry-model "$ENTRY_ROOT/model/frozen-model.json" \
+    --continuation-model "$CONTINUATION_ROOT/model/frozen-model.json" \
+    --data "${development_data[0]}" \
+    --report "$COMBINED_ROOT/development/development-report.json"
+}
+
+case "$MODE" in
+  fit-entry) fit_entry ;;
+  fit-continuation) fit_continuation ;;
+  fit)
+    fit_entry
+    fit_continuation
+    ;;
+  evaluate-development) evaluate_development ;;
+  development)
+    fit_entry
+    fit_continuation
+    evaluate_development
+    ;;
+esac
+
+printf '[paired-control-v2] complete mode=%s\n' "$MODE"

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_STATE_PANEL_ROOT:-$ROOT_DIR/research_summary/state-panel}"
+GRID_CONFIG="$EXPERIMENT_ROOT/grid.json"
+DATA_ROOT="$EXPERIMENT_ROOT/data"
+MODEL_ROOT="$EXPERIMENT_ROOT/model"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+MODE="${1:-all}"
+
+if [[ "$MODE" != all && "$MODE" != materialize && "$MODE" != fit ]]; then
+  printf 'usage: %s [all|materialize|fit]\n' "$0" >&2
+  exit 2
+fi
+if [[ ! -x "$PYTHON" ]]; then
+  printf 'missing research Python environment: %s\n' "$PYTHON" >&2
+  exit 1
+fi
+
+train_runs=(
+  "predex-2026-07-04-142734-market-data-saturday-day"
+  "predex-2026-07-06-123728-market-data-monday-day"
+  "predex-2026-07-08-110639-market-data-wednesday-day"
+  "predex-2026-07-09-110643-market-data-thursday-day"
+  "predex-2026-07-10-113849-market-data-friday-day"
+  "predex-2026-07-13-114701-market-data-monday-day-wk3"
+  "predex-2026-07-14-110739-market-data-tuesday-wk3"
+)
+selection_runs=("predex-2026-07-15-112217-market-data-wednesday-day-wk3")
+calibration_runs=("predex-2026-07-16-113022-market-data-thursday-day-wk3")
+
+all_runs=()
+train=()
+selection=()
+calibration=()
+for run in "${train_runs[@]}"; do
+  all_runs+=("$ROOT_DIR/runs/$run")
+  train+=("$DATA_ROOT/$run")
+done
+for run in "${selection_runs[@]}"; do
+  all_runs+=("$ROOT_DIR/runs/$run")
+  selection+=("$DATA_ROOT/$run")
+done
+for run in "${calibration_runs[@]}"; do
+  all_runs+=("$ROOT_DIR/runs/$run")
+  calibration+=("$DATA_ROOT/$run")
+done
+
+if [[ "$MODE" == all || "$MODE" == materialize ]]; then
+  mkdir -p "$EXPERIMENT_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/controller_grid_search.py" \
+    generate-state-panel --output "$GRID_CONFIG"
+  PREDEX_GRID_OUTPUT_ROOT="$DATA_ROOT" \
+  PREDEX_GRID_PROGRESS_EVERY_FRAMES="${PREDEX_STATE_PANEL_PROGRESS_EVERY_FRAMES:-250000}" \
+    "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+      --grid-config "$GRID_CONFIG" \
+      "${all_runs[@]}"
+fi
+
+if [[ "$MODE" == all || "$MODE" == fit ]]; then
+  mkdir -p "$MODEL_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/state_panel_markout_model.py" \
+    --train "${train[@]}" \
+    --selection "${selection[@]}" \
+    --calibration "${calibration[@]}" \
+    --maximum-train-states-per-session 50000 \
+    --maximum-selection-states-per-session 50000 \
+    --maximum-calibration-states-per-session 50000 \
+    --report "$MODEL_ROOT/selection-calibration-report.json" \
+    --model "$MODEL_ROOT/frozen-model.json"
+fi
+
+printf '[state-panel] complete mode=%s\n' "$MODE"
+printf '[state-panel] held-out July 17 was not consumed\n'

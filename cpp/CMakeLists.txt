@@ -11,8 +11,6 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)
-find_package(Arrow CONFIG REQUIRED)
-find_package(Parquet CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 
@@ -63,30 +61,12 @@ add_executable(predex_tests
   tests/frame_pool_tests.cpp
   tests/http2_session_tests.cpp
   tests/oms_tests.cpp
-  tests/research_activity_features_tests.cpp
-  tests/research_activity_tracker_tests.cpp
-  tests/research_historical_feed_tests.cpp
-  tests/research_market_state_tests.cpp
-  tests/research_outcome_tracker_tests.cpp
-  tests/research_portfolio_tests.cpp
-  tests/research_replay_engine_tests.cpp
-  tests/research_simulated_venue_tests.cpp
-  apps/research/historical_feed.cpp
   src/exchange/kalshi/adapters/auth_signer.cpp
   src/exchange/kalshi/http2_session.cpp
   src/oms/oms.cpp
 )
 
-add_executable(research 
-  apps/research/main.cpp
-  apps/research/cli.cpp
-  apps/research/historical_feed.cpp
-  apps/research/live_feed_runner.cpp
-  apps/research/output_sink.cpp
-  apps/research/run_manifest.cpp
-  apps/research/parquet_tables.hpp
-  include/predex/research/activity_tracker.hpp
-)
+add_subdirectory(apps/research)
 
 add_executable(predex_http_smoke
   apps/testing/main.cpp
@@ -110,15 +90,6 @@ target_link_libraries(predex_tests PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   CURL::libcurl
-  Arrow::arrow_static
-  Parquet::parquet_static
 )
 target_link_libraries(predex_http_smoke PRIVATE OpenSSL::SSL OpenSSL::Crypto CURL::libcurl)
 add_test(NAME predex_tests COMMAND predex_tests)
-target_include_directories(research PRIVATE include)
-
-target_link_libraries(research PRIVATE
-  nlohmann_json::nlohmann_json
-  Arrow::arrow_static
-  Parquet::parquet_static
-)

@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_PAIRED_ENTRY_VALUE_ROOT:-$ROOT_DIR/research_summary/paired-entry-value}"
+DEVELOPMENT_DATA_ROOT="${PREDEX_PAIRED_ENTRY_DEVELOPMENT_DATA_ROOT:-$ROOT_DIR/research_summary/paired-inventory-value/data}"
+TEST_DATA_ROOT="$EXPERIMENT_ROOT/data"
+GRID_CONFIG="$EXPERIMENT_ROOT/grid.json"
+MODEL_ROOT="$EXPERIMENT_ROOT/model"
+DEVELOPMENT_ROOT="$EXPERIMENT_ROOT/development"
+TEST_ROOT="$EXPERIMENT_ROOT/test"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+MODE="${1:-development}"
+
+case "$MODE" in
+  prepare|fit|evaluate-development|development|materialize-test|evaluate-test) ;;
+  *)
+    printf 'usage: %s [prepare|fit|evaluate-development|development|materialize-test|evaluate-test]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+train_runs=(
+  "predex-2026-07-04-142734-market-data-saturday-day"
+  "predex-2026-07-06-123728-market-data-monday-day"
+  "predex-2026-07-08-110639-market-data-wednesday-day"
+  "predex-2026-07-09-110643-market-data-thursday-day"
+  "predex-2026-07-10-113849-market-data-friday-day"
+  "predex-2026-07-13-114701-market-data-monday-day-wk3"
+  "predex-2026-07-14-110739-market-data-tuesday-wk3"
+  "predex-2026-07-15-112217-market-data-wednesday-day-wk3"
+)
+selection_run="predex-2026-07-16-113022-market-data-thursday-day-wk3"
+calibration_run="predex-2026-07-17-121940-market-data-friday-day-wk3"
+development_run="predex-2026-07-20-115431-market-data-monday-day-wk4"
+test_run="predex-2026-07-25-150810-market-data-saturday-wk4"
+
+train=()
+for run in "${train_runs[@]}"; do
+  train+=("$DEVELOPMENT_DATA_ROOT/$run")
+done
+selection=("$DEVELOPMENT_DATA_ROOT/$selection_run")
+calibration=("$DEVELOPMENT_DATA_ROOT/$calibration_run")
+development_data=("$DEVELOPMENT_DATA_ROOT/$development_run")
+test_data=("$TEST_DATA_ROOT/$test_run")
+
+prepare() {
+  mkdir -p "$EXPERIMENT_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/controller_grid_search.py" \
+    generate-paired-entry-value --output "$GRID_CONFIG"
+}
+
+fit_model() {
+  prepare
+  mkdir -p "$MODEL_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_entry_value_model.py" fit \
+    --train "${train[@]}" \
+    --selection "${selection[@]}" \
+    --calibration "${calibration[@]}" \
+    --maximum-candidate-pairs-per-session \
+      "${PREDEX_MAX_PAIRED_ENTRY_PAIRS_PER_SESSION:-50000}" \
+    --report "$MODEL_ROOT/selection-calibration-report.json" \
+    --model "$MODEL_ROOT/frozen-model.json"
+}
+
+evaluate_development() {
+  if [[ ! -s "$MODEL_ROOT/frozen-model.json" ]]; then
+    printf 'fit and freeze the model before evaluating July 20\n' >&2
+    exit 1
+  fi
+  mkdir -p "$DEVELOPMENT_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_entry_value_model.py" evaluate-development \
+    --model "$MODEL_ROOT/frozen-model.json" \
+    --data "${development_data[@]}" \
+    --report "$DEVELOPMENT_ROOT/development-report.json"
+}
+
+materialize_test() {
+  if [[ ! -s "$MODEL_ROOT/frozen-model.json" ]]; then
+    printf 'freeze the development model before materializing July 25\n' >&2
+    exit 1
+  fi
+  if [[ ! -s "$GRID_CONFIG" ]]; then
+    prepare
+  fi
+  PREDEX_GRID_OUTPUT_ROOT="$TEST_DATA_ROOT" \
+  PREDEX_GRID_PROGRESS_EVERY_FRAMES="${PREDEX_PAIRED_ENTRY_PROGRESS_EVERY_FRAMES:-250000}" \
+    "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+      --grid-config "$GRID_CONFIG" \
+      "$ROOT_DIR/runs/$test_run"
+}
+
+evaluate_test() {
+  if [[ ! -s "$MODEL_ROOT/frozen-model.json" || ! -s "$TEST_DATA_ROOT/$test_run/grid_summary.json" ]]; then
+    printf 'frozen model and materialized July 25 data are required\n' >&2
+    exit 1
+  fi
+  if [[ -e "$TEST_ROOT/test-report.json" ]]; then
+    printf 'test report already exists; refusing to consume July 25 twice: %s\n' \
+      "$TEST_ROOT/test-report.json" >&2
+    exit 1
+  fi
+  mkdir -p "$TEST_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/paired_entry_value_model.py" evaluate-test \
+    --model "$MODEL_ROOT/frozen-model.json" \
+    --data "${test_data[@]}" \
+    --report "$TEST_ROOT/test-report.json"
+}
+
+case "$MODE" in
+  prepare) prepare ;;
+  fit) fit_model ;;
+  evaluate-development) evaluate_development ;;
+  development)
+    fit_model
+    evaluate_development
+    ;;
+  materialize-test) materialize_test ;;
+  evaluate-test) evaluate_test ;;
+esac
+
+printf '[paired-entry-value] complete mode=%s\n' "$MODE"

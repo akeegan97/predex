@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_MOMENTUM_ROOT:-$ROOT_DIR/research_summary/momentum-action-value}"
+GRID_CONFIG="$ROOT_DIR/research_summary/public-trades/grid.json"
+DATA_ROOT="$EXPERIMENT_ROOT/data"
+MODEL_ROOT="$EXPERIMENT_ROOT/model"
+DEVELOPMENT_ROOT="$EXPERIMENT_ROOT/development"
+TEST_ROOT="$EXPERIMENT_ROOT/test"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+MODE="${1:-}"
+
+case "$MODE" in
+  materialize-fit|fit|materialize-development|evaluate-development|development|materialize-test|evaluate-test) ;;
+  *)
+    printf 'usage: %s {materialize-fit|fit|materialize-development|evaluate-development|development|materialize-test|evaluate-test}\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+train_runs=(
+  "predex-2026-07-04-142734-market-data-saturday-day"
+  "predex-2026-07-06-123728-market-data-monday-day"
+  "predex-2026-07-08-110639-market-data-wednesday-day"
+  "predex-2026-07-09-110643-market-data-thursday-day"
+  "predex-2026-07-10-113849-market-data-friday-day"
+  "predex-2026-07-13-114701-market-data-monday-day-wk3"
+  "predex-2026-07-14-110739-market-data-tuesday-wk3"
+  "predex-2026-07-15-112217-market-data-wednesday-day-wk3"
+)
+selection_run="predex-2026-07-16-113022-market-data-thursday-day-wk3"
+calibration_run="predex-2026-07-17-121940-market-data-friday-day-wk3"
+development_run="predex-2026-07-20-115431-market-data-monday-day-wk4"
+test_run="predex-2026-07-25-150810-market-data-saturday-wk4"
+
+train_data=()
+fit_source_runs=()
+for run in "${train_runs[@]}"; do
+  train_data+=("$DATA_ROOT/$run")
+  fit_source_runs+=("$ROOT_DIR/runs/$run")
+done
+selection_data="$DATA_ROOT/$selection_run"
+calibration_data="$DATA_ROOT/$calibration_run"
+fit_source_runs+=("$ROOT_DIR/runs/$selection_run" "$ROOT_DIR/runs/$calibration_run")
+
+validate_environment() {
+  if [[ ! -s "$GRID_CONFIG" ]]; then
+    printf 'missing public-trade grid: %s\n' "$GRID_CONFIG" >&2
+    exit 1
+  fi
+  if [[ ! -x "$PYTHON" ]]; then
+    printf 'missing research Python environment: %s\n' "$PYTHON" >&2
+    exit 1
+  fi
+}
+
+materialize() {
+  local -a runs=("$@")
+  local -a force=()
+  if [[ "${PREDEX_MOMENTUM_FORCE:-0}" == "1" ]]; then
+    force+=(--force)
+  fi
+  PREDEX_GRID_OUTPUT_ROOT="$DATA_ROOT" \
+  PREDEX_GRID_PROGRESS_EVERY_FRAMES="${PREDEX_MOMENTUM_PROGRESS_EVERY_FRAMES:-250000}" \
+    "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+      --grid-config "$GRID_CONFIG" \
+      "${force[@]}" \
+      "${runs[@]}"
+}
+
+fit_model() {
+  mkdir -p "$MODEL_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/momentum_action_value_model.py" fit \
+    --train "${train_data[@]}" \
+    --selection "$selection_data" \
+    --calibration "$calibration_data" \
+    --maximum-train-sweeps-per-session \
+      "${PREDEX_MAX_MOMENTUM_SWEEPS_PER_SESSION:-50000}" \
+    --maximum-evaluation-sweeps-per-session 0 \
+    --report "$MODEL_ROOT/selection-calibration-report.json" \
+    --model "$MODEL_ROOT/frozen-model.json"
+}
+
+evaluate_development() {
+  mkdir -p "$DEVELOPMENT_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/momentum_action_value_model.py" \
+    evaluate-development \
+    --model "$MODEL_ROOT/frozen-model.json" \
+    --data "$DATA_ROOT/$development_run" \
+    --report "$DEVELOPMENT_ROOT/report.json" \
+    --predictions "$DEVELOPMENT_ROOT/decisions.parquet"
+}
+
+evaluate_test() {
+  if [[ -e "$TEST_ROOT/report.json" ]]; then
+    printf 'test report already exists; refusing to consume July 25 twice: %s\n' \
+      "$TEST_ROOT/report.json" >&2
+    exit 1
+  fi
+  mkdir -p "$TEST_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/momentum_action_value_model.py" \
+    evaluate-test \
+    --model "$MODEL_ROOT/frozen-model.json" \
+    --data "$DATA_ROOT/$test_run" \
+    --report "$TEST_ROOT/report.json" \
+    --predictions "$TEST_ROOT/decisions.parquet"
+}
+
+validate_environment
+case "$MODE" in
+  materialize-fit) materialize "${fit_source_runs[@]}" ;;
+  fit) fit_model ;;
+  materialize-development) materialize "$ROOT_DIR/runs/$development_run" ;;
+  evaluate-development) evaluate_development ;;
+  development)
+    materialize "${fit_source_runs[@]}"
+    fit_model
+    materialize "$ROOT_DIR/runs/$development_run"
+    evaluate_development
+    ;;
+  materialize-test) materialize "$ROOT_DIR/runs/$test_run" ;;
+  evaluate-test) evaluate_test ;;
+esac
+
+printf '[momentum-action-value] complete mode=%s\n' "$MODE"

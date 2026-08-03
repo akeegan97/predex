@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESEARCH_BIN="${PREDEX_RESEARCH_BIN:-$ROOT_DIR/build/perf/cpp/research}"
+CLOSED_LOOP_COVERAGE="$ROOT_DIR/scripts/predex-closed-loop-coverage"
+OUTPUT_ROOT="${PREDEX_GRID_OUTPUT_ROOT:-$ROOT_DIR/research_summary/controller-grid}"
+PROGRESS_EVERY_FRAMES="${PREDEX_GRID_PROGRESS_EVERY_FRAMES:-250000}"
+GRID_CONFIG=""
+FORCE=false
+DRY_RUN=false
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/predex-controller-grid-batch --grid-config GRID.json \
+    [--output-root DIR] [--force] [--dry-run] RUN_DIR [RUN_DIR ...]
+
+Runs every controller variant concurrently within one causal C++ replay per
+run. RUN_DIR arguments are required intentionally: pass only the training
+runs, then validation runs, and finally the held-out test runs after selection.
+
+Environment:
+  PREDEX_RESEARCH_BIN                 Research binary path
+  PREDEX_GRID_OUTPUT_ROOT             Default output root
+  PREDEX_GRID_PROGRESS_EVERY_FRAMES   Default: 250000
+EOF
+}
+
+declare -a run_dirs=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --grid-config)
+      GRID_CONFIG="$2"
+      shift 2
+      ;;
+    --output-root)
+      OUTPUT_ROOT="$2"
+      shift 2
+      ;;
+    --force)
+      FORCE=true
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      printf 'unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      run_dirs+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$GRID_CONFIG" || ${#run_dirs[@]} -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+if [[ "$GRID_CONFIG" != /* ]]; then
+  GRID_CONFIG="$ROOT_DIR/$GRID_CONFIG"
+fi
+if [[ "$OUTPUT_ROOT" != /* ]]; then
+  OUTPUT_ROOT="$ROOT_DIR/$OUTPUT_ROOT"
+fi
+if [[ ! -s "$GRID_CONFIG" ]]; then
+  printf 'grid config is missing: %s\n' "$GRID_CONFIG" >&2
+  exit 1
+fi
+requires_fill_episodes="$(
+  jq -r 'any(.variants[]; .emit_fill_episodes == true)' "$GRID_CONFIG"
+)"
+requires_research_features="$(
+  jq -r '
+    (.emit_public_trade_markouts // false) == true
+    or (.emit_state_panel_markouts // false) == true
+    or (.emit_resting_probe_outcomes // false) == true
+    or any(
+        .variants[];
+        (.emit_closed_loop_decisions // false) == true
+        or
+        (.emit_research_features //
+         (.emit_fill_episodes // false)) == true
+      )
+  ' "$GRID_CONFIG"
+)"
+requires_closed_loop_decisions="$(
+  jq -r 'any(.variants[]; (.emit_closed_loop_decisions // false) == true)' "$GRID_CONFIG"
+)"
+closed_loop_uses_tape_end="$(
+  jq -r '
+    (.defaults // {}) as $defaults
+    | any(
+        .variants[];
+        (.emit_closed_loop_decisions // false) == true
+        and (.use_tape_end_as_session_deadline //
+             $defaults.use_tape_end_as_session_deadline // true) == true
+      )
+  ' "$GRID_CONFIG"
+)"
+requires_public_trade_markouts="$(
+  jq -r '(.emit_public_trade_markouts // false) == true' "$GRID_CONFIG"
+)"
+requires_state_panel_markouts="$(
+  jq -r '
+    (.emit_state_panel_markouts // false) == true
+    or (.emit_resting_probe_observation_markouts // false) == true
+  ' "$GRID_CONFIG"
+)"
+requires_resting_probe_outcomes="$(
+  jq -r '(.emit_resting_probe_outcomes // false) == true' "$GRID_CONFIG"
+)"
+requires_resting_probe_observations="$(
+  jq -r '(.emit_resting_probe_observations // false) == true' "$GRID_CONFIG"
+)"
+requires_inventory_resolution_oracle="$(
+  jq -r '(.emit_inventory_resolution_oracle // false) == true' "$GRID_CONFIG"
+)"
+if [[ ! -x "$RESEARCH_BIN" ]]; then
+  printf 'research binary is missing: %s\n' "$RESEARCH_BIN" >&2
+  printf 'build it with: cmake --preset perf-vcpkg && ' >&2
+  printf 'cmake --build --preset build-perf-vcpkg --target research\n' >&2
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'jq is required to validate manifests and summaries\n' >&2
+  exit 1
+fi
+if [[ "$requires_closed_loop_decisions" == true &&
+      ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
+  printf 'closed-loop post-processing requires: %s\n' \
+    "$ROOT_DIR/.venv/bin/python" >&2
+  exit 1
+fi
+
+mkdir -p "$OUTPUT_ROOT"
+declare -a failures=()
+
+for supplied in "${run_dirs[@]}"; do
+  run_dir="$supplied"
+  if [[ "$run_dir" != /* ]]; then
+    run_dir="$ROOT_DIR/$run_dir"
+  fi
+  run_dir="${run_dir%/}"
+  manifest="$run_dir/tables/manifest.json"
+  if ! jq -e '
+      .verified == true
+      and ((.tables.frames.rows // 0) > 0)
+      and ((.tables.deltas.rows // 0) > 0)
+    ' "$manifest" >/dev/null 2>&1; then
+    printf '[skip: invalid materialization] %s\n' "$run_dir" >&2
+    failures+=("$run_dir")
+    continue
+  fi
+
+  run_name="$(basename "$run_dir")"
+  output_dir="$OUTPUT_ROOT/$run_name"
+  fill_episodes_complete=true
+  if [[ "$requires_fill_episodes" == true &&
+        ! -s "$output_dir/grid_fill_episodes.parquet" ]]; then
+    fill_episodes_complete=false
+  fi
+  research_features_complete=true
+  if [[ "$requires_research_features" == true ]] &&
+     [[ ! -s "$output_dir/grid_states.parquet" ||
+        ! -s "$output_dir/grid_state_activity.parquet" ||
+        ! -s "$output_dir/grid_quote_lifecycles.parquet" ]]; then
+    research_features_complete=false
+  fi
+  public_trade_markouts_complete=true
+  if [[ "$requires_public_trade_markouts" == true &&
+        ! -s "$output_dir/grid_public_trade_markouts.parquet" ]]; then
+    public_trade_markouts_complete=false
+  fi
+  state_panel_markouts_complete=true
+  if [[ "$requires_state_panel_markouts" == true &&
+        ! -s "$output_dir/grid_state_panel_markouts.parquet" ]]; then
+    state_panel_markouts_complete=false
+  fi
+  resting_probe_outcomes_complete=true
+  if [[ "$requires_resting_probe_outcomes" == true &&
+        ! -s "$output_dir/grid_resting_probe_outcomes.parquet" ]]; then
+    resting_probe_outcomes_complete=false
+  fi
+  resting_probe_observations_complete=true
+  if [[ "$requires_resting_probe_observations" == true &&
+        ! -s "$output_dir/grid_resting_probe_observations.parquet" ]]; then
+    resting_probe_observations_complete=false
+  fi
+  inventory_resolution_oracle_complete=true
+  if [[ "$requires_inventory_resolution_oracle" == true &&
+        ! -s "$output_dir/grid_inventory_resolution_oracle.parquet" ]]; then
+    inventory_resolution_oracle_complete=false
+  fi
+  closed_loop_decisions_complete=true
+  if [[ "$requires_closed_loop_decisions" == true ]] &&
+     [[ ! -s "$output_dir/grid_closed_loop_actions.parquet" ||
+        ! -s "$output_dir/grid_closed_loop_transitions.parquet" ]]; then
+    closed_loop_decisions_complete=false
+  fi
+  closed_loop_summary_complete=true
+  if [[ "$requires_closed_loop_decisions" == true ]] &&
+     ! jq -e --argjson expected "$closed_loop_uses_tape_end" '
+       .truncated == false
+       and .closed_loop_audit.enabled == true
+       and .closed_loop_audit.logged_behavior_uses_tape_end_as_session_deadline == $expected
+       and (.variants | all((.closed_loop_unmapped_behavior_actions // 0) == 0))
+       and (.closed_loop_action_rows // 0) > 0
+       and (.closed_loop_transition_rows // 0) > 0
+     ' "$output_dir/grid_summary.json" >/dev/null 2>&1; then
+    closed_loop_summary_complete=false
+  fi
+  closed_loop_postprocess_complete=true
+  if [[ "$requires_closed_loop_decisions" == true ]] &&
+     [[ ! -s "$output_dir/grid_closed_loop_selected_transitions.parquet" ||
+        ! -s "$output_dir/closed_loop_coverage.json" ]]; then
+    closed_loop_postprocess_complete=false
+  fi
+  if [[ "$FORCE" == false &&
+        "$fill_episodes_complete" == true &&
+        "$research_features_complete" == true &&
+        "$public_trade_markouts_complete" == true &&
+        "$state_panel_markouts_complete" == true &&
+        "$resting_probe_outcomes_complete" == true &&
+        "$resting_probe_observations_complete" == true &&
+        "$inventory_resolution_oracle_complete" == true &&
+        "$closed_loop_decisions_complete" == true &&
+        "$closed_loop_summary_complete" == true &&
+        "$closed_loop_postprocess_complete" == true &&
+        -s "$output_dir/grid_summary.json" &&
+        -e "$output_dir/grid_market_results.jsonl" &&
+        -e "$output_dir/grid_event_type_results.jsonl" &&
+        -s "$output_dir/grid_config_snapshot.json" ]] &&
+     jq -e '.truncated == false' "$output_dir/grid_summary.json" >/dev/null &&
+     jq -e --slurpfile expected "$GRID_CONFIG" \
+       '. == $expected[0]' \
+       "$output_dir/grid_config_snapshot.json" >/dev/null; then
+    printf '[skip: complete] %s\n' "$run_name"
+    continue
+  fi
+  if [[ -e "$output_dir" && "$FORCE" == false ]]; then
+    printf '[skip: existing partial or different grid; use --force] %s\n' \
+      "$output_dir" >&2
+    failures+=("$run_dir")
+    continue
+  fi
+
+  command=(
+    "$RESEARCH_BIN"
+    grid-search
+    --run-dir "$run_dir"
+    --output-dir "$output_dir"
+    --grid-config "$GRID_CONFIG"
+    --progress-every-frames "$PROGRESS_EVERY_FRAMES"
+  )
+  if [[ "$FORCE" == true ]]; then
+    command+=(--overwrite)
+  fi
+  printf '[run] %s\n' "$run_name"
+  if [[ "$DRY_RUN" == true ]]; then
+    printf '  %q' "${command[@]}"
+    printf '\n'
+    if [[ "$requires_closed_loop_decisions" == true ]]; then
+      printf '  %q %q %q %q\n' "$CLOSED_LOOP_COVERAGE" \
+        --write-selected --overwrite "$output_dir"
+    fi
+    continue
+  fi
+  if ! "${command[@]}"; then
+    failures+=("$run_dir")
+  elif [[ "$requires_closed_loop_decisions" == true ]] &&
+       ! jq -e --argjson expected "$closed_loop_uses_tape_end" '
+         .truncated == false
+         and .closed_loop_audit.enabled == true
+         and .closed_loop_audit.logged_behavior_uses_tape_end_as_session_deadline == $expected
+         and (.variants | all((.closed_loop_unmapped_behavior_actions // 0) == 0))
+         and (.closed_loop_action_rows // 0) > 0
+         and (.closed_loop_transition_rows // 0) > 0
+       ' "$output_dir/grid_summary.json" >/dev/null; then
+    printf '[failed: invalid closed-loop summary] %s\n' "$output_dir" >&2
+    failures+=("$run_dir")
+  elif [[ "$requires_closed_loop_decisions" == true ]] &&
+       ! "$CLOSED_LOOP_COVERAGE" --write-selected --overwrite "$output_dir"; then
+    printf '[failed: closed-loop post-processing] %s\n' "$output_dir" >&2
+    failures+=("$run_dir")
+  elif [[ "$requires_closed_loop_decisions" == true ]] &&
+       ! jq -e '
+         (.sessions | length) == 1
+         and .sessions[0].actions.duplicate_selected_decisions == 0
+         and .sessions[0].transitions.missing_for_selected_decisions == 0
+         and .sessions[0].transitions.without_selected_decision == 0
+         and .sessions[0].states.decisions_without_exactly_two_state_sides == 0
+         and (.sessions[0].states.missing_required_features | length) == 0
+       ' "$output_dir/closed_loop_coverage.json" >/dev/null; then
+    printf '[failed: invalid closed-loop coverage] %s\n' "$output_dir" >&2
+    failures+=("$run_dir")
+  fi
+done
+
+if [[ ${#failures[@]} -gt 0 ]]; then
+  printf 'failed or skipped-incomplete runs:\n' >&2
+  printf '  %s\n' "${failures[@]}" >&2
+  exit 1
+fi

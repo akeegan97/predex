@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_CLOSED_LOOP_ROOT:-$ROOT_DIR/research_summary/closed-loop-controller}"
+SPLITS="$EXPERIMENT_ROOT/splits.json"
+GRID_CONFIG="$EXPERIMENT_ROOT/grid.json"
+OUTPUT_ROOT="$EXPERIMENT_ROOT/sessions"
+MODE="${1:-development}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$MODE" in
+  development)
+    jq_filter='.training[], .selection[], .calibration[], .development_holdout[]'
+    ;;
+  final-test)
+    jq_filter='.final_test[]'
+    ;;
+  all)
+    jq_filter='.training[], .selection[], .calibration[], .development_holdout[], .final_test[]'
+    ;;
+  *)
+    printf 'usage: %s [development|final-test|all] [--force] [--dry-run]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+mapfile -t run_ids < <(jq -r "$jq_filter" "$SPLITS")
+run_dirs=()
+for run_id in "${run_ids[@]}"; do
+  run_dirs+=("$ROOT_DIR/runs/$run_id")
+done
+
+exec "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+  --grid-config "$GRID_CONFIG" \
+  --output-root "$OUTPUT_ROOT" \
+  "$@" \
+  "${run_dirs[@]}"

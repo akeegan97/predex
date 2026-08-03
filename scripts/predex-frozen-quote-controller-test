@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPERIMENT_ROOT="${PREDEX_FROZEN_QUOTE_TEST_ROOT:-$ROOT_DIR/research_summary/resting-quote-value}"
+REPORT="$EXPERIMENT_ROOT/model/selection-calibration-report.json"
+SOURCE_MODEL="$EXPERIMENT_ROOT/model/frozen-model.json"
+CONTROLLER="$EXPERIMENT_ROOT/model/frozen-controller.json"
+GRID="$EXPERIMENT_ROOT/heldout-july17-grid.json"
+CALIBRATION="$EXPERIMENT_ROOT/data/predex-2026-07-16-113022-market-data-thursday-day-wk3"
+TEST_RUN="$ROOT_DIR/runs/predex-2026-07-17-121940-market-data-friday-day-wk3"
+OUTPUT="${PREDEX_FROZEN_QUOTE_TEST_OUTPUT:-$ROOT_DIR/research_summary/frozen-quote-controller-july17}"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+RESEARCH="$ROOT_DIR/build/perf/cpp/research"
+MODE="${1:-run}"
+
+prepare() {
+  "$PYTHON" "$ROOT_DIR/python/eda/freeze_dynamic_quote_controller.py" \
+    --report "$REPORT" \
+    --model "$SOURCE_MODEL" \
+    --calibration "$CALIBRATION" \
+    --controller "$CONTROLLER" \
+    --grid "$GRID"
+}
+
+run_test() {
+  if [[ ! -x "$RESEARCH" ]]; then
+    printf 'missing performance research binary: %s\n' "$RESEARCH" >&2
+    printf 'build it with: cmake --build --preset build-perf --target research -j 4\n' >&2
+    exit 1
+  fi
+  if [[ ! -f "$CONTROLLER" || ! -f "$GRID" ]]; then
+    printf 'missing frozen controller/grid; run %s prepare first\n' "$0" >&2
+    exit 1
+  fi
+  if [[ -e "$OUTPUT/grid_summary.json" || -e "$OUTPUT/test-consumption.json" ]]; then
+    printf 'held-out output already exists; refusing to overwrite: %s\n' "$OUTPUT" >&2
+    exit 1
+  fi
+  local expected_hash actual_hash
+  expected_hash="$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_model_sha256"])' "$CONTROLLER")"
+  actual_hash="$(sha256sum "$SOURCE_MODEL" | cut -d' ' -f1)"
+  if [[ "$expected_hash" != "$actual_hash" ]]; then
+    printf 'source model changed after controller freeze\n' >&2
+    exit 1
+  fi
+  "$RESEARCH" grid-search \
+    --run-dir "$TEST_RUN" \
+    --grid-config "$GRID" \
+    --output-dir "$OUTPUT" \
+    --progress-every-frames "${PREDEX_FROZEN_QUOTE_PROGRESS_EVERY_FRAMES:-250000}"
+  cp "$CONTROLLER" "$OUTPUT/frozen-controller-used.json"
+  "$PYTHON" -c '
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+summary = json.loads((path / "grid_summary.json").read_text())
+if summary.get("truncated") is not False:
+    raise SystemExit("held-out replay did not complete")
+payload = {
+    "schema_version": 1,
+    "held_out_session": "predex-2026-07-17-121940-market-data-friday-day-wk3",
+    "frames": summary.get("frames_scanned"),
+    "completed": True,
+}
+(path / "test-consumption.json").write_text(json.dumps(payload, indent=2) + "\n")
+' "$OUTPUT"
+  printf '[held-out] complete output=%s\n' "$OUTPUT"
+}
+
+case "$MODE" in
+  prepare) prepare ;;
+  run) run_test ;;
+  all) prepare; run_test ;;
+  *) printf 'usage: %s [prepare|run|all]\n' "$0" >&2; exit 2 ;;
+esac

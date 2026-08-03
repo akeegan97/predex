@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_ID="${PREDEX_ORACLE_RUN_ID:-predex-2026-07-20-115431-market-data-monday-day-wk4}"
+SOURCE_DATA="${PREDEX_ORACLE_SOURCE_DATA:-$ROOT_DIR/research_summary/paired-inventory-value/data/$RUN_ID}"
+RUN_DIR="${PREDEX_ORACLE_RUN_DIR:-$ROOT_DIR/runs/$RUN_ID}"
+OUTPUT_ROOT="${PREDEX_ORACLE_ROOT:-$ROOT_DIR/research_summary/inventory-resolution-oracle/development}"
+PYTHON="${PREDEX_PYTHON:-$ROOT_DIR/.venv/bin/python}"
+ENTRY_MODEL="${PREDEX_ORACLE_ENTRY_MODEL:-$ROOT_DIR/research_summary/paired-control-v2/entry/model/frozen-model.json}"
+MODE="${1:-development}"
+
+CANDIDATES="$OUTPUT_ROOT/candidates.json"
+GRID="$OUTPUT_ROOT/oracle-grid.json"
+REPLAY_ROOT="$OUTPUT_ROOT/replay"
+OUTCOMES="$REPLAY_ROOT/$RUN_ID/grid_inventory_resolution_oracle.parquet"
+REPORT="$OUTPUT_ROOT/oracle-report.json"
+
+prepare() {
+  mkdir -p "$OUTPUT_ROOT"
+  "$PYTHON" "$ROOT_DIR/python/eda/inventory_resolution_oracle.py" export-candidates \
+    --data "$SOURCE_DATA" \
+    --output "$CANDIDATES"
+  "$PYTHON" "$ROOT_DIR/python/eda/inventory_resolution_oracle.py" write-grid \
+    --candidate-manifest "$CANDIDATES" \
+    --output "$GRID"
+}
+
+replay() {
+  local force_args=()
+  if [[ "${PREDEX_ORACLE_FORCE:-0}" == "1" ]]; then
+    force_args=(--force)
+  fi
+  PREDEX_GRID_OUTPUT_ROOT="$REPLAY_ROOT" \
+  PREDEX_RESEARCH_BIN="${PREDEX_RESEARCH_BIN:-$ROOT_DIR/build/perf/cpp/research}" \
+    "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+      --grid-config "$GRID" \
+      --output-root "$REPLAY_ROOT" \
+      "${force_args[@]}" \
+      "$RUN_DIR"
+}
+
+analyze() {
+  local model_args=()
+  if [[ -s "$ENTRY_MODEL" ]]; then
+    model_args=(--entry-model "$ENTRY_MODEL")
+  fi
+  "$PYTHON" "$ROOT_DIR/python/eda/inventory_resolution_oracle.py" analyze \
+    --data "$SOURCE_DATA" \
+    --outcomes "$OUTCOMES" \
+    --report "$REPORT" \
+    "${model_args[@]}"
+}
+
+case "$MODE" in
+  prepare) prepare ;;
+  replay) replay ;;
+  analyze) analyze ;;
+  development)
+    prepare
+    replay
+    analyze
+    ;;
+  *)
+    printf 'usage: %s [prepare|replay|analyze|development]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+printf '[inventory-resolution-oracle] complete mode=%s output=%s\n' "$MODE" "$OUTPUT_ROOT"

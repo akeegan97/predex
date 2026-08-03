@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GRID_CONFIG="$ROOT_DIR/research_summary/public-trades/grid.json"
+TRAIN_ROOT="$ROOT_DIR/research_summary/public-trades/train"
+VALIDATION_ROOT="$ROOT_DIR/research_summary/public-trades/validation"
+MODEL_ROOT="$ROOT_DIR/research_summary/public-trades/model"
+PYTHON="$ROOT_DIR/.venv/bin/python"
+
+if [[ ! -s "$GRID_CONFIG" ]]; then
+  printf 'missing public-trade grid: %s\n' "$GRID_CONFIG" >&2
+  exit 1
+fi
+if [[ ! -x "$PYTHON" ]]; then
+  printf 'missing research Python environment: %s\n' "$PYTHON" >&2
+  exit 1
+fi
+
+train=(
+  "$TRAIN_ROOT/predex-2026-07-04-142734-market-data-saturday-day"
+  "$TRAIN_ROOT/predex-2026-07-06-123728-market-data-monday-day"
+  "$TRAIN_ROOT/predex-2026-07-08-110639-market-data-wednesday-day"
+  "$TRAIN_ROOT/predex-2026-07-09-110643-market-data-thursday-day"
+  "$TRAIN_ROOT/predex-2026-07-10-113849-market-data-friday-day"
+  "$TRAIN_ROOT/predex-2026-07-13-114701-market-data-monday-day-wk3"
+  "$TRAIN_ROOT/predex-2026-07-14-110739-market-data-tuesday-wk3"
+)
+validation_runs=(
+  "$ROOT_DIR/runs/predex-2026-07-15-112217-market-data-wednesday-day-wk3"
+  "$ROOT_DIR/runs/predex-2026-07-16-113022-market-data-thursday-day-wk3"
+)
+validation=(
+  "$VALIDATION_ROOT/predex-2026-07-15-112217-market-data-wednesday-day-wk3"
+  "$VALIDATION_ROOT/predex-2026-07-16-113022-market-data-thursday-day-wk3"
+)
+
+printf '[pipeline] materializing validation sessions\n'
+PREDEX_GRID_OUTPUT_ROOT="$VALIDATION_ROOT" \
+PREDEX_GRID_PROGRESS_EVERY_FRAMES=250000 \
+  "$ROOT_DIR/scripts/predex-controller-grid-batch" \
+    --grid-config "$GRID_CONFIG" \
+    "${validation_runs[@]}"
+
+printf '[pipeline] fitting train -> validation models\n'
+mkdir -p "$MODEL_ROOT"
+"$PYTHON" "$ROOT_DIR/python/eda/public_trade_markout_model.py" \
+  --train "${train[@]}" \
+  --validation "${validation[@]}" \
+  --maximum-train-sweeps-per-session 50000 \
+  --maximum-validation-sweeps-per-session 0 \
+  --report "$MODEL_ROOT/selection-report.json" \
+  --model "$MODEL_ROOT/frozen-model.json"
+
+printf '[pipeline] complete\n'
+printf '[pipeline] report=%s\n' "$MODEL_ROOT/selection-report.json"
+printf '[pipeline] model=%s\n' "$MODEL_ROOT/frozen-model.json"

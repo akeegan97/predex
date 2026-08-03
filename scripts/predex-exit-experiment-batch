@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNS_DIR="${PREDEX_RUNS_DIR:-$ROOT_DIR/runs}"
+OUTPUT_ROOT="${PREDEX_EXIT_OUTPUT_ROOT:-$ROOT_DIR/research_summary/exit-experiments}"
+RESEARCH_BIN="${PREDEX_RESEARCH_BIN:-$ROOT_DIR/build/dev/cpp/research}"
+
+DECISION_INTERVAL_MS="${PREDEX_EXIT_DECISION_INTERVAL_MS:-60000}"
+HORIZON_MS="${PREDEX_EXIT_HORIZON_MS:-300000}"
+MAX_DECISION_QTY="${PREDEX_EXIT_MAX_DECISION_QTY_CONTRACTS:-1}"
+CANCEL_AHEAD_WEIGHT="${PREDEX_EXIT_CANCEL_AHEAD_WEIGHT:-0}"
+CANCEL_LATENCY_MS="${PREDEX_EXIT_CANCEL_LATENCY_MS:-100}"
+PROGRESS_EVERY_FRAMES="${PREDEX_EXIT_PROGRESS_EVERY_FRAMES:-250000}"
+
+FORCE=false
+DRY_RUN=false
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/predex-exit-experiment-batch [--force] [--dry-run] [RUN_DIR ...]
+
+Runs the C++ exit action-value harness sequentially over every verified v4
+materialized run. With no RUN_DIR arguments, runs are discovered beneath
+runs/predex-*/tables/manifest.json in chronological order.
+
+Completed outputs with the same experiment configuration are skipped. A
+partial or mismatched output is skipped unless --force is supplied; --force
+passes --overwrite to the research binary.
+
+Environment:
+  PREDEX_RESEARCH_BIN                         Research binary path
+  PREDEX_RUNS_DIR                             Input root (default: runs)
+  PREDEX_EXIT_OUTPUT_ROOT                     Output root
+  PREDEX_EXIT_DECISION_INTERVAL_MS            Default: 60000
+  PREDEX_EXIT_HORIZON_MS                      Default: 300000
+  PREDEX_EXIT_MAX_DECISION_QTY_CONTRACTS      Default: 1
+  PREDEX_EXIT_CANCEL_AHEAD_WEIGHT              Default: 0
+  PREDEX_EXIT_CANCEL_LATENCY_MS               Default: 100
+  PREDEX_EXIT_PROGRESS_EVERY_FRAMES           Default: 250000
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      FORCE=true
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      printf 'unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ ! -x "$RESEARCH_BIN" ]]; then
+  printf 'research binary is missing or not executable: %s\n' "$RESEARCH_BIN" >&2
+  printf 'build it first with: cmake --build --preset build-dev --target research\n' >&2
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'jq is required to validate materialized manifests and outputs\n' >&2
+  exit 1
+fi
+
+declare -a run_dirs=()
+if [[ $# -gt 0 ]]; then
+  for run_dir in "$@"; do
+    if [[ "$run_dir" != /* ]]; then
+      run_dir="$ROOT_DIR/$run_dir"
+    fi
+    run_dirs+=("${run_dir%/}")
+  done
+else
+  while IFS= read -r manifest; do
+    run_dirs+=("$(dirname "$(dirname "$manifest")")")
+  done < <(
+    find "$RUNS_DIR" -mindepth 3 -maxdepth 3 -type f \
+      -path '*/tables/manifest.json' -print | sort
+  )
+fi
+
+if [[ ${#run_dirs[@]} -eq 0 ]]; then
+  printf 'no materialized run directories found beneath: %s\n' "$RUNS_DIR" >&2
+  exit 1
+fi
+
+required_tables=(
+  frames.parquet
+  deltas.parquet
+  trades.parquet
+  snapshots.parquet
+  snapshot_levels.parquet
+  market_routes.parquet
+  event_routes.parquet
+)
+
+materialization_is_valid() {
+  local run_dir="$1"
+  local manifest="$run_dir/tables/manifest.json"
+  [[ -s "$manifest" ]] || return 1
+  jq -e '
+    .verified == true
+    and .materializer_version == 4
+    and ((.tables.frames.rows // 0) > 0)
+  ' "$manifest" >/dev/null || return 1
+  local table
+  for table in "${required_tables[@]}"; do
+    [[ -s "$run_dir/tables/$table" ]] || return 1
+  done
+}
+
+output_is_complete() {
+  local output_dir="$1"
+  local summary="$output_dir/summary.json"
+  local config="$output_dir/replay_config.json"
+  [[ -s "$summary" ]] || return 1
+  [[ -s "$config" ]] || return 1
+  [[ -s "$output_dir/exit_experiment_summary.json" ]] || return 1
+  [[ -s "$output_dir/exit_action_outcomes.parquet" ]] || return 1
+  jq -e \
+    --argjson interval "$DECISION_INTERVAL_MS" \
+    --argjson horizon "$HORIZON_MS" \
+    --argjson quantity "$MAX_DECISION_QTY" \
+    '
+      .truncated == false
+      and .policy == "exit_inventory_generator"
+      and .exit_experiment.enabled == true
+      and .exit_experiment.feature_schema_version == 2
+      and .exit_experiment.decision_interval_ms == $interval
+      and .exit_experiment.horizon_ms == $horizon
+      and .exit_experiment.max_decision_qty_contracts == $quantity
+    ' "$summary" >/dev/null || return 1
+  jq -e \
+    --argjson cancel_weight "$CANCEL_AHEAD_WEIGHT" \
+    --argjson cancel_latency "$CANCEL_LATENCY_MS" \
+    '
+      .cancel_ahead_weight == $cancel_weight
+      and .cancel_latency_ms == $cancel_latency
+    ' "$config" >/dev/null
+}
+
+mkdir -p "$OUTPUT_ROOT"
+
+declare -a failures=()
+processed=0
+skipped=0
+invalid=0
+
+for run_dir in "${run_dirs[@]}"; do
+  if ! materialization_is_valid "$run_dir"; then
+    printf '[skip: invalid/incomplete materialization] %s\n' "$run_dir" >&2
+    invalid=$((invalid + 1))
+    continue
+  fi
+
+  run_name="$(basename "$run_dir")"
+  output_dir="$OUTPUT_ROOT/$run_name"
+  if [[ "$FORCE" == false ]] && output_is_complete "$output_dir"; then
+    printf '[skip: complete] %s\n' "$run_name"
+    skipped=$((skipped + 1))
+    continue
+  fi
+  if [[ -e "$output_dir" && "$FORCE" == false ]]; then
+    printf '[skip: partial or mismatched output; use --force] %s\n' \
+      "$output_dir" >&2
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  command=(
+    "$RESEARCH_BIN"
+    live-feed
+    --run-dir "$run_dir"
+    --output-dir "$output_dir"
+    --policy exit_inventory_generator
+    --exit-experiment
+    --exit-decision-interval-ms "$DECISION_INTERVAL_MS"
+    --exit-horizon-ms "$HORIZON_MS"
+    --exit-max-decision-qty-contracts "$MAX_DECISION_QTY"
+    --cancel-ahead-weight "$CANCEL_AHEAD_WEIGHT"
+    --cancel-latency-ms "$CANCEL_LATENCY_MS"
+    --progress-every-frames "$PROGRESS_EVERY_FRAMES"
+  )
+  if [[ "$FORCE" == true ]]; then
+    command+=(--overwrite)
+  fi
+
+  printf '\n[start] %s\n' "$run_name"
+  printf '  input=%s\n  output=%s\n' "$run_dir" "$output_dir"
+  if [[ "$DRY_RUN" == true ]]; then
+    printf '  command:'
+    printf ' %q' "${command[@]}"
+    printf '\n'
+    continue
+  fi
+
+  started_at="$(date -Is)"
+  if "${command[@]}"; then
+    printf '[done] %s started=%s finished=%s\n' \
+      "$run_name" "$started_at" "$(date -Is)"
+    processed=$((processed + 1))
+  else
+    printf '[failed] %s started=%s finished=%s\n' \
+      "$run_name" "$started_at" "$(date -Is)" >&2
+    failures+=("$run_dir")
+  fi
+done
+
+printf '\nexit experiment batch: processed=%d skipped=%d invalid=%d failed=%d\n' \
+  "$processed" "$skipped" "$invalid" "${#failures[@]}"
+if [[ ${#failures[@]} -gt 0 ]]; then
+  printf 'failed runs:\n' >&2
+  printf '  %s\n' "${failures[@]}" >&2
+  exit 1
+fi

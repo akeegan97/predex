@@ -85,3 +85,4 @@ python/src/predex/research/event_replay.py
 python/src/predex/research/__init__.py
 cpp/apps/research/*
 cpp/include/predex/research/*
+STRATEGY_RESEARCH_STATUS.md

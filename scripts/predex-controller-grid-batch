@@ -121,9 +121,6 @@ requires_resting_probe_outcomes="$(
 requires_resting_probe_observations="$(
   jq -r '(.emit_resting_probe_observations // false) == true' "$GRID_CONFIG"
 )"
-requires_inventory_resolution_oracle="$(
-  jq -r '(.emit_inventory_resolution_oracle // false) == true' "$GRID_CONFIG"
-)"
 if [[ ! -x "$RESEARCH_BIN" ]]; then
   printf 'research binary is missing: %s\n' "$RESEARCH_BIN" >&2
   printf 'build it with: cmake --preset perf-vcpkg && ' >&2
@@ -195,11 +192,6 @@ for supplied in "${run_dirs[@]}"; do
         ! -s "$output_dir/grid_resting_probe_observations.parquet" ]]; then
     resting_probe_observations_complete=false
   fi
-  inventory_resolution_oracle_complete=true
-  if [[ "$requires_inventory_resolution_oracle" == true &&
-        ! -s "$output_dir/grid_inventory_resolution_oracle.parquet" ]]; then
-    inventory_resolution_oracle_complete=false
-  fi
   closed_loop_decisions_complete=true
   if [[ "$requires_closed_loop_decisions" == true ]] &&
      [[ ! -s "$output_dir/grid_closed_loop_actions.parquet" ||
@@ -231,7 +223,6 @@ for supplied in "${run_dirs[@]}"; do
         "$state_panel_markouts_complete" == true &&
         "$resting_probe_outcomes_complete" == true &&
         "$resting_probe_observations_complete" == true &&
-        "$inventory_resolution_oracle_complete" == true &&
         "$closed_loop_decisions_complete" == true &&
         "$closed_loop_summary_complete" == true &&
         "$closed_loop_postprocess_complete" == true &&

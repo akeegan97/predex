@@ -55,12 +55,30 @@ add_executable(predex
   src/exchange/kalshi/http2_session.cpp
   src/ingest/kalshi/order_data/order_session.cpp
   src/exchange/kalshi/adapters/order_data_handler.cpp
+  src/control/recovery_coordinator.cpp
 )
 
 add_executable(predex_tests
+  tests/control_plane_recovery_tests.cpp
+  tests/event_tests.cpp
   tests/frame_pool_tests.cpp
   tests/http2_session_tests.cpp
   tests/oms_tests.cpp
+  tests/recovery_coordinator_tests.cpp
+  tests/router_tests.cpp
+  tests/shard_tests.cpp
+  tests/wire_sequence_tests.cpp
+  tests/wire_session_tests.cpp
+  src/control/recovery_coordinator.cpp
+  src/control/control_plane.cpp
+  src/router/router.cpp
+  src/ingest/kalshi/market_data/wire_session.cpp
+  src/exchange/kalshi/adapters/market_data_handler.cpp
+  src/exchange/kalshi/websocket_session.cpp
+  src/shard/event.cpp
+  src/shard/event_store.cpp
+  src/shard/market_parser.cpp
+  src/shard/shard.cpp
   src/exchange/kalshi/adapters/auth_signer.cpp
   src/exchange/kalshi/http2_session.cpp
   src/oms/oms.cpp
@@ -90,6 +108,8 @@ target_link_libraries(predex_tests PRIVATE
   OpenSSL::SSL
   OpenSSL::Crypto
   CURL::libcurl
+  Boost::system
+  nlohmann_json::nlohmann_json
 )
 target_link_libraries(predex_http_smoke PRIVATE OpenSSL::SSL OpenSSL::Crypto CURL::libcurl)
 add_test(NAME predex_tests COMMAND predex_tests)

@@ -8,6 +8,19 @@ version = "0.1.0"
 description = "Python discovery and config synthesis tooling for Predex"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+# Kept out of the ordinary operator/replay environment.  These versions are
+# the frozen CPU research toolchain used to fit and validate sequential value
+# models; the production C++ process consumes only a native model artifact.
+research-ml = [
+    "numpy==2.4.4",
+    "pandas==3.0.2",
+    "pyarrow==23.0.1",
+    "scikit-learn==1.9.0",
+    "xgboost-cpu==3.4.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "xgboost==3.4.0; platform_system != 'Linux' or platform_machine != 'x86_64'",
+]
+
 [project.scripts]
 predex = "predex.discovery.cli:main"
 predex-discovery = "predex.discovery.cli:main"

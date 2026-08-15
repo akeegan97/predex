@@ -8,8 +8,10 @@
 #include <limits>
 #include <simdjson.h>
 #include <vector>
+#include <variant>
 
 #include "predex/control/control_types.hpp"
+#include "predex/ingest/kalshi/market_data/integrity_messages.hpp"
 
 namespace predex::ingest::kalshi{
 
@@ -37,6 +39,7 @@ namespace predex::ingest::kalshi{
     struct FrameHandle{
         std::uint64_t universe_version{};
         std::uint64_t sequence{};
+        predex::core::control::RecoveryId recovery_id{};
 
         std::uint32_t sid{};
         std::uint32_t pool_index{};
@@ -52,6 +55,8 @@ namespace predex::ingest::kalshi{
 
         FrameKind kind{FrameKind::kUNKNOWN};
     };
+
+    using MarketDataPathMessage = std::variant<FrameHandle, predex::ingest::kalshi::MarketInvalidationBarrier, predex::ingest::kalshi::OrderBookSubscriptionInvalidationBarrier>;
     
     
     class FramePool{

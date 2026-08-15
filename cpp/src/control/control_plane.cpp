@@ -1,5 +1,6 @@
 #include "predex/control/control_plane.hpp"
 #include "predex/control/control_types.hpp"
+#include "predex/shard/shard_types.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -36,7 +37,78 @@ namespace predex::core::control{
                 .frames_recycled = stats.frames_recycled,
                 .leaked_handles = stats.leaked_handles,
                 .missed_frames_to_logger = stats.missed_frames_to_logger,
+                .event_ignored = stats.event_ignored,
+                .market_barriers_seen = stats.market_barriers_seen,
+                .subscription_barriers_seen = stats.subscription_barriers_seen,
+                .barrier_rejects = stats.barrier_rejects,
+                .markets_became_unusable = stats.markets_became_unusable,
+                .markets_recovery_required = stats.markets_recovery_required,
+                .markets_already_awaiting_recovery =
+                    stats.markets_already_awaiting_recovery,
             };
+        }
+
+        void account_recovery_observation(
+            RecoveryTelemetrySnapshot& telemetry,
+            const RecoveryObservationResult& result) noexcept{
+            switch(result.code){
+                case RecoveryObservationCode::kCREATED:
+                    ++telemetry.incidents_created;
+                    telemetry.markets_scheduled += result.markets_affected;
+                    break;
+                case RecoveryObservationCode::kDUPLICATE:
+                    ++telemetry.incidents_deduplicated;
+                    break;
+                case RecoveryObservationCode::kALREADY_RECOVERING:
+                    ++telemetry.markets_already_recovering;
+                    break;
+                case RecoveryObservationCode::kSTALE_UNIVERSE:
+                case RecoveryObservationCode::kINVALID_INCIDENT:
+                case RecoveryObservationCode::kINVALID_REASON:
+                case RecoveryObservationCode::kUNKNOWN_MARKET:
+                case RecoveryObservationCode::kROUTE_MISMATCH:
+                case RecoveryObservationCode::kRECOVERY_ID_EXHAUSTED:
+                    ++telemetry.observations_rejected;
+                    break;
+            }
+        }
+
+        void account_recovery_fact(
+            RecoveryTelemetrySnapshot& telemetry,
+            const RecoveryFactResult& result) noexcept{
+            if(result.disposition != RecoveryFactDisposition::kAPPLIED){
+                return;
+            }
+            switch(result.effect){
+                case RecoveryFactEffect::kREQUEST_ACCEPTED:
+                    ++telemetry.requests_accepted;
+                    break;
+                case RecoveryFactEffect::kRETRY_SCHEDULED:
+                    ++telemetry.request_failures;
+                    ++telemetry.retries_scheduled;
+                    break;
+                case RecoveryFactEffect::kMARKET_RECOVERED:
+                    ++telemetry.markets_recovered;
+                    break;
+                case RecoveryFactEffect::kMARKET_FAILED:
+                    ++telemetry.request_failures;
+                    ++telemetry.markets_failed;
+                    break;
+                case RecoveryFactEffect::kNONE:
+                    break;
+            }
+            if(result.incident_completed){
+                ++telemetry.incidents_completed;
+                const auto duration = static_cast<std::uint64_t>(
+                    std::max<std::int64_t>(
+                        0,
+                        result.recovery_duration.count()));
+                ++telemetry.recovery_duration_samples;
+                telemetry.recovery_duration_total_ns += duration;
+                telemetry.recovery_duration_max_ns = std::max(
+                    telemetry.recovery_duration_max_ns,
+                    duration);
+            }
         }
 
         [[nodiscard]] std::vector<operator_admin::UnknownMarketTickerStats> to_operator_unknown_market_ticker_stats(
@@ -129,6 +201,14 @@ namespace predex::core::control{
                     .frames_recycled = telemetry.frames_recycled,
                     .leaked_handles = telemetry.leaked_handles,
                     .missed_frames_to_logger = telemetry.missed_frames_to_logger,
+                    .event_ignored = telemetry.event_ignored,
+                    .market_barriers_seen = telemetry.market_barriers_seen,
+                    .subscription_barriers_seen = telemetry.subscription_barriers_seen,
+                    .barrier_rejects = telemetry.barrier_rejects,
+                    .markets_became_unusable = telemetry.markets_became_unusable,
+                    .markets_recovery_required = telemetry.markets_recovery_required,
+                    .markets_already_awaiting_recovery =
+                        telemetry.markets_already_awaiting_recovery,
                 });
             }
 
@@ -167,6 +247,12 @@ namespace predex::core::control{
                     .logger_fallback_enqueued = io_state.telemetry.logger_fallback_enqueued,
                     .logger_fallback_failed = io_state.telemetry.logger_fallback_failed,
                     .recycle_failures = io_state.telemetry.recycle_failures,
+                    .snapshot_requests_sent = io_state.telemetry.snapshot_requests_sent,
+                    .snapshot_requests_accepted = io_state.telemetry.snapshot_requests_accepted,
+                    .snapshot_requests_failed = io_state.telemetry.snapshot_requests_failed,
+                    .frame_pool_in_use_high_water = io_state.telemetry.frame_pool_in_use_high_water,
+                    .router_queue_depth_high_water = io_state.telemetry.router_queue_depth_high_water,
+                    .channel_stats = io_state.telemetry.channel_stats,
                     .last_error = io_state.last_error,
                 },
                 .router_stats = operator_admin::RouterCounterStats{
@@ -175,6 +261,14 @@ namespace predex::core::control{
                     .frames_to_logger = router_state.telemetry.frames_to_logger,
                     .frames_recycled = router_state.telemetry.frames_recycled,
                     .leaked_handles = router_state.telemetry.leaked_handles,
+                    .market_barriers_received = router_state.telemetry.market_barriers_received,
+                    .market_barriers_delivered = router_state.telemetry.market_barriers_delivered,
+                    .subscription_barriers_received = router_state.telemetry.subscription_barriers_received,
+                    .subscription_barriers_delivered = router_state.telemetry.subscription_barriers_delivered,
+                    .barriers_deferred = router_state.telemetry.barriers_deferred,
+                    .subscription_recovery_facts_deferred = router_state.telemetry.subscription_recovery_facts_deferred,
+                    .shard_queue_depth_high_water = router_state.telemetry.shard_queue_depth_high_water,
+                    .channel_stats = router_state.telemetry.channel_stats,
                 },
                 .shard_stats = std::move(shard_stats),
                 .logger_stats = operator_admin::LoggerCounterStats{
@@ -228,6 +322,7 @@ namespace predex::core::control{
                     .oms_enqueue_failures = order_rest_state.telemetry.oms_enqueue_failures,
                     .last_error = order_rest_state.last_error,
                 },
+                .recovery_stats = process_state.recovery_telemetry,
             };
         }
 
@@ -432,6 +527,12 @@ namespace predex::core::control{
                 process_state_.io_component_state.last_error = stat.error_message;
             }else if constexpr(std::is_same_v<T, IoTelemetry>){
                 process_state_.io_component_state.telemetry = stat.telemetry;
+            }else if constexpr(std::is_same_v<T, IoRecoveryRequestAccepted>){
+                const auto result = recovery_coordinator_.handle(stat, std::chrono::steady_clock::now());
+                account_recovery_fact(process_state_.recovery_telemetry, result);
+            }else if constexpr(std::is_same_v<T, IoRecoveryRequestFailed>){
+                const auto result = recovery_coordinator_.handle(stat, std::chrono::steady_clock::now());
+                account_recovery_fact(process_state_.recovery_telemetry, result);
             }
         }, status);
     }
@@ -525,6 +626,9 @@ namespace predex::core::control{
     }
 
     bool ControlPlane::required_components_faulted() const{
+        if(recovery_orchestration_faulted_){
+            return true;
+        }
         if(required_components_.market_data && process_state_.io_component_state.status == ComponentStatus::kFAULTED){
             return true;
         }
@@ -622,9 +726,23 @@ namespace predex::core::control{
     }
 
     std::uint64_t ControlPlane::install_universe(UniverseSnapshot snapshot){
-        snapshot.version = next_universe_version_++;
-        active_universe_ = std::make_shared<const UniverseSnapshot>(std::move(snapshot));
-        active_order_universe_ = build_order_route_universe(*active_universe_);
+        snapshot.version = next_universe_version_;
+        auto next_universe =
+            std::make_shared<const UniverseSnapshot>(std::move(snapshot));
+        auto next_order_universe =
+            build_order_route_universe(*next_universe);
+
+        ++next_universe_version_;
+        const auto supersession = recovery_coordinator_.supersede_before_universe(
+            next_universe->version,
+            std::chrono::steady_clock::now());
+        process_state_.recovery_telemetry.incidents_superseded +=
+            supersession.incidents_superseded;
+        process_state_.recovery_telemetry.markets_superseded +=
+            supersession.markets_superseded;
+
+        active_universe_ = std::move(next_universe);
+        active_order_universe_ = std::move(next_order_universe);
         process_state_.target_universe_version = active_universe_->version;
         recompute_process_state();
         return active_universe_->version;
@@ -814,6 +932,14 @@ namespace predex::core::control{
                     process_state_.router_component_state.telemetry.frames_to_shards = m.frames_to_shards;
                     process_state_.router_component_state.telemetry.frames_to_logger = m.frames_to_logger;
                     process_state_.router_component_state.telemetry.frames_recycled = m.frames_recycled;
+                    process_state_.router_component_state.telemetry.market_barriers_received = m.market_barriers_received;
+                    process_state_.router_component_state.telemetry.market_barriers_delivered = m.market_barriers_delivered;
+                    process_state_.router_component_state.telemetry.subscription_barriers_received = m.subscription_barriers_received;
+                    process_state_.router_component_state.telemetry.subscription_barriers_delivered = m.subscription_barriers_delivered;
+                    process_state_.router_component_state.telemetry.barriers_deferred = m.barriers_deferred;
+                    process_state_.router_component_state.telemetry.subscription_recovery_facts_deferred = m.subscription_recovery_facts_deferred;
+                    process_state_.router_component_state.telemetry.shard_queue_depth_high_water = m.shard_queue_depth_high_water;
+                    process_state_.router_component_state.telemetry.channel_stats = m.channel_stats;
                 }
                 if constexpr(std::is_same_v<T, router::ShardBackpressure>){
                     //probably here want to update that shard's status 
@@ -825,6 +951,28 @@ namespace predex::core::control{
                     process_state_.router_component_state.telemetry.leaked_handles++;
                     process_state_.router_component_state.last_error = "Handle leak detected for universe version " + std::to_string(m.universe_version) + " shard index " + std::to_string(m.shard_index);
                     process_state_.router_component_state.status = ComponentStatus::kFAULTED;//major issue, needs attention
+                }
+                if constexpr(std::is_same_v<T, router::OrderBookSubscriptionBarrierDelivered>){
+                    if(active_universe_ == nullptr){
+                        ++process_state_.recovery_telemetry.observations_rejected;
+                        return;
+                    }
+                    try{
+                        const auto observation = recovery_coordinator_.observe(
+                            m,
+                            *active_universe_,
+                            std::chrono::steady_clock::now());
+                        account_recovery_observation(
+                            process_state_.recovery_telemetry,
+                            observation);
+                    }catch(...){
+                        ++process_state_.recovery_telemetry.observations_rejected;
+                        recovery_orchestration_faulted_ = true;
+                        process_state_.router_component_state.status =
+                            ComponentStatus::kFAULTED;
+                        process_state_.router_component_state.last_error =
+                            "Failed to create subscription recovery incident";
+                    }
                 }
             }, msg);
             recompute_process_state();
@@ -886,6 +1034,25 @@ namespace predex::core::control{
                 auto* shard_state = ensure_shard_state(stat.shard_index);
                 shard_state->status = ComponentStatus::kFAULTED;
                 shard_state->last_error = stat.reason;
+            }else if constexpr(std::is_same_v<T, shard::ShardMarketRecoveryRequired>){
+                if(active_universe_ == nullptr){return;}
+                try{
+                    const auto result = recovery_coordinator_.observe(stat, *active_universe_, std::chrono::steady_clock::now());
+                    account_recovery_observation(
+                        process_state_.recovery_telemetry,
+                        result);
+                }catch(...){
+                    ++process_state_.recovery_telemetry.observations_rejected;
+                    recovery_orchestration_faulted_ = true;
+                    auto* shard_state = ensure_shard_state(stat.shard_index);
+                    shard_state->status = ComponentStatus::kFAULTED;
+                    shard_state->last_error =
+                        "Failed to create market recovery incident";
+                }
+            }else if constexpr(std::is_same_v<T, shard::ShardRecoverySnapshotApplied>){
+                if(active_universe_ == nullptr){return;}
+                const auto result = recovery_coordinator_.handle(stat, *active_universe_, std::chrono::steady_clock::now());
+                account_recovery_fact(process_state_.recovery_telemetry, result);
             }
         }, status);
     }
@@ -1096,5 +1263,58 @@ namespace predex::core::control{
         }
         return processed_any;
     }
+
+    RecoveryPumpResult ControlPlane::process_recovery(RecoveryCoordinator::TimePoint now) noexcept{
+        RecoveryPumpResult result{};
+        constexpr std::size_t kMaxCommandsPerPump = 64;
+
+        if(recovery_orchestration_faulted_){
+            result.code = RecoveryPumpCode::kCOORDINATOR_COMMIT_FAILED;
+            return result;
+        }
+        if(active_universe_ == nullptr){
+            return result;
+        }
+
+        const auto timeouts = recovery_coordinator_.expire_timeouts(now);
+        process_state_.recovery_telemetry.request_ack_timeouts +=
+            timeouts.request_ack_timeouts;
+        process_state_.recovery_telemetry.snapshot_timeouts +=
+            timeouts.snapshot_timeouts;
+        process_state_.recovery_telemetry.retries_scheduled +=
+            timeouts.retries_scheduled;
+        process_state_.recovery_telemetry.markets_failed +=
+            timeouts.markets_failed;
+        process_state_.recovery_telemetry.active_incidents =
+            recovery_coordinator_.active_incident_count();
+        process_state_.recovery_telemetry.active_markets =
+            recovery_coordinator_.active_market_count();
+        if(!process_state_.io_component_state.connected){return result;}
+        if(process_state_.io_component_state.status != ComponentStatus::kLIVE){return result;}
+        if(process_state_.io_component_state.installed_universe_version != active_universe_->version){return result;}
+        if(process_state_.io_component_state.subscribed_universe_version != active_universe_->version){return result;}
+
+        const auto commands = recovery_coordinator_.next_pending_commands(
+            now,
+            kMaxCommandsPerPump);
+        for(const auto& command : commands){
+            if(!push_io_command(ControlToIoCommand{command})){
+                ++result.commands_pushed_failure;
+                ++process_state_.recovery_telemetry.request_enqueue_failures;
+                result.code = RecoveryPumpCode::kIO_BACKPRESSURE;
+                break;
+            }
+            if(!recovery_coordinator_.mark_command_enqueued(command, now)){
+                result.code = RecoveryPumpCode::kCOORDINATOR_COMMIT_FAILED;
+                recovery_orchestration_faulted_ = true;
+                recompute_process_state();
+                break;
+            }
+            ++result.commands_pushed_success;
+            ++process_state_.recovery_telemetry.requests_enqueued;
+        }
+        return result;
+    }
+
 
 }

@@ -102,9 +102,19 @@ namespace predex::ingest::kalshi::market_data{
     void KalshiWireSession::run(const std::stop_token& stop_token){
         while(!stop_token.stop_requested()){
             drain_recycle_queues();
-            drain_control_commands();
+            bool recovery_statuses_flushed =
+                flush_pending_recovery_statuses();
+            if(recovery_statuses_flushed){
+                drain_control_commands();
+                recovery_statuses_flushed =
+                    flush_pending_recovery_statuses();
+            }
 
-            if(status_.connected){
+            const bool integrity_barrier_flushed =
+                flush_pending_integrity_barrier();
+
+            if(status_.connected && recovery_statuses_flushed &&
+               integrity_barrier_flushed){
                 pump_socket_once();
             }
             else{
@@ -115,7 +125,138 @@ namespace predex::ingest::kalshi::market_data{
 
         disconnect("wire session stopped");
         drain_recycle_queues();
+        (void)flush_pending_integrity_barrier();
+        (void)flush_pending_recovery_statuses();
         maybe_send_telemetry();
+    }
+
+    std::uint8_t KalshiWireSession::channel_for_sid(std::uint32_t sid) const noexcept{
+        return sequence_observer_.channel_for_sid(sid);
+    }
+
+    bool KalshiWireSession::is_active_sid(std::uint32_t sid) const noexcept{
+        return sequence_observer_.active(sid);
+    }
+
+    SequenceObservation KalshiWireSession::observe_sequence(
+        std::uint32_t sid,
+        std::uint64_t sequence) noexcept{
+        return sequence_observer_.observe(sid, sequence);
+    }
+
+    core::control::MarketDataChannelTelemetrySnapshot*
+    KalshiWireSession::channel_telemetry(
+        exchange::kalshi::KalshiMarketDataChannel channel) noexcept{
+        const auto value = static_cast<std::uint8_t>(channel);
+        if(value == 0 || value > telemetry_.channel_stats.size()){
+            return nullptr;
+        }
+        return &telemetry_.channel_stats[value - 1U];
+    }
+
+    void KalshiWireSession::update_capacity_high_water() noexcept{
+        telemetry_.frame_pool_in_use_high_water = std::max<std::uint64_t>(
+            telemetry_.frame_pool_in_use_high_water,
+            frame_pool_.capacity() - frame_pool_.available());
+        telemetry_.router_queue_depth_high_water = std::max<std::uint64_t>(
+            telemetry_.router_queue_depth_high_water,
+            router_queue_.producer_size());
+    }
+
+    StampHandleCode KalshiWireSession::resolve_market_route(
+        const MarketDataEnvelope& envelope,
+        const core::control::UniverseMarketRoute*& route_out) const noexcept{
+        route_out = nullptr;
+        if(envelope.kind == FrameKind::kUNKNOWN){
+            return StampHandleCode::kUNKNOWN_KIND;
+        }
+        if(envelope.market_ticker.empty()){
+            return StampHandleCode::kEMPTY_MARKET_TICKER;
+        }
+        if(!is_active_sid(envelope.sid)){
+            return StampHandleCode::kINACTIVE_SID;
+        }
+        if(desired_universe_ == nullptr){
+            return StampHandleCode::kINACTIVE_SID;
+        }
+        const auto iterator = market_route_by_ticker_.find(envelope.market_ticker);
+        if(iterator == market_route_by_ticker_.end()){
+            return StampHandleCode::kUNKNOWN_MARKET_TICKER;
+        }
+        route_out = &iterator->second;
+        return StampHandleCode::kOK;
+    }
+
+    void KalshiWireSession::stamp_handle(
+        FrameHandle& handle,
+        const MarketDataEnvelope& envelope,
+        const core::control::UniverseMarketRoute& route) noexcept{
+        handle.universe_version = desired_universe_ != nullptr
+            ? desired_universe_->version
+            : 0;
+        handle.sequence = envelope.sequence;
+        handle.sid = envelope.sid;
+        handle.market_id = route.market_id;
+        handle.event_id = route.event_id;
+        handle.affinity_key = route.affinity_key;
+        handle.topology = route.topology;
+        handle.shard_index = route.shard_index;
+        handle.shard_event_index = route.shard_event_index;
+        handle.event_market_index = route.event_market_index;
+        handle.kind = envelope.kind;
+    }
+
+    bool KalshiWireSession::flush_pending_integrity_barrier() noexcept{
+        if(!pending_integrity_barrier_.has_value()){
+            return true;
+        }
+        if(!router_queue_.try_push(*pending_integrity_barrier_)){
+            return false;
+        }
+        update_capacity_high_water();
+        pending_integrity_barrier_.reset();
+        return true;
+    }
+
+    bool KalshiWireSession::send_or_defer_integrity_barrier(
+        MarketDataPathMessage barrier) noexcept{
+        if(pending_integrity_barrier_.has_value()){
+            return false;
+        }
+        if(router_queue_.try_push(barrier)){
+            update_capacity_high_water();
+            return true;
+        }
+        pending_integrity_barrier_.emplace(std::move(barrier));
+        return false;
+    }
+
+    void KalshiWireSession::send_or_defer_recovery_status(
+        core::control::IoToControlStatus status){
+        if(std::holds_alternative<core::control::IoRecoveryRequestAccepted>(
+               status)){
+            ++telemetry_.snapshot_requests_accepted;
+        }else if(std::holds_alternative<core::control::IoRecoveryRequestFailed>(
+                      status)){
+            ++telemetry_.snapshot_requests_failed;
+        }
+        if(pending_recovery_statuses_.empty() &&
+           control_queues_.io_to_control_status_queue.try_push(
+               std::move(status))){
+            return;
+        }
+        pending_recovery_statuses_.emplace_back(std::move(status));
+    }
+
+    bool KalshiWireSession::flush_pending_recovery_statuses() noexcept{
+        while(!pending_recovery_statuses_.empty()){
+            if(!control_queues_.io_to_control_status_queue.try_push(
+                   std::move(pending_recovery_statuses_.front()))){
+                return false;
+            }
+            pending_recovery_statuses_.pop_front();
+        }
+        return true;
     }
 
     bool KalshiWireSession::pop_control_command(core::control::ControlToIoCommand& cmd_out) noexcept{
@@ -128,7 +269,8 @@ namespace predex::ingest::kalshi::market_data{
 
     void KalshiWireSession::maybe_send_telemetry() noexcept{
         const auto now = std::chrono::steady_clock::now();
-        if(now < next_telemetry_send_){
+        if(now < next_telemetry_send_ ||
+           !pending_recovery_statuses_.empty()){
             return;
         }
         (void)push_control_status(core::control::IoTelemetry{
@@ -158,23 +300,10 @@ namespace predex::ingest::kalshi::market_data{
 
     }
 
-    std::uint8_t KalshiWireSession::channel_for_sid(std::uint32_t sid) const noexcept{
-        //NOLINTNEXTLINE -- future work change to std::range
-        for(const auto& [channel, subscription] : active_subscriptions_){
-            if(subscription.phase == SubscriptionPhase::kSUBSCRIBED &&
-               subscription.sid.has_value() &&
-               *subscription.sid >= 0 &&
-               *subscription.sid <= std::numeric_limits<std::uint32_t>::max() &&
-               static_cast<std::uint32_t>(*subscription.sid) == sid){
-                return static_cast<std::uint8_t>(channel);
-            }
-        }
-        return 0;
-    }
-
     void KalshiWireSession::drain_control_commands(){
         core::control::ControlToIoCommand cmd;
-        while(pop_control_command(cmd)){
+        while(pending_recovery_statuses_.empty() &&
+              pop_control_command(cmd)){
             handle_control_command(cmd);
         }
     }
@@ -193,8 +322,136 @@ namespace predex::ingest::kalshi::market_data{
                 disconnect();
             }
             else if constexpr(std::is_same_v<T, core::control::RecoverMarketIo>){
+                recover_market(cmd);
             }
         }, cmd);
+    }
+
+    void KalshiWireSession::recover_market(
+        const core::control::RecoverMarketIo& command){
+        const auto fail_request = [this, &command](std::string reason){
+            send_or_defer_recovery_status(core::control::IoRecoveryRequestFailed{
+                .recovery_id = command.recovery_id,
+                .universe_version = command.universe_version,
+                .market_id = command.market_id,
+                .request_attempt = command.request_attempt,
+                .reason = std::move(reason),
+            });
+        };
+
+        if(command.recovery_id == 0 || command.request_attempt == 0){
+            fail_request("Invalid recovery request identity");
+            return;
+        }
+        if(!status_.connected){
+            fail_request("Cannot request recovery snapshot while disconnected");
+            return;
+        }
+        if(desired_universe_ == nullptr ||
+           desired_universe_->version != command.universe_version){
+            fail_request("Recovery request universe does not match installed universe");
+            return;
+        }
+
+        const auto route_iterator = market_route_by_id_.find(command.market_id);
+        if(route_iterator == market_route_by_id_.end()){
+            fail_request("Recovery request market is not in the installed universe");
+            return;
+        }
+
+        const auto channel =
+            exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA;
+        const auto subscription_iterator = active_subscriptions_.find(channel);
+        if(subscription_iterator == active_subscriptions_.end() ||
+           subscription_iterator->second.phase != SubscriptionPhase::kSUBSCRIBED ||
+           !subscription_iterator->second.sid.has_value()){
+            fail_request("Order-book subscription is not active");
+            return;
+        }
+
+        const auto existing_tag =
+            pending_recovery_by_market_.find(command.market_id);
+        if(existing_tag != pending_recovery_by_market_.end()){
+            const auto& tag = existing_tag->second;
+            const bool same_request =
+                tag.recovery_id == command.recovery_id &&
+                tag.universe_version == command.universe_version &&
+                tag.request_attempt == command.request_attempt;
+            if(!same_request){
+                fail_request("Market already has a pending recovery snapshot");
+                return;
+            }
+
+            const bool command_still_pending = std::any_of(
+                pending_ws_commands_.begin(),
+                pending_ws_commands_.end(),
+                [&command](const auto& entry){
+                    const auto& context = entry.second.recovery_context;
+                    return context.has_value() &&
+                           context->recovery_id == command.recovery_id &&
+                           context->universe_version == command.universe_version &&
+                           context->market_id == command.market_id &&
+                           context->request_attempt == command.request_attempt;
+                });
+            if(!command_still_pending){
+                send_or_defer_recovery_status(
+                    core::control::IoRecoveryRequestAccepted{
+                        .recovery_id = command.recovery_id,
+                        .universe_version = command.universe_version,
+                        .market_id = command.market_id,
+                        .request_attempt = command.request_attempt,
+                    });
+            }
+            return;
+        }
+
+        const auto ws_command_id = next_ws_command_id();
+        const RecoveryCommandContext context{
+            .recovery_id = command.recovery_id,
+            .universe_version = command.universe_version,
+            .market_id = command.market_id,
+            .request_attempt = command.request_attempt,
+        };
+        pending_recovery_by_market_.emplace(
+            command.market_id,
+            PendingRecoveryTag{
+                .recovery_id = command.recovery_id,
+                .universe_version = command.universe_version,
+                .request_attempt = command.request_attempt,
+            });
+        pending_ws_commands_.emplace(
+            ws_command_id,
+            PendingWsCommand{
+                .ws_command_id = ws_command_id,
+                .kind = WsCommandKind::kGET_SNAPSHOT,
+                .channel = channel,
+                .market_ids = {command.market_id},
+                .recovery_context = context,
+            });
+
+        const auto& ticker = route_iterator->second.kalshi_ticker;
+        const std::span<const std::string> tickers{&ticker, 1U};
+        const auto sid = subscription_iterator->second.sid.value();
+        if(ws_session_.send_text(market_data_handler_.build_update_message(
+               ws_command_id,
+               static_cast<std::int64_t>(sid),
+               tickers,
+               "get_snapshot"))){
+            ++telemetry_.snapshot_requests_sent;
+            return;
+        }
+
+        pending_ws_commands_.erase(ws_command_id);
+        const auto tag_iterator =
+            pending_recovery_by_market_.find(command.market_id);
+        if(tag_iterator != pending_recovery_by_market_.end() &&
+           tag_iterator->second.recovery_id == command.recovery_id &&
+           tag_iterator->second.request_attempt == command.request_attempt){
+            pending_recovery_by_market_.erase(tag_iterator);
+        }
+        fail_request(
+            "Failed to send recovery snapshot request: " +
+            std::string{ws_session_.last_error()});
     }
 
     void KalshiWireSession::apply_universe_snapshot(const std::shared_ptr<const core::control::UniverseSnapshot>& snapshot){
@@ -204,6 +461,19 @@ namespace predex::ingest::kalshi::market_data{
             return;
         }
         
+        if(desired_universe_ != nullptr &&
+           desired_universe_->version != snapshot->version){
+            pending_recovery_by_market_.clear();
+            for(auto iterator = pending_ws_commands_.begin();
+                iterator != pending_ws_commands_.end();){
+                if(iterator->second.kind == WsCommandKind::kGET_SNAPSHOT){
+                    iterator = pending_ws_commands_.erase(iterator);
+                }else{
+                    ++iterator;
+                }
+            }
+        }
+
         desired_universe_ = snapshot;
         market_route_by_ticker_.clear();
         market_route_by_id_.clear();
@@ -249,8 +519,19 @@ namespace predex::ingest::kalshi::market_data{
     }
 
     void KalshiWireSession::clear_transport_subscription_state(){
+        for(const auto& [market_id, tag] : pending_recovery_by_market_){
+            send_or_defer_recovery_status(core::control::IoRecoveryRequestFailed{
+                .recovery_id = tag.recovery_id,
+                .universe_version = tag.universe_version,
+                .market_id = market_id,
+                .request_attempt = tag.request_attempt,
+                .reason = "Transport reset before recovery snapshot delivery",
+            });
+        }
+        pending_recovery_by_market_.clear();
         pending_ws_commands_.clear();
         active_subscriptions_.clear();
+        sequence_observer_.clear();
     }
 
     bool KalshiWireSession::subscribe_active_universe(){
@@ -281,6 +562,9 @@ namespace predex::ingest::kalshi::market_data{
             .market_ids = {},//entire universe so probably don't want to explode it by ticker
         });
         auto& subscription = active_subscriptions_[channel];
+        if(subscription.sid.has_value()){
+            sequence_observer_.deactivate(*subscription.sid);
+        }
         subscription.channel = channel;
         subscription.phase = SubscriptionPhase::kSUBSCRIBE_PENDING;
         subscription.sid = std::nullopt;
@@ -409,12 +693,89 @@ namespace predex::ingest::kalshi::market_data{
 
         std::string_view response_type;
         if(!read_string(root, "type", response_type)){
+            if(pending.recovery_context.has_value()){
+                const auto& context = *pending.recovery_context;
+                const auto tag_iterator =
+                    pending_recovery_by_market_.find(context.market_id);
+                if(tag_iterator != pending_recovery_by_market_.end() &&
+                   tag_iterator->second.recovery_id == context.recovery_id &&
+                   tag_iterator->second.request_attempt == context.request_attempt){
+                    pending_recovery_by_market_.erase(tag_iterator);
+                }
+                send_or_defer_recovery_status(
+                    core::control::IoRecoveryRequestFailed{
+                        .recovery_id = context.recovery_id,
+                        .universe_version = context.universe_version,
+                        .market_id = context.market_id,
+                        .request_attempt = context.request_attempt,
+                        .reason = "Recovery websocket response missing type",
+                    });
+                return;
+            }
             report_fault("Websocket control response missing type");
             return;
         }
 
-        auto& subscription = active_subscriptions_[pending.channel];
-        subscription.channel = pending.channel;
+        if(pending.kind == WsCommandKind::kGET_SNAPSHOT){
+            if(!pending.recovery_context.has_value()){
+                report_fault("Recovery websocket command missing recovery context");
+                return;
+            }
+
+            const auto& context = *pending.recovery_context;
+            const auto erase_matching_tag = [this, &context](){
+                const auto tag_iterator =
+                    pending_recovery_by_market_.find(context.market_id);
+                if(tag_iterator != pending_recovery_by_market_.end() &&
+                   tag_iterator->second.recovery_id == context.recovery_id &&
+                   tag_iterator->second.universe_version == context.universe_version &&
+                   tag_iterator->second.request_attempt == context.request_attempt){
+                    pending_recovery_by_market_.erase(tag_iterator);
+                }
+            };
+
+            if(response_type == "error"){
+                erase_matching_tag();
+                send_or_defer_recovery_status(
+                    core::control::IoRecoveryRequestFailed{
+                        .recovery_id = context.recovery_id,
+                        .universe_version = context.universe_version,
+                        .market_id = context.market_id,
+                        .request_attempt = context.request_attempt,
+                        .reason = "Kalshi recovery snapshot request failed",
+                    });
+                return;
+            }
+            if(response_type != "ok"){
+                erase_matching_tag();
+                send_or_defer_recovery_status(
+                    core::control::IoRecoveryRequestFailed{
+                        .recovery_id = context.recovery_id,
+                        .universe_version = context.universe_version,
+                        .market_id = context.market_id,
+                        .request_attempt = context.request_attempt,
+                        .reason = "Unexpected Kalshi recovery snapshot response type",
+                    });
+                return;
+            }
+
+            send_or_defer_recovery_status(
+                core::control::IoRecoveryRequestAccepted{
+                    .recovery_id = context.recovery_id,
+                    .universe_version = context.universe_version,
+                    .market_id = context.market_id,
+                    .request_attempt = context.request_attempt,
+                });
+            return;
+        }
+
+        const auto subscription_iterator =
+            active_subscriptions_.find(pending.channel);
+        if(subscription_iterator == active_subscriptions_.end()){
+            report_fault("Websocket response targeted an unknown subscription");
+            return;
+        }
+        auto& subscription = subscription_iterator->second;
 
         if(response_type == "error"){
             subscription.phase = SubscriptionPhase::kFAULTED;
@@ -433,8 +794,32 @@ namespace predex::ingest::kalshi::market_data{
                     report_fault(subscription.last_error);
                     return;
                 }
+                if(sid < 0 ||
+                   static_cast<std::uint64_t>(sid) >
+                       std::numeric_limits<std::uint32_t>::max()){
+                    subscription.phase = SubscriptionPhase::kFAULTED;
+                    subscription.last_error = "Subscribed response sid out of range";
+                    report_fault(subscription.last_error);
+                    return;
+                }
 
-                subscription.sid = sid;
+                const auto normalized_sid = static_cast<std::uint32_t>(sid);
+                if(sequence_observer_.active(normalized_sid) &&
+                   sequence_observer_.channel_for_sid(normalized_sid) !=
+                       static_cast<std::uint8_t>(pending.channel)){
+                    subscription.phase = SubscriptionPhase::kFAULTED;
+                    subscription.last_error =
+                        "Subscribed response reused an active sid";
+                    report_fault(subscription.last_error);
+                    return;
+                }
+
+                if(subscription.sid.has_value() &&
+                   *subscription.sid != normalized_sid){
+                    sequence_observer_.deactivate(*subscription.sid);
+                }
+
+                subscription.sid = normalized_sid;
                 subscription.phase = SubscriptionPhase::kSUBSCRIBED;
                 subscription.market_ids.clear();
                 subscription.last_error.clear();
@@ -443,6 +828,7 @@ namespace predex::ingest::kalshi::market_data{
                         subscription.market_ids.insert(route.market_id);
                     }
                 }
+                sequence_observer_.activate(normalized_sid, pending.channel);
 
                 bool all_channels_subscribed = desired_universe_ != nullptr;
                 for(const auto channel : desired_channels_){
@@ -476,10 +862,15 @@ namespace predex::ingest::kalshi::market_data{
                 subscription.last_error.clear();
                 break;
             case WsCommandKind::kUNSUBSCRIBE:
+                if(subscription.sid.has_value()){
+                    sequence_observer_.deactivate(*subscription.sid);
+                }
                 subscription.sid = std::nullopt;
                 subscription.market_ids.clear();
                 subscription.phase = SubscriptionPhase::kIDLE;
                 subscription.last_error.clear();
+                break;
+            case WsCommandKind::kGET_SNAPSHOT:
                 break;
         }
 
@@ -493,31 +884,85 @@ namespace predex::ingest::kalshi::market_data{
             return;
         }
 
-        predex::ingest::kalshi::FrameHandle handle{};
-        if(!frame_pool_.try_acquire(handle)){
-            drain_recycle_queues();
-            if(!frame_pool_.try_acquire(handle)){
+        const auto* payload_data = reinterpret_cast<const char*>(payload.data());
+        simdjson::padded_string padded_payload{
+            std::string_view{payload_data, payload.size()}};
+        MarketDataEnvelope envelope{};
+        const EnvelopeParseCode parse_result =
+            parse_market_data_envelope(padded_payload, envelope);
+
+        const bool sequence_available =
+            parse_result == EnvelopeParseCode::kOK ||
+            parse_result == EnvelopeParseCode::kMISSING_TYPE ||
+            parse_result == EnvelopeParseCode::kUNSUPPORTED_TYPE ||
+            parse_result == EnvelopeParseCode::kMISSING_MSG ||
+            parse_result == EnvelopeParseCode::kMISSING_MARKET_TICKER;
+
+        SequenceObservation sequence_observation{};
+        if(sequence_available){
+            sequence_observation =
+                observe_sequence(envelope.sid, envelope.sequence);
+            if(sequence_observation.code ==
+               SequenceObservationCode::kINACTIVE_SID){
                 ++telemetry_.frames_dropped;
-                ++telemetry_.pool_exhausted;
+                ++telemetry_.stamp_failed;
+                ++telemetry_.inactive_sid;
+                return;
+            }
+
+            auto* const channel_stats =
+                channel_telemetry(sequence_observation.channel);
+            if(channel_stats != nullptr){
+                ++channel_stats->frames_observed;
+                switch(sequence_observation.code){
+                    case SequenceObservationCode::kGAP:
+                        ++channel_stats->sequence_gaps;
+                        break;
+                    case SequenceObservationCode::kDUPLICATE:
+                        ++channel_stats->duplicate_sequences;
+                        break;
+                    case SequenceObservationCode::kSTALE:
+                        ++channel_stats->stale_sequences;
+                        break;
+                    case SequenceObservationCode::kFIRST:
+                    case SequenceObservationCode::kCONTIGUOUS:
+                    case SequenceObservationCode::kINACTIVE_SID:
+                        break;
+                }
+            }
+
+            if(sequence_observation.code == SequenceObservationCode::kGAP &&
+               sequence_observation.channel ==
+                   exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA){
+                const OrderBookSubscriptionInvalidationBarrier barrier{
+                    .universe_version = desired_universe_ != nullptr
+                        ? desired_universe_->version
+                        : 0,
+                    .incident = {
+                        .origin = IntegrityIncidentOrigin::kWIRE_SESSION,
+                        .producer_index = 0,
+                        .incident_id = next_wire_incident_id_++,
+                    },
+                    .sid = envelope.sid,
+                    .expected_sequence =
+                        sequence_observation.expected_sequence,
+                    .observed_sequence =
+                        sequence_observation.observed_sequence,
+                    .reason = BookInvalidationReason::kEXCHANGE_SEQUENCE_GAP,
+                };
+                if(!send_or_defer_integrity_barrier(
+                       MarketDataPathMessage{barrier})){
+                    ++telemetry_.frames_dropped;
+                    return;
+                }
+            }
+
+            if(sequence_observation.code == SequenceObservationCode::kDUPLICATE ||
+               sequence_observation.code == SequenceObservationCode::kSTALE){
+                ++telemetry_.frames_dropped;
                 return;
             }
         }
-
-        auto* frame = frame_pool_.writable_frame(handle);
-        if(frame == nullptr){
-            ++telemetry_.frames_dropped;
-            ++telemetry_.missing_frame_slot;
-            recycle_handle(handle);
-            return;
-        }
-
-        frame->recv_ts_ns = monotonic_now_ns();
-        frame->len = static_cast<std::uint32_t>(payload.size());
-        frame->flags = 0;
-        std::memcpy(frame->payload.data(), payload.data(), payload.size());
-
-        MarketDataEnvelope envelope{};
-        EnvelopeParseCode parse_result = parse_market_data_envelope(*frame, envelope);
 
         switch(parse_result){
             case EnvelopeParseCode::kOK:
@@ -526,7 +971,6 @@ namespace predex::ingest::kalshi::market_data{
             case EnvelopeParseCode::kINVALID_JSON://NOLINT
                 ++telemetry_.frames_dropped;
                 ++telemetry_.envelope_parse_failed;
-                recycle_handle(handle);
                 return;
 
             case EnvelopeParseCode::kMISSING_SID:
@@ -536,25 +980,24 @@ namespace predex::ingest::kalshi::market_data{
             case EnvelopeParseCode::kMISSING_MSG:
                 ++telemetry_.frames_dropped;
                 ++telemetry_.envelope_parse_failed;
-                recycle_handle(handle);
                 return;
 
             case EnvelopeParseCode::kUNSUPPORTED_TYPE:
                 ++telemetry_.frames_dropped;
                 ++telemetry_.envelope_unsupported_type;
-                recycle_handle(handle);
                 return;
 
             case EnvelopeParseCode::kMISSING_MARKET_TICKER:
                 ++telemetry_.frames_dropped;
                 ++telemetry_.envelope_missing_market_ticker;
-                recycle_handle(handle);
                 return;
         }
 
-        StampHandleCode stamp_result = stamp_handle_from_envelope(handle, envelope);
+        const core::control::UniverseMarketRoute* route = nullptr;
+        const StampHandleCode route_result =
+            resolve_market_route(envelope, route);
 
-        switch(stamp_result){
+        switch(route_result){
             case StampHandleCode::kOK:
                 break;
 
@@ -562,27 +1005,31 @@ namespace predex::ingest::kalshi::market_data{
                 ++telemetry_.frames_dropped;
                 ++telemetry_.stamp_failed;
                 ++telemetry_.envelope_unsupported_type;
-                recycle_handle(handle);
                 return;
 
             case StampHandleCode::kEMPTY_MARKET_TICKER:
                 ++telemetry_.frames_dropped;
                 ++telemetry_.stamp_failed;
                 ++telemetry_.envelope_missing_market_ticker;
-                recycle_handle(handle);
                 return;
 
             case StampHandleCode::kINACTIVE_SID:
                 ++telemetry_.frames_dropped;
                 ++telemetry_.stamp_failed;
                 ++telemetry_.inactive_sid;
-                recycle_handle(handle);
                 return;
 
             case StampHandleCode::kUNKNOWN_MARKET_TICKER:
                 ++telemetry_.frames_dropped;
                 ++telemetry_.stamp_failed;
                 ++telemetry_.unknown_market_ticker;
+                if(sequence_available){
+                    if(auto* stats = channel_telemetry(
+                           sequence_observation.channel);
+                       stats != nullptr){
+                        ++stats->intentionally_filtered;
+                    }
+                }
                 core::control::UnknownMarketTickerStats unknown_market_ticker{
                     .market_ticker = std::string{envelope.market_ticker},
                     .frame_kind = static_cast<std::uint8_t>(envelope.kind),
@@ -590,19 +1037,173 @@ namespace predex::ingest::kalshi::market_data{
                     .channel = channel_for_sid(envelope.sid),
                 };
                 record_unknown_market_ticker(unknown_market_ticker);
-                recycle_handle(handle);
                 return;
         }
 
-        if(!router_queue_.try_push(handle)){
+        if(route == nullptr){
+            ++telemetry_.frames_dropped;
+            ++telemetry_.stamp_failed;
+            return;
+        }
+
+        const bool affects_order_book =
+            envelope.kind == FrameKind::kORDERBOOK_SNAPSHOT ||
+            envelope.kind == FrameKind::kORDERBOOK_DELTA;
+        const auto emit_market_barrier =
+            [this, &envelope, route](BookInvalidationReason reason){
+                if(envelope.kind != FrameKind::kORDERBOOK_SNAPSHOT &&
+                   envelope.kind != FrameKind::kORDERBOOK_DELTA){
+                    return true;
+                }
+                const MarketInvalidationBarrier barrier{
+                    .universe_version = desired_universe_ != nullptr
+                        ? desired_universe_->version
+                        : 0,
+                    .incident = {
+                        .origin = IntegrityIncidentOrigin::kWIRE_SESSION,
+                        .producer_index = 0,
+                        .incident_id = next_wire_incident_id_++,
+                    },
+                    .sid = envelope.sid,
+                    .sequence = envelope.sequence,
+                    .market_id = route->market_id,
+                    .event_id = route->event_id,
+                    .shard_index = route->shard_index,
+                    .shard_event_index = route->shard_event_index,
+                    .event_market_index = route->event_market_index,
+                    .reason = reason,
+                };
+                return send_or_defer_integrity_barrier(
+                    MarketDataPathMessage{barrier});
+            };
+        const auto fail_correlated_recovery =
+            [this, &envelope, route](std::string reason){
+                if(envelope.kind != FrameKind::kORDERBOOK_SNAPSHOT){
+                    return;
+                }
+                const auto tag_iterator =
+                    pending_recovery_by_market_.find(route->market_id);
+                if(tag_iterator == pending_recovery_by_market_.end()){
+                    return;
+                }
+                const PendingRecoveryTag tag = tag_iterator->second;
+                pending_recovery_by_market_.erase(tag_iterator);
+                for(auto iterator = pending_ws_commands_.begin();
+                    iterator != pending_ws_commands_.end();){
+                    const auto& context = iterator->second.recovery_context;
+                    if(context.has_value() &&
+                       context->recovery_id == tag.recovery_id &&
+                       context->universe_version == tag.universe_version &&
+                       context->market_id == route->market_id &&
+                       context->request_attempt == tag.request_attempt){
+                        iterator = pending_ws_commands_.erase(iterator);
+                    }else{
+                        ++iterator;
+                    }
+                }
+                send_or_defer_recovery_status(
+                    core::control::IoRecoveryRequestFailed{
+                        .recovery_id = tag.recovery_id,
+                        .universe_version = tag.universe_version,
+                        .market_id = route->market_id,
+                        .request_attempt = tag.request_attempt,
+                        .reason = std::move(reason),
+                    });
+            };
+
+        predex::ingest::kalshi::FrameHandle handle{};
+        if(!frame_pool_.try_acquire(handle)){
+            drain_recycle_queues();
+            if(!frame_pool_.try_acquire(handle)){
+                ++telemetry_.frames_dropped;
+                ++telemetry_.pool_exhausted;
+                if(affects_order_book){
+                    (void)emit_market_barrier(
+                        BookInvalidationReason::kWIRE_POOL_EXHAUSTION);
+                    fail_correlated_recovery(
+                        "Recovery snapshot dropped because the wire frame pool was exhausted");
+                }
+                return;
+            }
+        }
+        update_capacity_high_water();
+
+        auto* frame = frame_pool_.writable_frame(handle);
+        if(frame == nullptr){
+            ++telemetry_.frames_dropped;
+            ++telemetry_.missing_frame_slot;
+            recycle_handle(handle);
+            if(affects_order_book){
+                (void)emit_market_barrier(
+                    BookInvalidationReason::kWIRE_POOL_EXHAUSTION);
+                fail_correlated_recovery(
+                    "Recovery snapshot dropped because its frame slot was unavailable");
+            }
+            return;
+        }
+
+        frame->recv_ts_ns = monotonic_now_ns();
+        frame->len = static_cast<std::uint32_t>(payload.size());
+        frame->flags = 0;
+        std::memcpy(frame->payload.data(), payload.data(), payload.size());
+        stamp_handle(handle, envelope, *route);
+
+        std::optional<PendingRecoveryTag> recovery_tag;
+        if(envelope.kind == FrameKind::kORDERBOOK_SNAPSHOT){
+            const auto tag_iterator =
+                pending_recovery_by_market_.find(route->market_id);
+            if(tag_iterator != pending_recovery_by_market_.end() &&
+               tag_iterator->second.universe_version == handle.universe_version){
+                recovery_tag = tag_iterator->second;
+                handle.recovery_id = recovery_tag->recovery_id;
+            }
+        }
+
+        if(!router_queue_.try_push(MarketDataPathMessage{handle})){
             ++telemetry_.router_enqueue_failed;
+            if(sequence_available){
+                if(auto* stats = channel_telemetry(
+                       sequence_observation.channel);
+                   stats != nullptr){
+                    ++stats->downstream_delivery_losses;
+                }
+            }
             if(!logger_queue_.try_push(handle)){
                 ++telemetry_.frames_dropped;
                 ++telemetry_.logger_fallback_failed;
                 recycle_handle(handle);
-                return;
+            }else{
+                ++telemetry_.logger_fallback_enqueued;
+                ++telemetry_.frames_published;
+                if(sequence_available){
+                    if(auto* stats = channel_telemetry(
+                           sequence_observation.channel);
+                       stats != nullptr){
+                        ++stats->logger_only_frames;
+                    }
+                }
             }
-            ++telemetry_.logger_fallback_enqueued;
+            if(affects_order_book){
+                (void)emit_market_barrier(
+                    BookInvalidationReason::kWIRE_TO_ROUTER_DELIVERY_LOSS);
+                fail_correlated_recovery(
+                    "Recovery snapshot could not be delivered to the router");
+            }
+            return;
+        }
+        update_capacity_high_water();
+
+        if(recovery_tag.has_value()){
+            const auto tag_iterator =
+                pending_recovery_by_market_.find(route->market_id);
+            if(tag_iterator != pending_recovery_by_market_.end() &&
+               tag_iterator->second.recovery_id == recovery_tag->recovery_id &&
+               tag_iterator->second.universe_version ==
+                   recovery_tag->universe_version &&
+               tag_iterator->second.request_attempt ==
+                   recovery_tag->request_attempt){
+                pending_recovery_by_market_.erase(tag_iterator);
+            }
         }
         ++telemetry_.frames_published;
     }
@@ -710,17 +1311,27 @@ namespace predex::ingest::kalshi::market_data{
             return IncomingMessageKind::kMARKET_DATA;
         }
 
+        if(type == "ok" || type == "error" || type == "subscribed" ||
+           type == "unsubscribed"){
+            return IncomingMessageKind::kIGNORE;
+        }
+
+        std::uint64_t sid{};
+        std::uint64_t sequence{};
+        if(read_uint64(root, "sid", sid) &&
+           read_uint64(root, "seq", sequence)){
+            return IncomingMessageKind::kMARKET_DATA;
+        }
+
         return IncomingMessageKind::kIGNORE;
     }
 
-    EnvelopeParseCode KalshiWireSession::parse_market_data_envelope(const KalshiFrame& frame,
-                                                       MarketDataEnvelope& envelope_out){
+    EnvelopeParseCode KalshiWireSession::parse_market_data_envelope(
+        simdjson::padded_string_view payload,
+        MarketDataEnvelope& envelope_out){
         envelope_out = MarketDataEnvelope{};
 
-        const auto* data = reinterpret_cast<const char*>(frame.payload.data());
-        simdjson::padded_string_view json{data, frame.len, frame.payload.size()};
-
-        auto doc_result = market_data_envelope_parser_.iterate(json);
+        auto doc_result = market_data_envelope_parser_.iterate(payload);
         if(doc_result.error() != simdjson::SUCCESS){return EnvelopeParseCode::kINVALID_JSON;}
         auto root_result = doc_result.get_object();
         if(root_result.error() != simdjson::SUCCESS){return EnvelopeParseCode::kINVALID_JSON;}
@@ -735,6 +1346,12 @@ namespace predex::ingest::kalshi::market_data{
         }
         envelope_out.sid = static_cast<std::uint32_t>(session_id_out);
 
+        std::uint64_t sequence_out{};
+        if(!read_uint64(root, "seq", sequence_out)){
+            return EnvelopeParseCode::kMISSING_SEQUENCE;
+        }
+        envelope_out.sequence = sequence_out;
+
         std::string_view type_out;
         if(!read_string(root, "type", type_out)){
             return EnvelopeParseCode::kMISSING_TYPE;
@@ -743,12 +1360,6 @@ namespace predex::ingest::kalshi::market_data{
         if(envelope_out.kind == FrameKind::kUNKNOWN){
             return EnvelopeParseCode::kUNSUPPORTED_TYPE;
         }
-
-        std::uint64_t sequence_out{};
-        if(!read_uint64(root, "seq", sequence_out)){
-            return EnvelopeParseCode::kMISSING_SEQUENCE;
-        }
-        envelope_out.sequence = sequence_out;
 
         simdjson::ondemand::object msg;
         if(!read_object(root, "msg", msg)){
@@ -762,54 +1373,6 @@ namespace predex::ingest::kalshi::market_data{
         envelope_out.market_ticker = market_ticker_out;
 
         return EnvelopeParseCode::kOK;
-    }
-
-    StampHandleCode KalshiWireSession::stamp_handle_from_envelope(FrameHandle& handle,
-                                                       const MarketDataEnvelope& envelope){
-        if(envelope.kind == FrameKind::kUNKNOWN){
-            return StampHandleCode::kUNKNOWN_KIND;
-        }
-        if(envelope.market_ticker.empty()){
-            return StampHandleCode::kEMPTY_MARKET_TICKER;
-        }
-
-        if(!is_active_sid(envelope.sid)){
-            return StampHandleCode::kINACTIVE_SID;
-        }
-
-        const auto route_it = market_route_by_ticker_.find(envelope.market_ticker);
-        if(route_it == market_route_by_ticker_.end()){
-            return StampHandleCode::kUNKNOWN_MARKET_TICKER;
-        }
-
-        const auto& route = route_it->second;
-        handle.universe_version = desired_universe_ != nullptr ? desired_universe_->version : 0;
-        handle.sequence = envelope.sequence;
-        handle.sid = envelope.sid;
-        handle.market_id = route.market_id;
-        handle.event_id = route.event_id;
-        handle.affinity_key = route.affinity_key;
-        handle.topology = route.topology;
-        handle.shard_index = route.shard_index;
-        handle.shard_event_index = route.shard_event_index;
-        handle.event_market_index = route.event_market_index;
-        handle.kind = envelope.kind;
-
-        return StampHandleCode::kOK;
-    }
-
-    bool KalshiWireSession::is_active_sid(std::uint32_t sid) const noexcept{
-        //NOLINTNEXTLINE -- future work change to std::range
-        for(const auto& [_, subscription] : active_subscriptions_){
-            if(subscription.phase == SubscriptionPhase::kSUBSCRIBED &&
-               subscription.sid.has_value() &&
-               *subscription.sid >= 0 &&
-               *subscription.sid <= std::numeric_limits<std::uint32_t>::max() &&
-               static_cast<std::uint32_t>(*subscription.sid) == sid){
-                return true;
-            }
-        }
-        return false;
     }
 
     bool KalshiWireSession::unsubscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel){

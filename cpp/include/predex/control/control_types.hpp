@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <variant>
+#include <array>
 
 #include "predex/control/control_lifecycle.hpp"
 namespace predex::core::control {
@@ -35,6 +36,29 @@ namespace predex::core::control {
         std::uint8_t channel{};
     };
 
+    struct MarketDataChannelTelemetrySnapshot{
+        std::uint8_t channel{};
+        std::uint64_t frames_observed{};
+        std::uint64_t sequence_gaps{};
+        std::uint64_t duplicate_sequences{};
+        std::uint64_t stale_sequences{};
+        std::uint64_t intentionally_filtered{};
+        std::uint64_t logger_only_frames{};
+        std::uint64_t downstream_delivery_losses{};
+    };
+
+    inline constexpr std::size_t kMarketDataChannelCount = 3;
+    using MarketDataChannelTelemetry =
+        std::array<MarketDataChannelTelemetrySnapshot, kMarketDataChannelCount>;
+
+    [[nodiscard]] inline MarketDataChannelTelemetry make_market_data_channel_telemetry() noexcept{
+        return MarketDataChannelTelemetry{{
+            MarketDataChannelTelemetrySnapshot{.channel = 1},
+            MarketDataChannelTelemetrySnapshot{.channel = 2},
+            MarketDataChannelTelemetrySnapshot{.channel = 3},
+        }};
+    }
+
     struct IoTelemetrySnapshot{
         std::uint64_t frames_received{0};
         std::uint64_t frames_published{0};
@@ -58,6 +82,12 @@ namespace predex::core::control {
         std::uint64_t logger_fallback_failed{0};
 
         std::uint64_t recycle_failures{0};
+        std::uint64_t snapshot_requests_sent{0};
+        std::uint64_t snapshot_requests_accepted{0};
+        std::uint64_t snapshot_requests_failed{0};
+        std::uint64_t frame_pool_in_use_high_water{0};
+        std::uint64_t router_queue_depth_high_water{0};
+        MarketDataChannelTelemetry channel_stats{make_market_data_channel_telemetry()};
     };
 
     struct RouterTelemetrySnapshot{
@@ -66,6 +96,14 @@ namespace predex::core::control {
         std::uint64_t frames_to_logger{0};
         std::uint64_t frames_recycled{0};
         std::uint64_t leaked_handles{0};
+        std::uint64_t market_barriers_received{0};
+        std::uint64_t market_barriers_delivered{0};
+        std::uint64_t subscription_barriers_received{0};
+        std::uint64_t subscription_barriers_delivered{0};
+        std::uint64_t barriers_deferred{0};
+        std::uint64_t subscription_recovery_facts_deferred{0};
+        std::uint64_t shard_queue_depth_high_water{0};
+        MarketDataChannelTelemetry channel_stats{make_market_data_channel_telemetry()};
     };
 
     struct ShardTelemetrySnapshot{
@@ -78,6 +116,38 @@ namespace predex::core::control {
         std::uint64_t frames_recycled{0};
         std::uint64_t leaked_handles{0};
         std::uint64_t missed_frames_to_logger{0};
+        std::uint64_t event_ignored{0};
+        std::uint64_t market_barriers_seen{0};
+        std::uint64_t subscription_barriers_seen{0};
+        std::uint64_t barrier_rejects{0};
+        std::uint64_t markets_became_unusable{0};
+        std::uint64_t markets_recovery_required{0};
+        std::uint64_t markets_already_awaiting_recovery{0};
+    };
+
+    struct RecoveryTelemetrySnapshot{
+        std::uint64_t incidents_created{};
+        std::uint64_t incidents_deduplicated{};
+        std::uint64_t markets_already_recovering{};
+        std::uint64_t observations_rejected{};
+        std::uint64_t markets_scheduled{};
+        std::uint64_t requests_enqueued{};
+        std::uint64_t request_enqueue_failures{};
+        std::uint64_t requests_accepted{};
+        std::uint64_t request_failures{};
+        std::uint64_t retries_scheduled{};
+        std::uint64_t request_ack_timeouts{};
+        std::uint64_t snapshot_timeouts{};
+        std::uint64_t markets_recovered{};
+        std::uint64_t markets_failed{};
+        std::uint64_t incidents_completed{};
+        std::uint64_t incidents_superseded{};
+        std::uint64_t markets_superseded{};
+        std::uint64_t active_incidents{};
+        std::uint64_t active_markets{};
+        std::uint64_t recovery_duration_samples{};
+        std::uint64_t recovery_duration_total_ns{};
+        std::uint64_t recovery_duration_max_ns{};
     };
 
     struct LoggerTelemetrySnapshot{
@@ -201,10 +271,13 @@ namespace predex::core::control {
         PrivateOrderFeedComponentState private_order_feed_component_state;
         OrderRestComponentState order_rest_component_state;
         std::vector<ShardComponentState> shard_component_states;
+        RecoveryTelemetrySnapshot recovery_telemetry;
     };
 
     using MarketId = std::uint32_t;
     using EventId = std::uint32_t;
+
+    using RecoveryId = std::uint64_t;
 
     using AffinityKey = std::uint64_t; // sharding events by this key ensures all events with the same key go to the same shard,
     
@@ -285,7 +358,10 @@ namespace predex::core::control {
     struct ConnectIo{};
     struct DisconnectIo{};
     struct RecoverMarketIo{
+        RecoveryId recovery_id{};
+        std::uint64_t universe_version{};
         MarketId market_id{};
+        std::uint32_t request_attempt{};
     };
 
     using ControlToIoCommand = std::variant<ApplyUniverseSnapshotIo, ConnectIo, DisconnectIo, RecoverMarketIo>;
@@ -307,6 +383,20 @@ namespace predex::core::control {
     struct IoTelemetry{
         IoTelemetrySnapshot telemetry;
     };
+    struct IoRecoveryRequestAccepted {
+        RecoveryId recovery_id{};
+        std::uint64_t universe_version{};
+        MarketId market_id{};
+        std::uint32_t request_attempt{};
+    };
+
+    struct IoRecoveryRequestFailed {
+        RecoveryId recovery_id{};
+        std::uint64_t universe_version{};
+        MarketId market_id{};
+        std::uint32_t request_attempt{};
+        std::string reason;
+    };
 
     using IoToControlStatus = std::variant<
         IoConnected,
@@ -314,7 +404,9 @@ namespace predex::core::control {
         IoUniverseSnapshotApplied,
         IoSubscriptionReady,
         IoFaulted,
-        IoTelemetry
+        IoTelemetry,
+        IoRecoveryRequestAccepted,
+        IoRecoveryRequestFailed
     >;
 
     struct LoggerStarted{

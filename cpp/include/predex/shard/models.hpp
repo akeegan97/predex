@@ -4,6 +4,7 @@
 #include <vector>
 #include <optional>
 #include <limits>
+#include <algorithm>
 #include "predex/control/control_types.hpp"
 
 namespace predex::shard{
@@ -47,9 +48,16 @@ namespace predex::shard{
         kTAPERED_DECI_CENTS = 2,
         kDECI_CENTS = 3
     };
+
+    enum class BookSyncState : std::uint8_t{
+        kAWAITING_INITIAL_SNAPSHOT = 0,
+        kSYNCHRONIZED = 1,
+        kAWAITING_RECOVERY_SNAPSHOT = 2,
+    };
     
     static constexpr std::uint16_t kInvalidBookIndex = std::numeric_limits<std::uint16_t>::max();
-    
+     
+    //TODO - > Kalshi just released a new pricing grid which will need to be added here eventually. 
     struct KalshiBook{
         /*
             Since Kalshi markets can be either linear cents, tapered_deci_cents, or deci_cents. 
@@ -63,9 +71,6 @@ namespace predex::shard{
         std::uint16_t invalid_index{kInvalidBookIndex};
         std::vector<QtyLots> bids; 
         std::vector<QtyLots> asks;
-
-        bool has_snapshot{false};
-        bool desynced{false};
 
         MarketScale scale{MarketScale::kUNKNOWN};
 
@@ -81,7 +86,7 @@ namespace predex::shard{
 
             return index;
         }
-        void set_index_grid() {
+        [[nodiscard]] bool set_index_grid() {
             index_by_tick.assign(kTICKSCALE + 1, invalid_index);
 
             std::uint64_t divisor = 0;
@@ -100,10 +105,12 @@ namespace predex::shard{
                     divisor = kTICK_TO_DECI_CENTS_DIVISOR;
                     level_count = kLEVEL_COUNT_DECI_CENTS;
                     break;
+                case MarketScale::kUNKNOWN:
                 default:
                     bids.clear();
                     asks.clear();
-                    return;
+                    index_by_tick.clear();
+                    return false;
             }
 
             for (std::uint64_t tick = 0; tick <= kTICKSCALE; ++tick) {
@@ -114,7 +121,25 @@ namespace predex::shard{
 
             bids.assign(level_count, QtyLots{});
             asks.assign(level_count, QtyLots{});
+            return true;
         }
+
+        BookSyncState sync_state{BookSyncState::kAWAITING_INITIAL_SNAPSHOT};
+
+        [[nodiscard]] bool usable() const noexcept{
+            return sync_state == BookSyncState::kSYNCHRONIZED;
+        }
+
+        [[nodiscard]]bool awaiting_snapshot() const noexcept{
+            return !usable();
+        }
+
+        void invalidate() noexcept{
+            sync_state = BookSyncState::kAWAITING_RECOVERY_SNAPSHOT;
+            std::fill(bids.begin(), bids.end(), QtyLots{0});
+            std::fill(asks.begin(), asks.end(), QtyLots{0});
+        }
+
     };
 
     struct KalshiMarket{
@@ -137,7 +162,6 @@ namespace predex::shard{
         std::uint32_t shard_event_index{};
         std::vector<KalshiMarket> markets;
         EventDerivedState derived_state;
-        bool desynced{false};
     };
 
     //Normalized Parsed Market Data Events

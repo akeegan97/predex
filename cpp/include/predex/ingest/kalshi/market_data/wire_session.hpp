@@ -11,7 +11,12 @@
 #include <optional>
 #include <cstdint>
 #include <chrono>
+#include <deque>
 #include <simdjson.h>
+#include <cstddef>
+#include <string_view>
+#include <limits>
+
 
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/utils/spsc.hpp"
@@ -20,13 +25,16 @@
 #include "predex/control/control_types.hpp"
 #include "predex/exchange/kalshi/kalshi_ws_protocol.hpp"
 
+
 namespace predex::ingest::kalshi::market_data{
+
+    class KalshiWireSessionTestPeer;
 
     inline constexpr std::size_t kMAX_RECYCLE_BATCH_SIZE = 64;
     inline constexpr std::size_t kMAX_UNKNOWN_MARKET_TICKER_SAMPLES = 8;
     inline constexpr std::chrono::milliseconds kIO_TELEMETRY_INTERVAL{250};
 
-    using RouterQueue = predex::utils::SPSCQueue<FrameHandle>;
+    using RouterQueue = predex::utils::SPSCQueue<MarketDataPathMessage>;
 
     struct WireSessionState{
         bool connected{false};
@@ -66,6 +74,7 @@ namespace predex::ingest::kalshi::market_data{
         kADD_MARKETS = 2,
         kDELETE_MARKETS = 3,
         kUNSUBSCRIBE = 4,
+        kGET_SNAPSHOT = 5,
     };
 
     enum class IncomingMessageKind : std::uint8_t {
@@ -78,9 +87,129 @@ namespace predex::ingest::kalshi::market_data{
     struct ActiveSubscription{
         exchange::kalshi::KalshiMarketDataChannel channel{};
         SubscriptionPhase phase{SubscriptionPhase::kIDLE};
-        std::optional<std::int64_t> sid;
+        std::optional<std::uint32_t> sid;
         std::unordered_set<core::control::MarketId> market_ids;
         std::string last_error;
+    };
+
+    struct PendingRecoveryTag{
+        core::control::RecoveryId recovery_id{};
+        std::uint64_t universe_version{};
+        std::uint32_t request_attempt{};
+    };
+
+    struct RecoveryCommandContext{
+        core::control::RecoveryId recovery_id{};
+        std::uint64_t universe_version{};
+        core::control::MarketId market_id{};
+        std::uint32_t request_attempt{};
+    };
+
+    struct ActiveSidState{
+        exchange::kalshi::KalshiMarketDataChannel channel{};
+        std::optional<std::uint64_t> last_sequence;
+    };
+
+    enum class SequenceObservationCode: std::uint8_t{
+        kFIRST,
+        kCONTIGUOUS,
+        kGAP,
+        kDUPLICATE,
+        kSTALE,
+        kINACTIVE_SID,
+    };
+
+    struct SequenceObservation{
+        SequenceObservationCode code{SequenceObservationCode::kINACTIVE_SID};
+        exchange::kalshi::KalshiMarketDataChannel channel{};
+        std::uint64_t expected_sequence{};
+        std::uint64_t observed_sequence{};
+    };
+
+    class SidSequenceObserver{
+        public:
+            void activate(
+                std::uint32_t sid,
+                exchange::kalshi::KalshiMarketDataChannel channel){
+                states_.insert_or_assign(
+                    sid,
+                    ActiveSidState{
+                        .channel = channel,
+                        .last_sequence = std::nullopt,
+                    });
+            }
+
+            void deactivate(std::uint32_t sid) noexcept{
+                states_.erase(sid);
+            }
+
+            void clear() noexcept{
+                states_.clear();
+            }
+
+            [[nodiscard]] bool active(std::uint32_t sid) const noexcept{
+                return states_.find(sid) != states_.end();
+            }
+
+            [[nodiscard]] std::uint8_t channel_for_sid(
+                std::uint32_t sid) const noexcept{
+                const auto iterator = states_.find(sid);
+                if(iterator == states_.end()){
+                    return 0;
+                }
+                return static_cast<std::uint8_t>(iterator->second.channel);
+            }
+
+            [[nodiscard]] SequenceObservation observe(
+                std::uint32_t sid,
+                std::uint64_t sequence) noexcept{
+                SequenceObservation observation{
+                    .code = SequenceObservationCode::kINACTIVE_SID,
+                    .observed_sequence = sequence,
+                };
+                const auto iterator = states_.find(sid);
+                if(iterator == states_.end()){
+                    return observation;
+                }
+                auto& sid_state = iterator->second;
+                observation.channel = sid_state.channel;
+
+                if(!sid_state.last_sequence.has_value()){
+                    sid_state.last_sequence = sequence;
+                    observation.code = SequenceObservationCode::kFIRST;
+                    observation.expected_sequence = sequence;
+                    return observation;
+                }
+
+                const std::uint64_t previous = *sid_state.last_sequence;
+                const std::uint64_t next_expected =
+                    previous == std::numeric_limits<std::uint64_t>::max()
+                        ? previous
+                        : previous + 1U;
+                observation.expected_sequence = next_expected;
+
+                if(sequence == previous){
+                    observation.code = SequenceObservationCode::kDUPLICATE;
+                    return observation;
+                }
+                if(previous != std::numeric_limits<std::uint64_t>::max() &&
+                   sequence == next_expected){
+                    sid_state.last_sequence = sequence;
+                    observation.code = SequenceObservationCode::kCONTIGUOUS;
+                    return observation;
+                }
+                if(sequence > previous){
+                    observation.code = SequenceObservationCode::kGAP;
+                    sid_state.last_sequence = sequence;
+                    return observation;
+                }
+
+                observation.code = SequenceObservationCode::kSTALE;
+                return observation;
+            }
+
+        private:
+            std::unordered_map<std::uint32_t, ActiveSidState> states_;
     };
 
     struct PendingWsCommand{
@@ -88,6 +217,7 @@ namespace predex::ingest::kalshi::market_data{
         WsCommandKind kind{};
         exchange::kalshi::KalshiMarketDataChannel channel{};
         std::vector<core::control::MarketId> market_ids;
+        std::optional<RecoveryCommandContext> recovery_context;
     };
 
     struct MarketDataEnvelope {
@@ -156,6 +286,7 @@ namespace predex::ingest::kalshi::market_data{
 
 
         private:
+            friend class KalshiWireSessionTestPeer;
             FramePool& frame_pool_;
             RouterQueue& router_queue_;
             ControlQueues control_queues_;
@@ -184,6 +315,14 @@ namespace predex::ingest::kalshi::market_data{
             std::chrono::steady_clock::time_point next_telemetry_send_{std::chrono::steady_clock::now() + kIO_TELEMETRY_INTERVAL};
 
             std::uint64_t next_ws_command_id_{1};
+
+            std::unordered_map<core::control::MarketId,PendingRecoveryTag> pending_recovery_by_market_;
+
+            SidSequenceObserver sequence_observer_;
+
+            std::optional<MarketDataPathMessage> pending_integrity_barrier_;
+            std::uint64_t next_wire_incident_id_{1};
+            std::deque<core::control::IoToControlStatus>pending_recovery_statuses_;
 
             std::uint64_t next_ws_command_id() noexcept {
                 return next_ws_command_id_++;
@@ -216,16 +355,30 @@ namespace predex::ingest::kalshi::market_data{
             void pump_socket_once();
             
             [[nodiscard]] IncomingMessageKind classify_incoming_message(std::span<const std::byte> payload);
-            [[nodiscard]] EnvelopeParseCode parse_market_data_envelope(const KalshiFrame& frame,
+            [[nodiscard]] EnvelopeParseCode parse_market_data_envelope( simdjson::padded_string_view payload,
                                                           MarketDataEnvelope& envelope_out);
-            [[nodiscard]] StampHandleCode stamp_handle_from_envelope(FrameHandle& handle,
-                                                          const MarketDataEnvelope& envelope);
+            [[nodiscard]] StampHandleCode resolve_market_route(const MarketDataEnvelope& envelope,const core::control::UniverseMarketRoute*& route_out) const noexcept;
+            void stamp_handle(FrameHandle& handle,const MarketDataEnvelope& envelope,const core::control::UniverseMarketRoute& route) noexcept;
             [[nodiscard]] bool is_active_sid(std::uint32_t sid) const noexcept;
             void publish_market_data_frame(std::span<const std::byte> payload);
             void handle_ws_control_response(std::span<const std::byte> payload);
 
+            void recover_market(const core::control::RecoverMarketIo& recover_market_io);
+
             void report_fault(std::string error_message);
 
+            [[nodiscard]] bool flush_pending_integrity_barrier()noexcept;
+            [[nodiscard]] bool send_or_defer_integrity_barrier(MarketDataPathMessage barrier) noexcept;
+
+            void send_or_defer_recovery_status(core::control::IoToControlStatus status);
+            [[nodiscard]] bool flush_pending_recovery_statuses() noexcept;
+
+            [[nodiscard]] core::control::MarketDataChannelTelemetrySnapshot*
+            channel_telemetry(
+                exchange::kalshi::KalshiMarketDataChannel channel) noexcept;
+            void update_capacity_high_water() noexcept;
+
+            [[nodiscard]] SequenceObservation observe_sequence(std::uint32_t sid, std::uint64_t sequence) noexcept;
 
     };
 

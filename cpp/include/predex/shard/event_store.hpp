@@ -16,7 +16,16 @@ namespace predex::shard{
             [[nodiscard]] const Event* get_event(std::uint32_t shard_event_index) const noexcept;
 
             [[nodiscard]] std::size_t size() const noexcept;
+
+            [[nodiscard]] BookInvalidationResult invalidate_market(
+                std::uint32_t shard_event_index,
+                std::uint32_t event_market_index,
+                MarketId expected_market_id,
+                predex::ingest::kalshi::BookInvalidationReason reason) noexcept;
+
+            [[nodiscard]] BookInvalidationSummary invalidate_all_markets(predex::ingest::kalshi::BookInvalidationReason reason) noexcept;
         private:
             std::vector<Event> events_;
+
     };
 }

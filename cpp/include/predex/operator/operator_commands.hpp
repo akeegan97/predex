@@ -70,6 +70,13 @@ struct IoCounterStats{
     std::uint64_t logger_fallback_enqueued{};
     std::uint64_t logger_fallback_failed{};
     std::uint64_t recycle_failures{};
+    std::uint64_t snapshot_requests_sent{};
+    std::uint64_t snapshot_requests_accepted{};
+    std::uint64_t snapshot_requests_failed{};
+    std::uint64_t frame_pool_in_use_high_water{};
+    std::uint64_t router_queue_depth_high_water{};
+    predex::core::control::MarketDataChannelTelemetry channel_stats{
+        predex::core::control::make_market_data_channel_telemetry()};
     std::string last_error;
 };
 struct RouterCounterStats{
@@ -78,6 +85,15 @@ struct RouterCounterStats{
     std::uint64_t frames_to_logger{};
     std::uint64_t frames_recycled{};
     std::uint64_t leaked_handles{};
+    std::uint64_t market_barriers_received{};
+    std::uint64_t market_barriers_delivered{};
+    std::uint64_t subscription_barriers_received{};
+    std::uint64_t subscription_barriers_delivered{};
+    std::uint64_t barriers_deferred{};
+    std::uint64_t subscription_recovery_facts_deferred{};
+    std::uint64_t shard_queue_depth_high_water{};
+    predex::core::control::MarketDataChannelTelemetry channel_stats{
+        predex::core::control::make_market_data_channel_telemetry()};
 };
 struct LoggerCounterStats{
     std::string output_file_path;
@@ -97,6 +113,13 @@ struct ShardCounterStats{
     std::uint64_t frames_recycled{};
     std::uint64_t leaked_handles{};
     std::uint64_t missed_frames_to_logger{};
+    std::uint64_t event_ignored{};
+    std::uint64_t market_barriers_seen{};
+    std::uint64_t subscription_barriers_seen{};
+    std::uint64_t barrier_rejects{};
+    std::uint64_t markets_became_unusable{};
+    std::uint64_t markets_recovery_required{};
+    std::uint64_t markets_already_awaiting_recovery{};
 };
 
 struct OmsCounterStats{
@@ -156,6 +179,7 @@ struct OperatorCounterStatsSnapshot{
     OmsCounterStats oms_stats;
     PrivateOrderFeedCounterStats private_order_feed_stats;
     OrderRestCounterStats order_rest_stats;
+    predex::core::control::RecoveryTelemetrySnapshot recovery_stats;
 };
 struct AckPayload {};
 

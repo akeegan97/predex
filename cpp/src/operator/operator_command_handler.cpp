@@ -166,8 +166,33 @@ namespace {
                         {"frames_recycled", shard_stat.frames_recycled},
                         {"leaked_handles", shard_stat.leaked_handles},
                         {"missed_frames_to_logger", shard_stat.missed_frames_to_logger},
+                        {"event_ignored", shard_stat.event_ignored},
+                        {"market_barriers_seen", shard_stat.market_barriers_seen},
+                        {"subscription_barriers_seen", shard_stat.subscription_barriers_seen},
+                        {"barrier_rejects", shard_stat.barrier_rejects},
+                        {"markets_became_unusable", shard_stat.markets_became_unusable},
+                        {"markets_recovery_required", shard_stat.markets_recovery_required},
+                        {"markets_already_awaiting_recovery", shard_stat.markets_already_awaiting_recovery},
                     });
                 }
+
+                const auto channel_stats_json = [](const auto& channel_stats){
+                    nlohmann::json result = nlohmann::json::array();
+                    for(const auto& stats : channel_stats){
+                        result.push_back({
+                            {"channel", market_data_channel_to_string(stats.channel)},
+                            {"channel_code", stats.channel},
+                            {"frames_observed", stats.frames_observed},
+                            {"sequence_gaps", stats.sequence_gaps},
+                            {"duplicate_sequences", stats.duplicate_sequences},
+                            {"stale_sequences", stats.stale_sequences},
+                            {"intentionally_filtered", stats.intentionally_filtered},
+                            {"logger_only_frames", stats.logger_only_frames},
+                            {"downstream_delivery_losses", stats.downstream_delivery_losses},
+                        });
+                    }
+                    return result;
+                };
 
                 nlohmann::json unknown_market_ticker_samples_json = nlohmann::json::array();
                 for(const auto& sample : payload.io_stats.unknown_market_ticker_samples){
@@ -209,6 +234,12 @@ namespace {
                         {"logger_fallback_enqueued", payload.io_stats.logger_fallback_enqueued},
                         {"logger_fallback_failed", payload.io_stats.logger_fallback_failed},
                         {"recycle_failures", payload.io_stats.recycle_failures},
+                        {"snapshot_requests_sent", payload.io_stats.snapshot_requests_sent},
+                        {"snapshot_requests_accepted", payload.io_stats.snapshot_requests_accepted},
+                        {"snapshot_requests_failed", payload.io_stats.snapshot_requests_failed},
+                        {"frame_pool_in_use_high_water", payload.io_stats.frame_pool_in_use_high_water},
+                        {"router_queue_depth_high_water", payload.io_stats.router_queue_depth_high_water},
+                        {"channel_stats", channel_stats_json(payload.io_stats.channel_stats)},
                         {"last_error", payload.io_stats.last_error},
                     }},
                     {"router_stats", {
@@ -217,6 +248,14 @@ namespace {
                         {"frames_to_logger", payload.router_stats.frames_to_logger},
                         {"frames_recycled", payload.router_stats.frames_recycled},
                         {"leaked_handles", payload.router_stats.leaked_handles},
+                        {"market_barriers_received", payload.router_stats.market_barriers_received},
+                        {"market_barriers_delivered", payload.router_stats.market_barriers_delivered},
+                        {"subscription_barriers_received", payload.router_stats.subscription_barriers_received},
+                        {"subscription_barriers_delivered", payload.router_stats.subscription_barriers_delivered},
+                        {"barriers_deferred", payload.router_stats.barriers_deferred},
+                        {"subscription_recovery_facts_deferred", payload.router_stats.subscription_recovery_facts_deferred},
+                        {"shard_queue_depth_high_water", payload.router_stats.shard_queue_depth_high_water},
+                        {"channel_stats", channel_stats_json(payload.router_stats.channel_stats)},
                     }},
                     {"shard_stats", shard_stats_json},
                     {"logger_stats", {
@@ -269,6 +308,30 @@ namespace {
                         {"retry_count", payload.order_rest_stats.retry_count},
                         {"oms_enqueue_failures", payload.order_rest_stats.oms_enqueue_failures},
                         {"last_error", payload.order_rest_stats.last_error},
+                    }},
+                    {"recovery_stats", {
+                        {"incidents_created", payload.recovery_stats.incidents_created},
+                        {"incidents_deduplicated", payload.recovery_stats.incidents_deduplicated},
+                        {"markets_already_recovering", payload.recovery_stats.markets_already_recovering},
+                        {"observations_rejected", payload.recovery_stats.observations_rejected},
+                        {"markets_scheduled", payload.recovery_stats.markets_scheduled},
+                        {"requests_enqueued", payload.recovery_stats.requests_enqueued},
+                        {"request_enqueue_failures", payload.recovery_stats.request_enqueue_failures},
+                        {"requests_accepted", payload.recovery_stats.requests_accepted},
+                        {"request_failures", payload.recovery_stats.request_failures},
+                        {"retries_scheduled", payload.recovery_stats.retries_scheduled},
+                        {"request_ack_timeouts", payload.recovery_stats.request_ack_timeouts},
+                        {"snapshot_timeouts", payload.recovery_stats.snapshot_timeouts},
+                        {"markets_recovered", payload.recovery_stats.markets_recovered},
+                        {"markets_failed", payload.recovery_stats.markets_failed},
+                        {"incidents_completed", payload.recovery_stats.incidents_completed},
+                        {"incidents_superseded", payload.recovery_stats.incidents_superseded},
+                        {"markets_superseded", payload.recovery_stats.markets_superseded},
+                        {"active_incidents", payload.recovery_stats.active_incidents},
+                        {"active_markets", payload.recovery_stats.active_markets},
+                        {"recovery_duration_samples", payload.recovery_stats.recovery_duration_samples},
+                        {"recovery_duration_total_ns", payload.recovery_stats.recovery_duration_total_ns},
+                        {"recovery_duration_max_ns", payload.recovery_stats.recovery_duration_max_ns},
                     }},
                 };
             }

@@ -59,7 +59,7 @@ constexpr std::size_t kDefaultSleepMs = 10;
 constexpr std::string_view kDefaultConfigPath = "docs/app_config.example.json";
 
 constexpr std::size_t kLoggerPumpBatchSize = 256;
-
+using MarketDataPathMessage = predex::ingest::kalshi::MarketDataPathMessage;
 using OperatorCommandQueue = utils::SPSCQueue<operator_admin::OperatorCommand>;
 using OperatorResponseQueue = utils::SPSCQueue<operator_admin::OperatorResponse>;
 using ControlToIoQueue = utils::SPSCQueue<control::ControlToIoCommand>;
@@ -68,7 +68,7 @@ using LoggerToControlStatusQueue = utils::SPSCQueue<control::LoggerToControlStat
 using RouterToControlQueue = utils::SPSCQueue<router::RouterToControl>;
 using ControlToShardQueue = utils::SPSCQueue<shard::ControlToShardCommand>;
 using ShardToControlQueue = utils::SPSCQueue<shard::ShardToControlMessage>;
-using RouterToShardQueue = utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>;
+using RouterToShardQueue = utils::SPSCQueue<MarketDataPathMessage>;
 using ControlToOmsQueue = utils::SPSCQueue<control::ControlToOmsCommand>;
 using OmsToControlStatusQueue = utils::SPSCQueue<control::OmsToControlStatus>;
 using StrategyIntentQueue = utils::SPSCQueue<oms::intent::StrategyIntent>;
@@ -80,7 +80,9 @@ using OrderRestToControlStatusQueue = utils::SPSCQueue<control::OrderRestToContr
 using ControlToPrivateOrderFeedQueue = utils::SPSCQueue<control::ControlToPrivateOrderFeedCommand>;
 using PrivateOrderFeedToControlStatusQueue = utils::SPSCQueue<control::PrivateOrderFeedToControlStatus>;
 using FrameHandle = predex::ingest::kalshi::FrameHandle;
+
 using FrameHandleQueue = utils::SPSCQueue<FrameHandle>;
+using MarketDataPathMessageQueue = utils::SPSCQueue<MarketDataPathMessage>;
 using FramePool = predex::ingest::kalshi::FramePool;
 
 struct CurlGlobalGuard {
@@ -252,7 +254,7 @@ struct AppQueues {
     ControlToPrivateOrderFeedQueue control_to_private_order_feed;
     PrivateOrderFeedToControlStatusQueue private_order_feed_to_control_status;
     RouterToControlQueue router_to_control;
-    FrameHandleQueue wire_to_router;
+    MarketDataPathMessageQueue wire_to_router;
     FrameHandleQueue router_to_logger;
     FrameHandleQueue router_recycle;
     FrameHandleQueue logger_recycle;
@@ -451,12 +453,23 @@ std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThread
     });
 }
 
-std::jthread start_router_thread(router::Router& router_instance, FrameHandleQueue& input_queue) {
+std::jthread start_router_thread(router::Router& router_instance, MarketDataPathMessageQueue& input_queue) {
     return std::jthread([&router_instance, &input_queue](const std::stop_token& stop_token) {
-        FrameHandle handle{};
+        MarketDataPathMessage message{};
         while (!stop_token.stop_requested()) {
-            if (input_queue.try_pop(handle)) {
-                router_instance.route_frame(handle);
+            const auto pending_result = router_instance.flush_pending_barrier();
+            if (pending_result == router::RouterRouteResult::kFAULTED) {
+                break;
+            }
+            if (pending_result == router::RouterRouteResult::kBLOCKED) {
+                std::this_thread::yield();
+                continue;
+            }
+            if (input_queue.try_pop(message)) {
+                const auto route_result = router_instance.route_message(message);
+                if (route_result == router::RouterRouteResult::kFAULTED) {
+                    break;
+                }
             } else {
                 std::this_thread::yield();
             }
@@ -473,6 +486,11 @@ std::jthread start_shard_thread(shard::Shard& shard_instance) {
             switch(result.code){
                 case shard::ShardPumpCode::kIDLE:
                 case shard::ShardPumpCode::kAPPLIED:
+                case shard::ShardPumpCode::kEVENT_IGNORED:
+                case shard::ShardPumpCode::kMARKET_BARRIER_HANDLED:
+                case shard::ShardPumpCode::kSUBSCRIPTION_BARRIER_HANDLED:
+                case shard::ShardPumpCode::kDRAINED_FRAME:
+                case shard::ShardPumpCode::kDRAIN_COMPLETE:
                     break;
 
                 case shard::ShardPumpCode::kPARSE_REJECTED:
@@ -486,10 +504,31 @@ std::jthread start_shard_thread(shard::Shard& shard_instance) {
                 case shard::ShardPumpCode::kEVENT_DESYNCED:
                     std::cerr << "Shard " << shard_instance.shard_index()
                             << " event apply failure: "
-                            << static_cast<std::uint32_t>(result.event_result.code)
+                            << static_cast<std::uint32_t>(result.event_result.reason)
                             << '\n';
                     break;
-
+                case shard::ShardPumpCode::kINTEGRITY_BARRIER_REJECTED:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " integrity barrier apply failure: "
+                            << static_cast<std::uint32_t>(result.event_result.reason)
+                            << '\n';
+                    break;
+                case shard::ShardPumpCode::kFRAME_ROUTE_REJECTED:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " frame routing identity rejected\n";
+                    break;
+                case shard::ShardPumpCode::kMISSING_FRAME:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " missing frame: "
+                            << static_cast<std::uint32_t>(result.event_result.reason)
+                            << '\n';
+                    break;
+                case shard::ShardPumpCode::kHANDLE_LEAK:
+                    std::cerr << "Shard " << shard_instance.shard_index()
+                            << " handle leak: "
+                            << static_cast<std::uint32_t>(result.event_result.reason)
+                            << '\n';
+                    break;
                 default:
                     std::cerr << "Shard " << shard_instance.shard_index()
                             << " pump result: "
@@ -551,6 +590,7 @@ bool pump_control_plane_once(control::ControlPlane& control_plane) {
     const auto io_result = control_plane.process_io_status();
     const bool processed_router_messages = control_plane.process_router_messages();
     const bool processed_shard_messages = control_plane.process_shard_messages();
+    const auto recovery_result = control_plane.process_recovery(std::chrono::steady_clock::now());
     const bool processed_logger_messages = control_plane.process_logger_messages();
     const bool processed_oms_messages = control_plane.process_oms_status();
     const bool processed_order_rest_messages = control_plane.process_order_rest_status();
@@ -561,6 +601,7 @@ bool pump_control_plane_once(control::ControlPlane& control_plane) {
            io_result.statuses_processed > 0 ||
            processed_router_messages ||
            processed_shard_messages ||
+           recovery_result.commands_pushed_success > 0 ||
            processed_logger_messages ||
            processed_oms_messages ||
            processed_order_rest_messages ||

@@ -114,9 +114,20 @@ inline constexpr std::size_t k_destructive_interference_size = 64;
             bool try_push(const T& item){
                 return try_emplace(item);
             }
-            bool try_push(T&& item){
-                return try_emplace(std::move(item));
-            }
+        bool try_push(T&& item){
+            return try_emplace(std::move(item));
+        }
+
+        [[nodiscard]] std::size_t capacity() const noexcept{
+            return capacity_;
+        }
+
+        // Producer-side diagnostic. The acquire load makes this an exact
+        // snapshot at the instant the consumer head is observed.
+        [[nodiscard]] std::size_t producer_size() const noexcept{
+            const std::uint64_t head = head_.v.load(std::memory_order_acquire);
+            return static_cast<std::size_t>(producer_tail_ - head);
+        }
 
         private:
             const std::size_t capacity_;

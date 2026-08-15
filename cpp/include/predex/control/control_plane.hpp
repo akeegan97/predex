@@ -10,6 +10,7 @@
 #include "predex/control/control_types.hpp"
 #include "predex/router/router_types.hpp"
 #include "predex/shard/shard_types.hpp"
+#include "predex/control/recovery_coordinator.hpp"
 
 
 namespace predex::core::control{
@@ -86,6 +87,18 @@ namespace predex::core::control{
         std::uint64_t stopped_after_ns{0};
     };
 
+    enum class RecoveryPumpCode : std::uint8_t{
+        kOK,
+        kIO_BACKPRESSURE,
+        kCOORDINATOR_COMMIT_FAILED,
+    };
+
+    struct RecoveryPumpResult{
+        RecoveryPumpCode code{RecoveryPumpCode::kOK};
+        std::size_t commands_pushed_success{0};
+        std::size_t commands_pushed_failure{0};
+    };
+
 
     class ControlPlane{
         public: 
@@ -139,6 +152,8 @@ namespace predex::core::control{
             [[nodiscard]] ShardPumpResult drain_active_universe_on_shards();
             [[nodiscard]] ShardPumpResult resume_active_universe_on_shards();
 
+            [[nodiscard]] RecoveryPumpResult process_recovery(RecoveryCoordinator::TimePoint now) noexcept;
+
             [[nodiscard]] bool process_one_router_message() noexcept;
 
             [[nodiscard]] bool process_router_messages() noexcept;
@@ -191,7 +206,9 @@ namespace predex::core::control{
             ControlOrderRestQueues order_rest_queues_;
             RequiredComponents required_components_;
             SyntheticTradingSessionConfig synthetic_session_config_;
+            RecoveryCoordinator recovery_coordinator_;
             std::chrono::steady_clock::time_point session_start_time_{std::chrono::steady_clock::now()};
+            bool recovery_orchestration_faulted_{false};
     };
 
 }

@@ -71,6 +71,9 @@ docs/generated_config2.json
 runs/*
 scripts/predex-research-summary
 scripts/predex-research-batch
+scripts/predex-sequential-fitted-q
+scripts/predex-sequential-dataset
+scripts/predex-sequential-cohort
 python/src/predex/research/episode_summary.py
 python/src/predex/replay/metadata_overlay.py
 cpp/apps/testing
@@ -86,3 +89,7 @@ python/src/predex/research/__init__.py
 cpp/apps/research/*
 cpp/include/predex/research/*
 STRATEGY_RESEARCH_STATUS.md
+ORACLE_HARNESS_CURRENT.md
+
+scripts/*
+*.py

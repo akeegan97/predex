@@ -59,10 +59,13 @@ add_executable(predex
 )
 
 add_executable(predex_tests
+  tests/app_config_tests.cpp
   tests/control_plane_recovery_tests.cpp
   tests/event_tests.cpp
   tests/frame_pool_tests.cpp
   tests/http2_session_tests.cpp
+  tests/idle_backoff_tests.cpp
+  tests/latency_histogram_tests.cpp
   tests/oms_tests.cpp
   tests/recovery_coordinator_tests.cpp
   tests/router_tests.cpp
@@ -70,6 +73,7 @@ add_executable(predex_tests
   tests/wire_sequence_tests.cpp
   tests/wire_session_tests.cpp
   src/control/recovery_coordinator.cpp
+  src/config/app_config.cpp
   src/control/control_plane.cpp
   src/router/router.cpp
   src/ingest/kalshi/market_data/wire_session.cpp

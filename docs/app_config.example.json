@@ -7,6 +7,13 @@
     "operator_queue_capacity": 64,
     "operator_socket_path": "/tmp/predex_operator.sock",
     "market_data_tape_path": "logs/live/predex_tape.bin",
+    "thread_polling": {
+      "profile": "harvest",
+      "spin_iterations": 64,
+      "yield_iterations": 64,
+      "min_sleep_us": 50,
+      "max_sleep_us": 1000
+    },
     "synthetic_trading_session_enabled": false,
     "reduce_only_after_seconds": 0,
     "flatten_to_zero_after_seconds": 0,

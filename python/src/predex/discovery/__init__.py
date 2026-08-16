@@ -6,6 +6,7 @@ from .app_config import (
     KalshiMarketDataSettings,
     KalshiSettings,
     RuntimeSettings,
+    ThreadPollingSettings,
     build_app_config,
     build_app_config_result,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "KalshiSettings",
     "MarketRecord",
     "RuntimeSettings",
+    "ThreadPollingSettings",
     "TopologyKind",
     "build_app_config",
     "build_app_config_result",

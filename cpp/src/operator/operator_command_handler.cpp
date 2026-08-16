@@ -4,6 +4,8 @@
 #include "predex/operator/operator_commands.hpp"
 #include <thread>
 #include <chrono>
+#include <cstddef>
+#include <utility>
 
 namespace {
 
@@ -128,6 +130,32 @@ namespace {
                 return "unknown";
         }
     }
+
+    nlohmann::json latency_histogram_json(
+        const predex::utils::LatencyHistogram& histogram){
+        return {
+            {"count", histogram.count},
+            {"mean_ns", histogram.mean_ns()},
+            {"p50_ns", histogram.percentile_upper_bound(5'000)},
+            {"p95_ns", histogram.percentile_upper_bound(9'500)},
+            {"p99_ns", histogram.percentile_upper_bound(9'900)},
+            {"p99_9_ns", histogram.percentile_upper_bound(9'990)},
+            {"max_ns", histogram.max_ns},
+        };
+    }
+
+    nlohmann::json channel_latency_json(
+        const predex::core::control::MarketDataChannelLatency& latency){
+        nlohmann::json result = nlohmann::json::array();
+        for(std::size_t index = 0; index < latency.size(); ++index){
+            auto summary = latency_histogram_json(latency[index]);
+            const auto channel = static_cast<std::uint8_t>(index + 1U);
+            summary["channel"] = market_data_channel_to_string(channel);
+            summary["channel_code"] = channel;
+            result.push_back(std::move(summary));
+        }
+        return result;
+    }
     
     nlohmann::json to_json(const predex::operator_admin::OperatorResponse& response){
         nlohmann::json json_response;
@@ -154,6 +182,15 @@ namespace {
             }
             else if constexpr (std::is_same_v<T, predex::operator_admin::OperatorCounterStatsSnapshot>){
                 nlohmann::json shard_stats_json = nlohmann::json::array();
+                nlohmann::json shard_latency_json = nlohmann::json::array();
+                predex::core::control::MarketDataChannelLatency
+                    aggregate_router_to_shard{};
+                predex::core::control::MarketDataChannelLatency
+                    aggregate_shard_service{};
+                predex::core::control::MarketDataChannelLatency
+                    aggregate_ingress_to_shard{};
+                predex::core::control::MarketDataChannelLatency
+                    aggregate_ingress_to_book_apply{};
                 for(const auto& shard_stat : payload.shard_stats){
                     shard_stats_json.push_back({
                         {"shard_index", shard_stat.shard_index},
@@ -174,6 +211,29 @@ namespace {
                         {"markets_recovery_required", shard_stat.markets_recovery_required},
                         {"markets_already_awaiting_recovery", shard_stat.markets_already_awaiting_recovery},
                     });
+                    shard_latency_json.push_back({
+                        {"shard_index", shard_stat.shard_index},
+                        {"router_to_shard", channel_latency_json(
+                            shard_stat.router_to_shard_latency)},
+                        {"shard_service", channel_latency_json(
+                            shard_stat.shard_service_latency)},
+                        {"ingress_to_shard", channel_latency_json(
+                            shard_stat.ingress_to_shard_latency)},
+                        {"ingress_to_book_apply", channel_latency_json(
+                            shard_stat.ingress_to_book_apply_latency)},
+                    });
+                    for(std::size_t index = 0;
+                        index < predex::core::control::kMarketDataChannelCount;
+                        ++index){
+                        aggregate_router_to_shard[index].merge(
+                            shard_stat.router_to_shard_latency[index]);
+                        aggregate_shard_service[index].merge(
+                            shard_stat.shard_service_latency[index]);
+                        aggregate_ingress_to_shard[index].merge(
+                            shard_stat.ingress_to_shard_latency[index]);
+                        aggregate_ingress_to_book_apply[index].merge(
+                            shard_stat.ingress_to_book_apply_latency[index]);
+                    }
                 }
 
                 const auto channel_stats_json = [](const auto& channel_stats){
@@ -332,6 +392,40 @@ namespace {
                         {"recovery_duration_samples", payload.recovery_stats.recovery_duration_samples},
                         {"recovery_duration_total_ns", payload.recovery_stats.recovery_duration_total_ns},
                         {"recovery_duration_max_ns", payload.recovery_stats.recovery_duration_max_ns},
+                    }},
+                    {"latency_stats", {
+                        {"clock", "steady_clock"},
+                        {"units", "nanoseconds"},
+                        {"logger_write_semantics", "ostream_write_completed_not_fsync"},
+                        {"io", {
+                            {"wire_service", channel_latency_json(
+                                payload.io_stats.wire_service_latency)},
+                        }},
+                        {"router", {
+                            {"wire_to_router", channel_latency_json(
+                                payload.router_stats.wire_to_router_latency)},
+                            {"router_service", channel_latency_json(
+                                payload.router_stats.router_service_latency)},
+                        }},
+                        {"shards", std::move(shard_latency_json)},
+                        {"shards_aggregate", {
+                            {"router_to_shard", channel_latency_json(
+                                aggregate_router_to_shard)},
+                            {"shard_service", channel_latency_json(
+                                aggregate_shard_service)},
+                            {"ingress_to_shard", channel_latency_json(
+                                aggregate_ingress_to_shard)},
+                            {"ingress_to_book_apply", channel_latency_json(
+                                aggregate_ingress_to_book_apply)},
+                        }},
+                        {"logger", {
+                            {"shard_to_logger", channel_latency_json(
+                                payload.logger_stats.shard_to_logger_latency)},
+                            {"ingress_to_logger_write", channel_latency_json(
+                                payload.logger_stats.ingress_to_logger_write_latency)},
+                        }},
+                        {"recovery_total", latency_histogram_json(
+                            payload.recovery_stats.recovery_duration_latency)},
                     }},
                 };
             }

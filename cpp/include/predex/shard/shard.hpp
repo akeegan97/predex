@@ -74,7 +74,8 @@ namespace predex::shard{
             void maybe_send_telemetry() noexcept;
 
         private:
-            [[nodiscard]] bool terminal_handoff(const predex::ingest::kalshi::FrameHandle& handle) noexcept;
+            [[nodiscard]] bool terminal_handoff(
+                predex::ingest::kalshi::FrameHandle handle) noexcept;
             
             [[nodiscard]] bool install_universe(std::vector<KalshiEvent> events);
             bool send_control_message(ShardToControlMessage message) noexcept;

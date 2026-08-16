@@ -8,6 +8,7 @@
 #include <array>
 
 #include "predex/control/control_lifecycle.hpp"
+#include "predex/utils/latency_histogram.hpp"
 namespace predex::core::control {
 
     enum class ComponentStatus : std::uint8_t{
@@ -50,6 +51,8 @@ namespace predex::core::control {
     inline constexpr std::size_t kMarketDataChannelCount = 3;
     using MarketDataChannelTelemetry =
         std::array<MarketDataChannelTelemetrySnapshot, kMarketDataChannelCount>;
+    using MarketDataChannelLatency =
+        std::array<utils::LatencyHistogram, kMarketDataChannelCount>;
 
     [[nodiscard]] inline MarketDataChannelTelemetry make_market_data_channel_telemetry() noexcept{
         return MarketDataChannelTelemetry{{
@@ -88,6 +91,7 @@ namespace predex::core::control {
         std::uint64_t frame_pool_in_use_high_water{0};
         std::uint64_t router_queue_depth_high_water{0};
         MarketDataChannelTelemetry channel_stats{make_market_data_channel_telemetry()};
+        MarketDataChannelLatency wire_service_latency{};
     };
 
     struct RouterTelemetrySnapshot{
@@ -104,6 +108,8 @@ namespace predex::core::control {
         std::uint64_t subscription_recovery_facts_deferred{0};
         std::uint64_t shard_queue_depth_high_water{0};
         MarketDataChannelTelemetry channel_stats{make_market_data_channel_telemetry()};
+        MarketDataChannelLatency wire_to_router_latency{};
+        MarketDataChannelLatency router_service_latency{};
     };
 
     struct ShardTelemetrySnapshot{
@@ -123,6 +129,10 @@ namespace predex::core::control {
         std::uint64_t markets_became_unusable{0};
         std::uint64_t markets_recovery_required{0};
         std::uint64_t markets_already_awaiting_recovery{0};
+        MarketDataChannelLatency router_to_shard_latency{};
+        MarketDataChannelLatency shard_service_latency{};
+        MarketDataChannelLatency ingress_to_shard_latency{};
+        MarketDataChannelLatency ingress_to_book_apply_latency{};
     };
 
     struct RecoveryTelemetrySnapshot{
@@ -148,6 +158,7 @@ namespace predex::core::control {
         std::uint64_t recovery_duration_samples{};
         std::uint64_t recovery_duration_total_ns{};
         std::uint64_t recovery_duration_max_ns{};
+        utils::LatencyHistogram recovery_duration_latency{};
     };
 
     struct LoggerTelemetrySnapshot{
@@ -155,6 +166,8 @@ namespace predex::core::control {
         std::uint64_t bytes_written{0};
         std::uint64_t write_failures{0};
         std::uint64_t recycle_failures{0};
+        MarketDataChannelLatency shard_to_logger_latency{};
+        MarketDataChannelLatency ingress_to_logger_write_latency{};
     };
 
     struct OmsTelemetrySnapshot{

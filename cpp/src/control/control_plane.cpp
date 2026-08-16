@@ -45,6 +45,11 @@ namespace predex::core::control{
                 .markets_recovery_required = stats.markets_recovery_required,
                 .markets_already_awaiting_recovery =
                     stats.markets_already_awaiting_recovery,
+                .router_to_shard_latency = stats.router_to_shard_latency,
+                .shard_service_latency = stats.shard_service_latency,
+                .ingress_to_shard_latency = stats.ingress_to_shard_latency,
+                .ingress_to_book_apply_latency =
+                    stats.ingress_to_book_apply_latency,
             };
         }
 
@@ -108,6 +113,7 @@ namespace predex::core::control{
                 telemetry.recovery_duration_max_ns = std::max(
                     telemetry.recovery_duration_max_ns,
                     duration);
+                telemetry.recovery_duration_latency.record(duration);
             }
         }
 
@@ -209,6 +215,11 @@ namespace predex::core::control{
                     .markets_recovery_required = telemetry.markets_recovery_required,
                     .markets_already_awaiting_recovery =
                         telemetry.markets_already_awaiting_recovery,
+                    .router_to_shard_latency = telemetry.router_to_shard_latency,
+                    .shard_service_latency = telemetry.shard_service_latency,
+                    .ingress_to_shard_latency = telemetry.ingress_to_shard_latency,
+                    .ingress_to_book_apply_latency =
+                        telemetry.ingress_to_book_apply_latency,
                 });
             }
 
@@ -253,6 +264,7 @@ namespace predex::core::control{
                     .frame_pool_in_use_high_water = io_state.telemetry.frame_pool_in_use_high_water,
                     .router_queue_depth_high_water = io_state.telemetry.router_queue_depth_high_water,
                     .channel_stats = io_state.telemetry.channel_stats,
+                    .wire_service_latency = io_state.telemetry.wire_service_latency,
                     .last_error = io_state.last_error,
                 },
                 .router_stats = operator_admin::RouterCounterStats{
@@ -269,6 +281,10 @@ namespace predex::core::control{
                     .subscription_recovery_facts_deferred = router_state.telemetry.subscription_recovery_facts_deferred,
                     .shard_queue_depth_high_water = router_state.telemetry.shard_queue_depth_high_water,
                     .channel_stats = router_state.telemetry.channel_stats,
+                    .wire_to_router_latency =
+                        router_state.telemetry.wire_to_router_latency,
+                    .router_service_latency =
+                        router_state.telemetry.router_service_latency,
                 },
                 .shard_stats = std::move(shard_stats),
                 .logger_stats = operator_admin::LoggerCounterStats{
@@ -277,6 +293,10 @@ namespace predex::core::control{
                     .bytes_written = logger_state.telemetry.bytes_written,
                     .write_failures = logger_state.telemetry.write_failures,
                     .recycle_failures = logger_state.telemetry.recycle_failures,
+                    .shard_to_logger_latency =
+                        logger_state.telemetry.shard_to_logger_latency,
+                    .ingress_to_logger_write_latency =
+                        logger_state.telemetry.ingress_to_logger_write_latency,
                 },
                 .oms_stats = operator_admin::OmsCounterStats{
                     .trading_enabled = oms_state.trading_enabled,
@@ -940,6 +960,10 @@ namespace predex::core::control{
                     process_state_.router_component_state.telemetry.subscription_recovery_facts_deferred = m.subscription_recovery_facts_deferred;
                     process_state_.router_component_state.telemetry.shard_queue_depth_high_water = m.shard_queue_depth_high_water;
                     process_state_.router_component_state.telemetry.channel_stats = m.channel_stats;
+                    process_state_.router_component_state.telemetry.wire_to_router_latency =
+                        m.wire_to_router_latency;
+                    process_state_.router_component_state.telemetry.router_service_latency =
+                        m.router_service_latency;
                 }
                 if constexpr(std::is_same_v<T, router::ShardBackpressure>){
                     //probably here want to update that shard's status 

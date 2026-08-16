@@ -1,4 +1,5 @@
 #pragma once 
+#include "predex/control/control_types.hpp"
 #include "predex/shard/event.hpp"
 #include "predex/shard/models.hpp"
 #include "predex/shard/market_parser.hpp"
@@ -72,6 +73,10 @@ namespace predex::shard{
         std::uint64_t markets_became_unusable{0};
         std::uint64_t markets_recovery_required{0};
         std::uint64_t markets_already_awaiting_recovery{0};
+        core::control::MarketDataChannelLatency router_to_shard_latency{};
+        core::control::MarketDataChannelLatency shard_service_latency{};
+        core::control::MarketDataChannelLatency ingress_to_shard_latency{};
+        core::control::MarketDataChannelLatency ingress_to_book_apply_latency{};
     };
 
     struct ShardSafeToStopUniverse{

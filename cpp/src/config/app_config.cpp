@@ -58,6 +58,17 @@ namespace {
         }
         throw std::runtime_error("Unknown Kalshi private order feed channel: " + channel);
     }
+
+    predex::utils::ThreadPollingProfile parse_thread_polling_profile(
+        const std::string& profile){
+        if(profile == "low_latency"){
+            return predex::utils::ThreadPollingProfile::kLOW_LATENCY;
+        }
+        if(profile == "harvest"){
+            return predex::utils::ThreadPollingProfile::kHARVEST;
+        }
+        throw std::runtime_error("Unknown thread polling profile: " + profile);
+    }
 }
 namespace predex::config{
 
@@ -100,6 +111,36 @@ namespace predex::config{
                 }
                 if(runtime_json.contains("market_data_tape_path")){
                     runtime_config.market_data_tape_path = runtime_json["market_data_tape_path"].get<std::string>();
+                }
+                if(runtime_json.contains("thread_polling")){
+                    const auto& polling_json = runtime_json["thread_polling"];
+                    if(!polling_json.is_object()){
+                        throw std::runtime_error(
+                            "Invalid thread_polling configuration: expected object");
+                    }
+                    if(polling_json.contains("profile")){
+                        runtime_config.thread_polling.profile =
+                            parse_thread_polling_profile(
+                                polling_json["profile"].get<std::string>());
+                    }
+                    if(polling_json.contains("spin_iterations")){
+                        runtime_config.thread_polling.spin_iterations =
+                            polling_json["spin_iterations"].get<std::uint32_t>();
+                    }
+                    if(polling_json.contains("yield_iterations")){
+                        runtime_config.thread_polling.yield_iterations =
+                            polling_json["yield_iterations"].get<std::uint32_t>();
+                    }
+                    if(polling_json.contains("min_sleep_us")){
+                        runtime_config.thread_polling.min_sleep =
+                            std::chrono::microseconds{
+                                polling_json["min_sleep_us"].get<std::int64_t>()};
+                    }
+                    if(polling_json.contains("max_sleep_us")){
+                        runtime_config.thread_polling.max_sleep =
+                            std::chrono::microseconds{
+                                polling_json["max_sleep_us"].get<std::int64_t>()};
+                    }
                 }
                 if(runtime_json.contains("synthetic_trading_session_enabled")){
                     runtime_config.synthetic_trading_session_enabled = runtime_json["synthetic_trading_session_enabled"].get<bool>();
@@ -245,6 +286,19 @@ namespace predex::config{
         }
         if(config.runtime.market_data_tape_path.empty()){
             throw std::runtime_error("Invalid configuration: market_data_tape_path must not be empty");
+        }
+        if(config.runtime.thread_polling.profile ==
+               utils::ThreadPollingProfile::kHARVEST &&
+           config.runtime.thread_polling.min_sleep.count() <= 0){
+            throw std::runtime_error(
+                "Invalid configuration: harvest min_sleep_us must be greater than 0");
+        }
+        if(config.runtime.thread_polling.profile ==
+               utils::ThreadPollingProfile::kHARVEST &&
+           config.runtime.thread_polling.max_sleep <
+               config.runtime.thread_polling.min_sleep){
+            throw std::runtime_error(
+                "Invalid configuration: harvest max_sleep_us must be >= min_sleep_us");
         }
         if(config.runtime.synthetic_trading_session_enabled){
             if(config.runtime.reduce_only_after_seconds == 0){

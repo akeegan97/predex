@@ -19,6 +19,34 @@ from .models import ClassifiedEvent, EventRecord, MarketRecord, TopologyKind
 
 
 @dataclass(slots=True)
+class ThreadPollingSettings:
+    profile: str = "harvest"
+    spin_iterations: int = 64
+    yield_iterations: int = 64
+    min_sleep_us: int = 50
+    max_sleep_us: int = 1000
+
+    def __post_init__(self) -> None:
+        if self.profile not in {"low_latency", "harvest"}:
+            raise ValueError(f"Unknown thread polling profile: {self.profile}")
+        if self.spin_iterations < 0 or self.yield_iterations < 0:
+            raise ValueError("Thread polling iteration counts must be non-negative")
+        if self.min_sleep_us <= 0:
+            raise ValueError("Thread polling min_sleep_us must be greater than 0")
+        if self.max_sleep_us < self.min_sleep_us:
+            raise ValueError("Thread polling max_sleep_us must be >= min_sleep_us")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile": self.profile,
+            "spin_iterations": self.spin_iterations,
+            "yield_iterations": self.yield_iterations,
+            "min_sleep_us": self.min_sleep_us,
+            "max_sleep_us": self.max_sleep_us,
+        }
+
+
+@dataclass(slots=True)
 class RuntimeSettings:
     shard_count: int = 4
     shard_queue_capacity: int = 8192
@@ -27,6 +55,7 @@ class RuntimeSettings:
     operator_queue_capacity: int = 64
     operator_socket_path: str = "/tmp/predex_operator.sock"
     market_data_tape_path: str = "logs/live/predex_tape.bin"
+    thread_polling: ThreadPollingSettings = field(default_factory=ThreadPollingSettings)
     synthetic_trading_session_enabled: bool = False
     reduce_only_after_seconds: int = 0
     flatten_to_zero_after_seconds: int = 0
@@ -41,6 +70,7 @@ class RuntimeSettings:
             "operator_queue_capacity": self.operator_queue_capacity,
             "operator_socket_path": self.operator_socket_path,
             "market_data_tape_path": self.market_data_tape_path,
+            "thread_polling": self.thread_polling.to_dict(),
             "synthetic_trading_session_enabled": self.synthetic_trading_session_enabled,
             "reduce_only_after_seconds": self.reduce_only_after_seconds,
             "flatten_to_zero_after_seconds": self.flatten_to_zero_after_seconds,

@@ -77,6 +77,7 @@ struct IoCounterStats{
     std::uint64_t router_queue_depth_high_water{};
     predex::core::control::MarketDataChannelTelemetry channel_stats{
         predex::core::control::make_market_data_channel_telemetry()};
+    predex::core::control::MarketDataChannelLatency wire_service_latency{};
     std::string last_error;
 };
 struct RouterCounterStats{
@@ -94,6 +95,8 @@ struct RouterCounterStats{
     std::uint64_t shard_queue_depth_high_water{};
     predex::core::control::MarketDataChannelTelemetry channel_stats{
         predex::core::control::make_market_data_channel_telemetry()};
+    predex::core::control::MarketDataChannelLatency wire_to_router_latency{};
+    predex::core::control::MarketDataChannelLatency router_service_latency{};
 };
 struct LoggerCounterStats{
     std::string output_file_path;
@@ -101,6 +104,8 @@ struct LoggerCounterStats{
     std::uint64_t bytes_written{};
     std::uint64_t write_failures{};
     std::uint64_t recycle_failures{};
+    predex::core::control::MarketDataChannelLatency shard_to_logger_latency{};
+    predex::core::control::MarketDataChannelLatency ingress_to_logger_write_latency{};
 };
 struct ShardCounterStats{
     std::uint64_t shard_index{};
@@ -120,6 +125,10 @@ struct ShardCounterStats{
     std::uint64_t markets_became_unusable{};
     std::uint64_t markets_recovery_required{};
     std::uint64_t markets_already_awaiting_recovery{};
+    predex::core::control::MarketDataChannelLatency router_to_shard_latency{};
+    predex::core::control::MarketDataChannelLatency shard_service_latency{};
+    predex::core::control::MarketDataChannelLatency ingress_to_shard_latency{};
+    predex::core::control::MarketDataChannelLatency ingress_to_book_apply_latency{};
 };
 
 struct OmsCounterStats{

@@ -2,6 +2,8 @@
 #include "predex/control/control_types.hpp"
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/utils/spsc.hpp"
+#include "predex/utils/latency_histogram.hpp"
+#include "predex/utils/monotonic_clock.hpp"
 #include <cstddef>
 #include <chrono>
 #include <fstream>
@@ -130,6 +132,20 @@ namespace predex::logging{
                             ++logged;
                             ++logged_count_;
                             bytes_written_ += sizeof(record_header) + frame->len;
+                            const auto logger_write_complete_ts_ns =
+                                predex::utils::monotonic_now_ns();
+                            const auto channel_index =
+                                predex::ingest::kalshi::market_data_channel_index(handle.kind);
+                            if(channel_index < predex::core::control::kMarketDataChannelCount){
+                                predex::utils::record_elapsed_ns(
+                                    ingress_to_logger_write_latency_[channel_index],
+                                    handle.ingress_ts_ns,
+                                    logger_write_complete_ts_ns);
+                                predex::utils::record_elapsed_ns(
+                                    shard_to_logger_latency_[channel_index],
+                                    handle.shard_publish_ts_ns,
+                                    logger_write_complete_ts_ns);
+                            }
                         }
                         if(!recycle_queue_.try_push(handle)){
                             ++recycle_failed_count_;
@@ -160,6 +176,9 @@ namespace predex::logging{
                         .bytes_written = bytes_written_,
                         .write_failures = write_failed_count_,
                         .recycle_failures = recycle_failed_count_,
+                        .shard_to_logger_latency = shard_to_logger_latency_,
+                        .ingress_to_logger_write_latency =
+                            ingress_to_logger_write_latency_,
                     },
                 });
                 next_telemetry_send_ = now + kLOGGER_TELEMETRY_INTERVAL;
@@ -185,6 +204,10 @@ namespace predex::logging{
             std::uint64_t bytes_written_{0};
             std::uint64_t recycle_failed_count_{0};
             std::uint64_t write_failed_count_{0};
+            predex::core::control::MarketDataChannelLatency
+                shard_to_logger_latency_{};
+            predex::core::control::MarketDataChannelLatency
+                ingress_to_logger_write_latency_{};
             bool fault_reported_{false};
             std::size_t next_input_queue_{0}; 
             std::chrono::steady_clock::time_point next_telemetry_send_{std::chrono::steady_clock::now() + kLOGGER_TELEMETRY_INTERVAL};

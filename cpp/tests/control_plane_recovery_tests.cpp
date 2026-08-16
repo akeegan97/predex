@@ -12,6 +12,7 @@ namespace control = predex::core::control;
 namespace ingest = predex::ingest::kalshi;
 namespace operator_admin = predex::operator_admin;
 namespace router = predex::router;
+namespace shard = predex::shard;
 namespace utils = predex::utils;
 
 TEST(ControlPlaneRecoveryTest, DeliveredSubscriptionBarrierExpandsIntoMarketCommands){
@@ -98,6 +99,104 @@ TEST(ControlPlaneRecoveryTest, DeliveredSubscriptionBarrierExpandsIntoMarketComm
     EXPECT_EQ(state.recovery_telemetry.requests_enqueued, 2U);
     EXPECT_EQ(state.recovery_telemetry.active_incidents, 1U);
     EXPECT_EQ(state.recovery_telemetry.active_markets, 2U);
+}
+
+TEST(ControlPlaneRecoveryTest, CompletedIncidentRecordsRecoveryDurationHistogram){
+    utils::SPSCQueue<operator_admin::OperatorCommand> operator_commands{4};
+    utils::SPSCQueue<operator_admin::OperatorResponse> operator_responses{4};
+    utils::SPSCQueue<control::ControlToIoCommand> control_to_io{8};
+    utils::SPSCQueue<control::IoToControlStatus> io_to_control{8};
+    utils::SPSCQueue<router::RouterToControl> router_to_control{8};
+    utils::SPSCQueue<shard::ControlToShardCommand> control_to_shard{8};
+    utils::SPSCQueue<shard::ShardToControlMessage> shard_to_control{8};
+
+    control::ControlPlane control_plane{
+        control::OperatorQueues{operator_commands, operator_responses},
+        control::ControlIoQueues{control_to_io, io_to_control},
+        control::RouterQueue{router_to_control},
+        control::ControlShardQueues{{&control_to_shard}, {&shard_to_control}},
+        {},
+        {},
+        {},
+        {},
+        control::RequiredComponents{
+            .market_data = true,
+            .shards = true,
+            .logger = false,
+        }};
+
+    control::UniverseSnapshot universe{};
+    universe.market_routes = {
+        control::UniverseMarketRoute{
+            .kalshi_ticker = "MKT-A",
+            .market_id = 101,
+            .event_id = 11,
+            .shard_index = 0,
+        },
+    };
+    const auto universe_version = control_plane.install_universe(
+        std::move(universe));
+
+    ASSERT_TRUE(io_to_control.try_push(control::IoToControlStatus{
+        control::IoConnected{}}));
+    ASSERT_TRUE(io_to_control.try_push(control::IoToControlStatus{
+        control::IoUniverseSnapshotApplied{.version = universe_version}}));
+    ASSERT_TRUE(io_to_control.try_push(control::IoToControlStatus{
+        control::IoSubscriptionReady{.version = universe_version}}));
+    ASSERT_EQ(control_plane.process_io_status().statuses_processed, 3U);
+
+    ASSERT_TRUE(router_to_control.try_push(router::RouterToControl{
+        router::OrderBookSubscriptionBarrierDelivered{
+            .universe_version = universe_version,
+            .incident = {
+                .origin = ingest::IntegrityIncidentOrigin::kWIRE_SESSION,
+                .producer_index = 0,
+                .incident_id = 78,
+            },
+            .sid = 9,
+            .expected_sequence = 30,
+            .observed_sequence = 34,
+            .reason = ingest::BookInvalidationReason::kEXCHANGE_SEQUENCE_GAP,
+        }}));
+    ASSERT_TRUE(control_plane.process_router_messages());
+    ASSERT_EQ(
+        control_plane.process_recovery(std::chrono::steady_clock::now())
+            .commands_pushed_success,
+        1U);
+
+    control::ControlToIoCommand io_command{};
+    ASSERT_TRUE(control_to_io.try_pop(io_command));
+    ASSERT_TRUE(std::holds_alternative<control::RecoverMarketIo>(io_command));
+    const auto recovery_command = std::get<control::RecoverMarketIo>(io_command);
+
+    ASSERT_TRUE(io_to_control.try_push(control::IoToControlStatus{
+        control::IoRecoveryRequestAccepted{
+            .recovery_id = recovery_command.recovery_id,
+            .universe_version = recovery_command.universe_version,
+            .market_id = recovery_command.market_id,
+            .request_attempt = recovery_command.request_attempt,
+        }}));
+    ASSERT_EQ(control_plane.process_io_status().statuses_processed, 1U);
+
+    ASSERT_TRUE(shard_to_control.try_push(shard::ShardToControlMessage{
+        shard::ShardRecoverySnapshotApplied{
+            .recovery_id = recovery_command.recovery_id,
+            .universe_version = recovery_command.universe_version,
+            .shard_index = 0,
+            .sid = 9,
+            .sequence = 35,
+            .market_id = recovery_command.market_id,
+            .transition = shard::BookSyncTransition::kRECOVERED,
+        }}));
+    ASSERT_TRUE(control_plane.process_shard_messages());
+
+    const auto& telemetry = control_plane.process_state().recovery_telemetry;
+    EXPECT_EQ(telemetry.incidents_completed, 1U);
+    EXPECT_EQ(telemetry.recovery_duration_samples, 1U);
+    EXPECT_EQ(telemetry.recovery_duration_latency.count, 1U);
+    EXPECT_EQ(
+        telemetry.recovery_duration_latency.max_ns,
+        telemetry.recovery_duration_max_ns);
 }
 
 } // namespace

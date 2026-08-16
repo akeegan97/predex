@@ -14,6 +14,7 @@ from .app_config import (
     KalshiMarketDataSettings,
     KalshiSettings,
     RuntimeSettings,
+    ThreadPollingSettings,
     build_app_config_result,
 )
 from .config import (
@@ -281,6 +282,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Operator Unix socket path written into the C++ app config. Default: /tmp/predex_operator.sock.",
     )
     parser.add_argument(
+        "--thread-polling-profile",
+        choices=("low_latency", "harvest"),
+        default="harvest",
+        help="Idle polling policy written into the C++ app config. Default: harvest.",
+    )
+    parser.add_argument(
+        "--thread-spin-iterations",
+        type=int,
+        default=64,
+        help="Empty polls before yielding in harvest mode. Default: 64.",
+    )
+    parser.add_argument(
+        "--thread-yield-iterations",
+        type=int,
+        default=64,
+        help="Yielding empty polls before sleeping in harvest mode. Default: 64.",
+    )
+    parser.add_argument(
+        "--thread-min-sleep-us",
+        type=int,
+        default=50,
+        help="Initial idle sleep in harvest mode, in microseconds. Default: 50.",
+    )
+    parser.add_argument(
+        "--thread-max-sleep-us",
+        type=int,
+        default=1000,
+        help="Maximum idle sleep in harvest mode, in microseconds. Default: 1000.",
+    )
+    parser.add_argument(
         "--synthetic-trading-session",
         action="store_true",
         help="Enable synthetic trading-session phase cutoffs in the generated C++ app config.",
@@ -545,6 +576,13 @@ def main(argv: list[str] | None = None) -> int:
                 operator_queue_capacity=args.operator_queue_capacity,
                 operator_socket_path=args.operator_socket_path,
                 market_data_tape_path=run_artifacts.tape_output,
+                thread_polling=ThreadPollingSettings(
+                    profile=args.thread_polling_profile,
+                    spin_iterations=args.thread_spin_iterations,
+                    yield_iterations=args.thread_yield_iterations,
+                    min_sleep_us=args.thread_min_sleep_us,
+                    max_sleep_us=args.thread_max_sleep_us,
+                ),
                 synthetic_trading_session_enabled=args.synthetic_trading_session,
                 reduce_only_after_seconds=args.reduce_only_after_seconds,
                 flatten_to_zero_after_seconds=args.flatten_to_zero_after_seconds,

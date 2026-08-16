@@ -29,6 +29,7 @@
 #include "predex/shard/shard.hpp"
 #include "predex/socket/unix_command_server.hpp"
 #include "predex/utils/spsc.hpp"
+#include "predex/utils/idle_backoff.hpp"
 #include "predex/logging/market_data_logger.hpp"
 #include "predex/exchange/kalshi/adapters/auth_signer.hpp"
 #include "predex/exchange/kalshi/adapters/market_data_handler.hpp"
@@ -453,8 +454,12 @@ std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThread
     });
 }
 
-std::jthread start_router_thread(router::Router& router_instance, MarketDataPathMessageQueue& input_queue) {
-    return std::jthread([&router_instance, &input_queue](const std::stop_token& stop_token) {
+std::jthread start_router_thread(
+    router::Router& router_instance,
+    MarketDataPathMessageQueue& input_queue,
+    utils::IdleBackoffConfig polling_config) {
+    return std::jthread([&router_instance, &input_queue, polling_config](const std::stop_token& stop_token) {
+        utils::IdleBackoff idle_backoff{polling_config};
         MarketDataPathMessage message{};
         while (!stop_token.stop_requested()) {
             const auto pending_result = router_instance.flush_pending_barrier();
@@ -462,25 +467,30 @@ std::jthread start_router_thread(router::Router& router_instance, MarketDataPath
                 break;
             }
             if (pending_result == router::RouterRouteResult::kBLOCKED) {
-                std::this_thread::yield();
+                idle_backoff.idle();
                 continue;
             }
             if (input_queue.try_pop(message)) {
+                idle_backoff.reset();
                 const auto route_result = router_instance.route_message(message);
                 if (route_result == router::RouterRouteResult::kFAULTED) {
                     break;
                 }
             } else {
-                std::this_thread::yield();
+                idle_backoff.idle();
             }
         }
     });
 }
 
-std::jthread start_shard_thread(shard::Shard& shard_instance) {
-    return std::jthread([&shard_instance](const std::stop_token& stop_token) {
+std::jthread start_shard_thread(
+    shard::Shard& shard_instance,
+    utils::IdleBackoffConfig polling_config) {
+    return std::jthread([&shard_instance, polling_config](const std::stop_token& stop_token) {
+        utils::IdleBackoff idle_backoff{polling_config};
         while (!stop_token.stop_requested()) {
-            (void)shard_instance.drain_control_commands(64); //NOLINT: arbitrary max commands to process per iteration
+            const auto commands_processed =
+                shard_instance.drain_control_commands(64); //NOLINT: arbitrary max commands to process per iteration
             shard_instance.maybe_send_telemetry();
             const auto result = shard_instance.pump_once();
             switch(result.code){
@@ -537,8 +547,11 @@ std::jthread start_shard_thread(shard::Shard& shard_instance) {
                     break;
             }
 
-            if (result.code == shard::ShardPumpCode::kIDLE) {
-                std::this_thread::yield();
+            if (result.code == shard::ShardPumpCode::kIDLE &&
+                commands_processed == 0) {
+                idle_backoff.idle();
+            }else{
+                idle_backoff.reset();
             }
         }
     });
@@ -562,21 +575,31 @@ std::jthread start_order_rest_thread(kalshi_exchange::OrderRestSession& order_re
     });
 }
 
-std::jthread start_oms_thread(oms::Oms& oms_instance) {
-    return std::jthread([&oms_instance](const std::stop_token& stop_token) {
+std::jthread start_oms_thread(
+    oms::Oms& oms_instance,
+    utils::IdleBackoffConfig polling_config) {
+    return std::jthread([&oms_instance, polling_config](const std::stop_token& stop_token) {
+        utils::IdleBackoff idle_backoff{polling_config};
         while (!stop_token.stop_requested()) {
             if (oms_instance.pump_once() == oms::OmsPumpResult::kNoWork) {
-                std::this_thread::yield();
+                idle_backoff.idle();
+            }else{
+                idle_backoff.reset();
             }
         }
     });
 }
 
-std::jthread start_market_data_logger_thread(logging::MarketDataLogger& market_data_logger) {
-    return std::jthread([&market_data_logger](const std::stop_token& stop_token) {
+std::jthread start_market_data_logger_thread(
+    logging::MarketDataLogger& market_data_logger,
+    utils::IdleBackoffConfig polling_config) {
+    return std::jthread([&market_data_logger, polling_config](const std::stop_token& stop_token) {
+        utils::IdleBackoff idle_backoff{polling_config};
         while (!stop_token.stop_requested()) {
             if (market_data_logger.pump(kLoggerPumpBatchSize) == 0) {
-                std::this_thread::yield();
+                idle_backoff.idle();
+            }else{
+                idle_backoff.reset();
             }
         }
 
@@ -701,12 +724,17 @@ int main(int argc, char** argv) {
     std::vector<std::jthread> shard_threads;
     shard_threads.reserve(shards.size());
     for (const auto& shard_index : std::views::iota(std::size_t{0}, shards.size())) {
-        shard_threads.push_back(start_shard_thread(*shards[shard_index]));
+        shard_threads.push_back(start_shard_thread(
+            *shards[shard_index],
+            app_config.runtime.thread_polling));
     }
 
     ServerThreadState server_state;
     std::jthread server_thread = start_server_thread(server, server_state);
-    std::jthread router_thread = start_router_thread(router_instance, app_queues.wire_to_router);
+    std::jthread router_thread = start_router_thread(
+        router_instance,
+        app_queues.wire_to_router,
+        app_config.runtime.thread_polling);
     logging::MarketDataLogger market_data_logger{
         logging::MarketDataLoggerDeps{
             .input_queues = make_logger_input_queues(app_queues),
@@ -716,7 +744,9 @@ int main(int argc, char** argv) {
             .output_file_path = app_config.runtime.market_data_tape_path,
         }
     };
-    std::jthread market_data_logger_thread = start_market_data_logger_thread(market_data_logger);
+    std::jthread market_data_logger_thread = start_market_data_logger_thread(
+        market_data_logger,
+        app_config.runtime.thread_polling);
 
     const bool order_graph_enabled =
         app_config.kalshi.order_rest.enable_order_rest ||
@@ -726,7 +756,9 @@ int main(int argc, char** argv) {
     std::optional<std::jthread> oms_thread;
     if(order_graph_enabled){
         oms_instance.emplace(oms_queues);
-        oms_thread.emplace(start_oms_thread(*oms_instance));
+        oms_thread.emplace(start_oms_thread(
+            *oms_instance,
+            app_config.runtime.thread_polling));
         if(!control_plane.send_active_order_universe_to_oms()){
             std::cerr << "predex OMS init error: failed to enqueue active order universe to OMS\n";
             return 1;

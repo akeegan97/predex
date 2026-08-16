@@ -1,5 +1,7 @@
 #include "predex/ingest/kalshi/market_data/wire_session.hpp"
 #include "predex/control/control_types.hpp"
+#include "predex/utils/latency_histogram.hpp"
+#include "predex/utils/monotonic_clock.hpp"
 
 #include <cstdint>
 #include <string>
@@ -68,12 +70,6 @@ namespace {
         }
         out = value.value();
         return true;
-    }
-
-
-    std::uint64_t monotonic_now_ns() noexcept {
-        using namespace std::chrono;
-        return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
     }
 
     predex::ingest::kalshi::FrameKind frame_kind_from_type(std::string_view type) noexcept {
@@ -876,7 +872,12 @@ namespace predex::ingest::kalshi::market_data{
 
     }
 
-    void KalshiWireSession::publish_market_data_frame(std::span<const std::byte> payload){
+    void KalshiWireSession::publish_market_data_frame(
+        std::span<const std::byte> payload,
+        std::uint64_t ingress_ts_ns){
+        if(ingress_ts_ns == 0){
+            ingress_ts_ns = predex::utils::monotonic_now_ns();
+        }
         ++telemetry_.frames_received;
         if(payload.size() > predex::ingest::kalshi::kMaxFrameBytes){
             ++telemetry_.frames_dropped;
@@ -1142,11 +1143,12 @@ namespace predex::ingest::kalshi::market_data{
             return;
         }
 
-        frame->recv_ts_ns = monotonic_now_ns();
+        frame->recv_ts_ns = ingress_ts_ns;
         frame->len = static_cast<std::uint32_t>(payload.size());
         frame->flags = 0;
         std::memcpy(frame->payload.data(), payload.data(), payload.size());
         stamp_handle(handle, envelope, *route);
+        handle.ingress_ts_ns = ingress_ts_ns;
 
         std::optional<PendingRecoveryTag> recovery_tag;
         if(envelope.kind == FrameKind::kORDERBOOK_SNAPSHOT){
@@ -1157,6 +1159,15 @@ namespace predex::ingest::kalshi::market_data{
                 recovery_tag = tag_iterator->second;
                 handle.recovery_id = recovery_tag->recovery_id;
             }
+        }
+
+        handle.wire_publish_ts_ns = predex::utils::monotonic_now_ns();
+        const auto latency_channel_index = market_data_channel_index(handle.kind);
+        if(latency_channel_index < core::control::kMarketDataChannelCount){
+            predex::utils::record_elapsed_ns(
+                telemetry_.wire_service_latency[latency_channel_index],
+                handle.ingress_ts_ns,
+                handle.wire_publish_ts_ns);
         }
 
         if(!router_queue_.try_push(MarketDataPathMessage{handle})){
@@ -1261,12 +1272,13 @@ namespace predex::ingest::kalshi::market_data{
                 break;
         }
 
+        const auto ingress_ts_ns = predex::utils::monotonic_now_ns();
         switch(classify_incoming_message(read_result.payload)){
             case IncomingMessageKind::kCONTROL_RESPONSE:
                 handle_ws_control_response(read_result.payload);
                 break;
             case IncomingMessageKind::kMARKET_DATA:
-                publish_market_data_frame(read_result.payload);
+                publish_market_data_frame(read_result.payload, ingress_ts_ns);
                 break;
             case IncomingMessageKind::kIGNORE:
             case IncomingMessageKind::kMALFORMED:

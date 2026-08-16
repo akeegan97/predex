@@ -147,6 +147,7 @@ TEST(RouterIntegrityTest, PeriodicTelemetryIncludesPerChannelAndQueueHighWater){
     }};
 
     ingest::FrameHandle handle{
+        .wire_publish_ts_ns = utils::monotonic_now_ns(),
         .shard_index = 0,
         .kind = ingest::FrameKind::kTRADE,
     };
@@ -158,6 +159,10 @@ TEST(RouterIntegrityTest, PeriodicTelemetryIncludesPerChannelAndQueueHighWater){
         ASSERT_TRUE(shard.try_pop(routed));
     }
 
+    ASSERT_TRUE(std::holds_alternative<ingest::FrameHandle>(routed));
+    const auto& routed_handle = std::get<ingest::FrameHandle>(routed);
+    EXPECT_GE(routed_handle.router_publish_ts_ns, handle.wire_publish_ts_ns);
+
     router::RouterToControl control_message{};
     ASSERT_TRUE(control.try_pop(control_message));
     ASSERT_TRUE(std::holds_alternative<router::RouterTelemetry>(control_message));
@@ -165,6 +170,12 @@ TEST(RouterIntegrityTest, PeriodicTelemetryIncludesPerChannelAndQueueHighWater){
     EXPECT_EQ(telemetry.total_frames_seen, router::kFRAMETHRESHOLD);
     EXPECT_EQ(telemetry.channel_stats[1].frames_observed, router::kFRAMETHRESHOLD);
     EXPECT_EQ(telemetry.shard_queue_depth_high_water, 1U);
+    EXPECT_EQ(
+        telemetry.wire_to_router_latency[1].count,
+        router::kFRAMETHRESHOLD);
+    EXPECT_EQ(
+        telemetry.router_service_latency[1].count,
+        router::kFRAMETHRESHOLD);
 }
 
 } // namespace

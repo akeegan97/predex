@@ -10,6 +10,7 @@
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/ingest/kalshi/market_data/integrity_messages.hpp"
 #include "predex/shard/shard.hpp"
+#include "predex/utils/monotonic_clock.hpp"
 
 namespace {
 
@@ -106,6 +107,10 @@ protected:
         frame->len = static_cast<std::uint32_t>(payload.size());
 
         stamp_handle(handle, kind);
+        const auto now_ns = utils::monotonic_now_ns();
+        handle.ingress_ts_ns = now_ns - 2'000;
+        handle.wire_publish_ts_ns = now_ns - 1'000;
+        handle.router_publish_ts_ns = now_ns;
         return handle;
     }
 
@@ -338,6 +343,10 @@ TEST_F(ShardTest, OrderedBarrierBlocksDeltasUntilReplacementSnapshot) {
     EXPECT_EQ(
         initial.event_result.book_sync_transition,
         shard::BookSyncTransition::kINITIAL_SNAPSHOT_INSTALLED);
+    EXPECT_EQ(shard_.stats().router_to_shard_latency[0].count, 1U);
+    EXPECT_EQ(shard_.stats().shard_service_latency[0].count, 1U);
+    EXPECT_EQ(shard_.stats().ingress_to_shard_latency[0].count, 1U);
+    EXPECT_EQ(shard_.stats().ingress_to_book_apply_latency[0].count, 1U);
     recycle_logged_frame();
 
     push_path_message(ingest::MarketDataPathMessage{market_barrier(71)});

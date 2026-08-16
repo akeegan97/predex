@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <variant>
 
+#include "predex/control/control_types.hpp"
 #include "predex/ingest/kalshi/market_data/integrity_messages.hpp"
 
 namespace predex::router{
@@ -39,6 +40,8 @@ namespace predex::router{
         std::uint64_t shard_queue_depth_high_water{0};
         predex::core::control::MarketDataChannelTelemetry channel_stats{
             predex::core::control::make_market_data_channel_telemetry()};
+        predex::core::control::MarketDataChannelLatency wire_to_router_latency{};
+        predex::core::control::MarketDataChannelLatency router_service_latency{};
     };
 
     struct RouterHandleLeak{

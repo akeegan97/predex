@@ -9,6 +9,8 @@
 
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/utils/spsc.hpp"
+#include "predex/utils/latency_histogram.hpp"
+#include "predex/utils/monotonic_clock.hpp"
 #include "predex/router/router_types.hpp"
 
 namespace predex::router{
@@ -146,6 +148,8 @@ namespace predex::router{
                         subscription_recovery_facts_deferred_,
                     .shard_queue_depth_high_water = shard_queue_depth_high_water_,
                     .channel_stats = channel_stats_,
+                    .wire_to_router_latency = wire_to_router_latency_,
+                    .router_service_latency = router_service_latency_,
                 };
                 (void)send_telemetry(telemetry);
                 current_frame_count_ = 0;
@@ -199,5 +203,7 @@ namespace predex::router{
             std::uint64_t shard_queue_depth_high_water_ = 0;
             core::control::MarketDataChannelTelemetry channel_stats_{
                 core::control::make_market_data_channel_telemetry()};
+            core::control::MarketDataChannelLatency wire_to_router_latency_{};
+            core::control::MarketDataChannelLatency router_service_latency_{};
     };
 }

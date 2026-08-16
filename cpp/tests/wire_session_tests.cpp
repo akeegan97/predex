@@ -333,6 +333,12 @@ TEST(WireSessionRecoveryTest, SnapshotIsStampedAndTagClearsAfterRouterHandoff){
     ASSERT_TRUE(std::holds_alternative<ingest::FrameHandle>(message));
     const auto handle = std::get<ingest::FrameHandle>(message);
     EXPECT_EQ(handle.recovery_id, command.recovery_id);
+    EXPECT_NE(handle.ingress_ts_ns, 0U);
+    EXPECT_GE(handle.wire_publish_ts_ns, handle.ingress_ts_ns);
+    EXPECT_EQ(
+        market_data::KalshiWireSessionTestPeer::telemetry(harness.session)
+            .wire_service_latency[0].count,
+        1U);
     EXPECT_FALSE(market_data::KalshiWireSessionTestPeer::has_recovery_tag(
         harness.session,
         command.market_id));

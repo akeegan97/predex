@@ -360,7 +360,9 @@ namespace predex::ingest::kalshi::market_data{
             [[nodiscard]] StampHandleCode resolve_market_route(const MarketDataEnvelope& envelope,const core::control::UniverseMarketRoute*& route_out) const noexcept;
             void stamp_handle(FrameHandle& handle,const MarketDataEnvelope& envelope,const core::control::UniverseMarketRoute& route) noexcept;
             [[nodiscard]] bool is_active_sid(std::uint32_t sid) const noexcept;
-            void publish_market_data_frame(std::span<const std::byte> payload);
+            void publish_market_data_frame(
+                std::span<const std::byte> payload,
+                std::uint64_t ingress_ts_ns = 0);
             void handle_ws_control_response(std::span<const std::byte> payload);
 
             void recover_market(const core::control::RecoverMarketIo& recover_market_io);

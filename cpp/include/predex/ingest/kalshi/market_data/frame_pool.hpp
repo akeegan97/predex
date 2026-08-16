@@ -29,6 +29,25 @@ namespace predex::ingest::kalshi{
         kHEARTBEAT = 7,
     };
 
+    [[nodiscard]] inline constexpr std::size_t market_data_channel_index(
+        FrameKind kind) noexcept{
+        switch(kind){
+            case FrameKind::kORDERBOOK_SNAPSHOT:
+            case FrameKind::kORDERBOOK_DELTA:
+                return 0;
+            case FrameKind::kTRADE:
+                return 1;
+            case FrameKind::kLIFECYCLE:
+                return 2;
+            case FrameKind::kUNKNOWN:
+            case FrameKind::kSUBSCRIPTION_ACK:
+            case FrameKind::kUNSUBSCRIBED:
+            case FrameKind::kHEARTBEAT:
+                return predex::core::control::kMarketDataChannelCount;
+        }
+        return predex::core::control::kMarketDataChannelCount;
+    }
+
     struct KalshiFrame {
         std::uint64_t recv_ts_ns{};
         std::uint32_t len{};
@@ -40,6 +59,11 @@ namespace predex::ingest::kalshi{
         std::uint64_t universe_version{};
         std::uint64_t sequence{};
         predex::core::control::RecoveryId recovery_id{};
+        std::uint64_t ingress_ts_ns{};
+        std::uint64_t wire_publish_ts_ns{};
+        std::uint64_t router_publish_ts_ns{};
+        std::uint64_t shard_dequeue_ts_ns{};
+        std::uint64_t shard_publish_ts_ns{};
 
         std::uint32_t sid{};
         std::uint32_t pool_index{};

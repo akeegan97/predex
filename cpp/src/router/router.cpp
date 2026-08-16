@@ -91,13 +91,30 @@ namespace predex::router{
     }
 
     RouterRouteResult Router::route_frame(const predex::ingest::kalshi::FrameHandle& handle){
+        auto routed_handle = handle;
+        const auto router_dequeue_ts_ns = utils::monotonic_now_ns();
+        const auto channel_index = ingest::kalshi::market_data_channel_index(handle.kind);
+        if(channel_index < core::control::kMarketDataChannelCount){
+            utils::record_elapsed_ns(
+                wire_to_router_latency_[channel_index],
+                handle.wire_publish_ts_ns,
+                router_dequeue_ts_ns);
+        }
         ++total_frames_seen_;
         ++current_frame_count_;
         if(auto* stats = channel_stats(handle.kind); stats != nullptr){
             ++stats->frames_observed;
         }
 
-        switch(try_route_to_shard(handle)){
+        routed_handle.router_publish_ts_ns = utils::monotonic_now_ns();
+        if(channel_index < core::control::kMarketDataChannelCount){
+            utils::record_elapsed_ns(
+                router_service_latency_[channel_index],
+                router_dequeue_ts_ns,
+                routed_handle.router_publish_ts_ns);
+        }
+
+        switch(try_route_to_shard(routed_handle)){
             case ShardEnqueueResult::kENQUEUED:
                 ++total_frames_to_shards_;
                 maybe_send_periodic_telemetry();
@@ -115,7 +132,7 @@ namespace predex::router{
                 (void)send_telemetry(telemetry);
 
                 const auto handle_kind = handle.kind;
-                if(!terminal_handoff(handle)){
+                if(!terminal_handoff(routed_handle)){
                     maybe_send_periodic_telemetry();
                     return RouterRouteResult::kFAULTED;
                 }
@@ -155,7 +172,7 @@ namespace predex::router{
                 return RouterRouteResult::kFAULTED;
             }
             case ShardEnqueueResult::kINVALID_TARGET:{
-                (void)terminal_handoff(handle);
+                (void)terminal_handoff(routed_handle);
                 maybe_send_periodic_telemetry();
                 return RouterRouteResult::kFAULTED;
             }

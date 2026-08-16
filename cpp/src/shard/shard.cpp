@@ -2,6 +2,8 @@
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/ingest/kalshi/market_data/integrity_messages.hpp"
 #include "predex/shard/shard_types.hpp"
+#include "predex/utils/latency_histogram.hpp"
+#include "predex/utils/monotonic_clock.hpp"
 
 #include <utility>
 
@@ -87,8 +89,25 @@ namespace predex::shard{
         return stats_;
     }
 
-    bool Shard::terminal_handoff(const predex::ingest::kalshi::FrameHandle& handle) noexcept{
+    bool Shard::terminal_handoff(
+        predex::ingest::kalshi::FrameHandle handle) noexcept{
         //TODO: change return from bool to enum to indicate if handle was recycled or sent to logger on true, or if handle was leaked on false
+        handle.shard_publish_ts_ns = utils::monotonic_now_ns();
+        const auto channel_index = ingest::kalshi::market_data_channel_index(handle.kind);
+        if(channel_index < core::control::kMarketDataChannelCount){
+            utils::record_elapsed_ns(
+                stats_.router_to_shard_latency[channel_index],
+                handle.router_publish_ts_ns,
+                handle.shard_dequeue_ts_ns);
+            utils::record_elapsed_ns(
+                stats_.shard_service_latency[channel_index],
+                handle.shard_dequeue_ts_ns,
+                handle.shard_publish_ts_ns);
+            utils::record_elapsed_ns(
+                stats_.ingress_to_shard_latency[channel_index],
+                handle.ingress_ts_ns,
+                handle.shard_publish_ts_ns);
+        }
         if(!queues_.shard_to_logger_queue.try_push(handle)){
             if(!queues_.last_resort_recycle_queue.try_push(handle)){
                 ++stats_.leaked_handles;
@@ -153,8 +172,10 @@ namespace predex::shard{
     }
 
 //NOLINTNEXTLINE -- suppressing cognitive complexity, easier to read than nesting suggests.
-    ShardPumpResult Shard::handle_message(const ingest::kalshi::FrameHandle& handle, MarketDataDispatchMode dispatch_mode) noexcept{
+    ShardPumpResult Shard::handle_message(const ingest::kalshi::FrameHandle& incoming_handle, MarketDataDispatchMode dispatch_mode) noexcept{
         ShardPumpResult result{};
+        auto handle = incoming_handle;
+        handle.shard_dequeue_ts_ns = utils::monotonic_now_ns();
         const bool is_order_book = handle.kind == predex::ingest::kalshi::FrameKind::kORDERBOOK_DELTA || handle.kind == predex::ingest::kalshi::FrameKind::kORDERBOOK_SNAPSHOT;
         ++stats_.frames_seen;
         if (dispatch_mode == MarketDataDispatchMode::kDRAINING) {
@@ -275,6 +296,17 @@ namespace predex::shard{
         }
 
         EventApplyResult event_result = event_store_.apply(handle, parsed_event);
+        if(is_order_book){
+            const auto apply_complete_ts_ns = utils::monotonic_now_ns();
+            const auto channel_index = ingest::kalshi::market_data_channel_index(handle.kind);
+            if(event_result.disposition == ApplyDisposition::kAPPLIED &&
+               channel_index < core::control::kMarketDataChannelCount){
+                utils::record_elapsed_ns(
+                    stats_.ingress_to_book_apply_latency[channel_index],
+                    handle.ingress_ts_ns,
+                    apply_complete_ts_ns);
+            }
+        }
         switch (event_result.book_sync_transition) {
             case BookSyncTransition::kBECAME_UNUSABLE:
                 ++stats_.markets_became_unusable;

@@ -7,13 +7,14 @@ from email.message import Message
 import time
 from urllib.error import HTTPError
 
-from predex.discovery.cli import _resolve_run_artifacts
+from predex.discovery.cli import _resolve_run_artifacts, build_parser
 from predex.discovery import (
     EventRecord,
     KalshiMarketDataSettings,
     KalshiSettings,
     MarketRecord,
     RuntimeSettings,
+    ThreadPollingSettings,
     TopologyKind,
     build_app_config_result,
     build_trader_config,
@@ -25,6 +26,15 @@ from predex.discovery.kalshi import KalshiPublicClient
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_app_generator_defaults_to_harvest_thread_polling(self) -> None:
+        args = build_parser().parse_args(["--config-format", "app"])
+
+        self.assertEqual(args.thread_polling_profile, "harvest")
+        self.assertEqual(args.thread_spin_iterations, 64)
+        self.assertEqual(args.thread_yield_iterations, 64)
+        self.assertEqual(args.thread_min_sleep_us, 50)
+        self.assertEqual(args.thread_max_sleep_us, 1000)
+
     def test_run_artifacts_bundle_defaults_into_run_directory(self) -> None:
         args = Namespace(
             run_dir_root="runs",
@@ -1032,6 +1042,13 @@ class ConfigTests(unittest.TestCase):
                 "operator_queue_capacity": 32,
                 "operator_socket_path": "/tmp/predex-test.sock",
                 "market_data_tape_path": "logs/live/predex_tape.bin",
+                "thread_polling": {
+                    "profile": "harvest",
+                    "spin_iterations": 64,
+                    "yield_iterations": 64,
+                    "min_sleep_us": 50,
+                    "max_sleep_us": 1000,
+                },
                 "synthetic_trading_session_enabled": False,
                 "reduce_only_after_seconds": 0,
                 "flatten_to_zero_after_seconds": 0,
@@ -1077,6 +1094,28 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(result.topology_counts, {"mutually_exclusive": 1})
         self.assertEqual(result.report()["included_market_count"], 2)
+
+    def test_app_config_builder_emits_custom_thread_polling(self) -> None:
+        runtime = RuntimeSettings(
+            thread_polling=ThreadPollingSettings(
+                profile="low_latency",
+                spin_iterations=0,
+                yield_iterations=0,
+                min_sleep_us=1,
+                max_sleep_us=1,
+            )
+        )
+
+        self.assertEqual(
+            runtime.to_dict()["thread_polling"],
+            {
+                "profile": "low_latency",
+                "spin_iterations": 0,
+                "yield_iterations": 0,
+                "min_sleep_us": 1,
+                "max_sleep_us": 1,
+            },
+        )
 
     def test_app_config_builder_resolves_32_bit_market_id_collisions(self) -> None:
         events = [

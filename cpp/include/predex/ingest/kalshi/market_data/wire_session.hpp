@@ -161,7 +161,7 @@ namespace predex::ingest::kalshi::market_data{
             }
 
             [[nodiscard]] SequenceObservation observe(
-                std::uint32_t sid,
+                std::uint32_t sid, //NOLINT
                 std::uint64_t sequence) noexcept{
                 SequenceObservation observation{
                     .code = SequenceObservationCode::kINACTIVE_SID,
@@ -352,7 +352,7 @@ namespace predex::ingest::kalshi::market_data{
             [[nodiscard]] std::uint8_t channel_for_sid(std::uint32_t sid) const noexcept;
 
             void drain_recycle_queues();
-            void pump_socket_once();
+            bool service_transport_once(bool may_consume);
             
             [[nodiscard]] IncomingMessageKind classify_incoming_message(std::span<const std::byte> payload);
             [[nodiscard]] EnvelopeParseCode parse_market_data_envelope( simdjson::padded_string_view payload,
@@ -365,7 +365,7 @@ namespace predex::ingest::kalshi::market_data{
                 std::uint64_t ingress_ts_ns = 0);
             void handle_ws_control_response(std::span<const std::byte> payload);
 
-            void recover_market(const core::control::RecoverMarketIo& recover_market_io);
+            void recover_market(const core::control::RecoverMarketIo& command);
 
             void report_fault(std::string error_message);
 

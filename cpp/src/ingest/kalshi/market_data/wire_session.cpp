@@ -96,33 +96,41 @@ namespace {
 namespace predex::ingest::kalshi::market_data{
 
     void KalshiWireSession::run(const std::stop_token& stop_token){
-        while(!stop_token.stop_requested()){
+        while (!stop_token.stop_requested()) {
             drain_recycle_queues();
-            bool recovery_statuses_flushed =
-                flush_pending_recovery_statuses();
-            if(recovery_statuses_flushed){
+
+            bool recovery_statuses_flushed = flush_pending_recovery_statuses();
+
+            if (recovery_statuses_flushed) {
                 drain_control_commands();
-                recovery_statuses_flushed =
-                    flush_pending_recovery_statuses();
+
+                recovery_statuses_flushed = flush_pending_recovery_statuses();
             }
 
-            const bool integrity_barrier_flushed =
-                flush_pending_integrity_barrier();
+            const bool integrity_barrier_flushed = flush_pending_integrity_barrier();
 
-            if(status_.connected && recovery_statuses_flushed &&
-               integrity_barrier_flushed){
-                pump_socket_once();
+            const bool may_consume_message =
+                recovery_statuses_flushed
+                && integrity_barrier_flushed;
+
+            bool transport_progressed = false;
+
+            if (status_.connected) {
+                transport_progressed = service_transport_once(may_consume_message);
             }
-            else{
+            if (!transport_progressed) {
                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
             }
+
             maybe_send_telemetry();
         }
 
         disconnect("wire session stopped");
+
         drain_recycle_queues();
         (void)flush_pending_integrity_barrier();
         (void)flush_pending_recovery_statuses();
+
         maybe_send_telemetry();
     }
 
@@ -223,7 +231,7 @@ namespace predex::ingest::kalshi::market_data{
             update_capacity_high_water();
             return true;
         }
-        pending_integrity_barrier_.emplace(std::move(barrier));
+        pending_integrity_barrier_.emplace((barrier));
         return false;
     }
 
@@ -339,10 +347,12 @@ namespace predex::ingest::kalshi::market_data{
             fail_request("Invalid recovery request identity");
             return;
         }
+
         if(!status_.connected){
             fail_request("Cannot request recovery snapshot while disconnected");
             return;
         }
+
         if(desired_universe_ == nullptr ||
            desired_universe_->version != command.universe_version){
             fail_request("Recovery request universe does not match installed universe");
@@ -350,23 +360,25 @@ namespace predex::ingest::kalshi::market_data{
         }
 
         const auto route_iterator = market_route_by_id_.find(command.market_id);
+        
         if(route_iterator == market_route_by_id_.end()){
             fail_request("Recovery request market is not in the installed universe");
             return;
         }
 
-        const auto channel =
-            exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA;
+        const auto channel = exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA;
         const auto subscription_iterator = active_subscriptions_.find(channel);
-        if(subscription_iterator == active_subscriptions_.end() ||
-           subscription_iterator->second.phase != SubscriptionPhase::kSUBSCRIBED ||
-           !subscription_iterator->second.sid.has_value()){
+
+        if(
+            subscription_iterator == active_subscriptions_.end() ||
+            subscription_iterator->second.phase != SubscriptionPhase::kSUBSCRIBED ||
+            !subscription_iterator->second.sid.has_value()
+        ){
             fail_request("Order-book subscription is not active");
             return;
         }
 
-        const auto existing_tag =
-            pending_recovery_by_market_.find(command.market_id);
+        const auto existing_tag = pending_recovery_by_market_.find(command.market_id);
         if(existing_tag != pending_recovery_by_market_.end()){
             const auto& tag = existing_tag->second;
             const bool same_request =
@@ -402,12 +414,14 @@ namespace predex::ingest::kalshi::market_data{
         }
 
         const auto ws_command_id = next_ws_command_id();
+        
         const RecoveryCommandContext context{
             .recovery_id = command.recovery_id,
             .universe_version = command.universe_version,
             .market_id = command.market_id,
             .request_attempt = command.request_attempt,
         };
+        
         pending_recovery_by_market_.emplace(
             command.market_id,
             PendingRecoveryTag{
@@ -415,6 +429,7 @@ namespace predex::ingest::kalshi::market_data{
                 .universe_version = command.universe_version,
                 .request_attempt = command.request_attempt,
             });
+        
         pending_ws_commands_.emplace(
             ws_command_id,
             PendingWsCommand{
@@ -428,11 +443,17 @@ namespace predex::ingest::kalshi::market_data{
         const auto& ticker = route_iterator->second.kalshi_ticker;
         const std::span<const std::string> tickers{&ticker, 1U};
         const auto sid = subscription_iterator->second.sid.value();
-        if(ws_session_.send_text(market_data_handler_.build_update_message(
-               ws_command_id,
-               static_cast<std::int64_t>(sid),
-               tickers,
-               "get_snapshot"))){
+
+        const auto send_status = ws_session_.send_text(
+            market_data_handler_.build_update_message(
+                ws_command_id,
+                static_cast<std::int64_t>(sid),
+                tickers,
+                "get_snapshot")
+            );
+
+
+        if(send_status == exchange::kalshi::SendStatus::kACCEPTED){
             ++telemetry_.snapshot_requests_sent;
             return;
         }
@@ -567,14 +588,10 @@ namespace predex::ingest::kalshi::market_data{
         subscription.market_ids.clear();
         subscription.last_error.clear();
 
-        if(!ws_session_.send_text(market_data_handler_.build_subscribe_message(ws_command_id, channel, tickers))){
-            pending_ws_commands_.erase(ws_command_id);
-            subscription.phase = SubscriptionPhase::kFAULTED;
-            subscription.last_error = std::string{ws_session_.last_error()};
-            return false;
-        }
-
-        return true;
+        const auto send_status = ws_session_.send_text(
+            market_data_handler_.build_subscribe_message(ws_command_id, channel, tickers)
+        );
+        return send_status == exchange::kalshi::SendStatus::kACCEPTED;
     }
 
     bool KalshiWireSession::add_markets(exchange::kalshi::KalshiMarketDataChannel channel, std::span<const std::string> tickers){
@@ -605,7 +622,10 @@ namespace predex::ingest::kalshi::market_data{
         const auto sid = sub_it->second.sid.value();
         sub_it->second.phase = SubscriptionPhase::kUPDATE_PENDING;
 
-        if(!ws_session_.send_text(market_data_handler_.build_update_message(ws_command_id, sid, tickers, "add_markets"))){
+        const auto send_status = ws_session_.send_text(
+            market_data_handler_.build_update_message(ws_command_id, sid, tickers, "add_markets")
+        );
+        if(send_status != exchange::kalshi::SendStatus::kACCEPTED){
             pending_ws_commands_.erase(ws_command_id);
             sub_it->second.phase = SubscriptionPhase::kSUBSCRIBED;
             sub_it->second.last_error = std::string{ws_session_.last_error()};
@@ -643,7 +663,10 @@ namespace predex::ingest::kalshi::market_data{
         const auto sid = sub_it->second.sid.value();
         sub_it->second.phase = SubscriptionPhase::kUPDATE_PENDING;
 
-        if(!ws_session_.send_text(market_data_handler_.build_update_message(ws_command_id, sid, tickers, "delete_markets"))){
+        const auto send_status = ws_session_.send_text(
+            market_data_handler_.build_update_message(ws_command_id, sid, tickers, "delete_markets")
+        );
+        if(send_status != exchange::kalshi::SendStatus::kACCEPTED){
             pending_ws_commands_.erase(ws_command_id);
             sub_it->second.phase = SubscriptionPhase::kSUBSCRIBED;
             sub_it->second.last_error = std::string{ws_session_.last_error()};
@@ -871,7 +894,7 @@ namespace predex::ingest::kalshi::market_data{
         }
 
     }
-
+    //NOLINTNEXTLINE
     void KalshiWireSession::publish_market_data_frame(
         std::span<const std::byte> payload,
         std::uint64_t ingress_ts_ns){
@@ -1250,41 +1273,55 @@ namespace predex::ingest::kalshi::market_data{
         } 
     }
 
-    void KalshiWireSession::pump_socket_once(){
+    bool KalshiWireSession::service_transport_once(bool may_consume){
         using predex::exchange::kalshi::ReadStatus;
 
-        auto read_result = ws_session_.recv_text(std::chrono::milliseconds{1});
+        bool made_progress = ws_session_.poll() > 0;
+
+        const auto read_result = ws_session_.recv_text();
+
         switch(read_result.status){
-            case ReadStatus::kTimeout:
-                return;
-            case ReadStatus::kClosed:
+            case ReadStatus::kPENDING:
+                return made_progress;
+            case ReadStatus::kCLOSED:
                 status_.connected = false;
                 status_.last_error = "websocket closed";
                 clear_transport_subscription_state();
                 (void)push_control_status(core::control::IoDisconnected{
                     .reason = status_.last_error,
                 });
-                return;
-            case ReadStatus::kError:
+                return true;
+            case ReadStatus::kERROR:
                 report_fault("websocket receive failed: " + std::string{ws_session_.last_error()});
-                return;
-            case ReadStatus::kMessage:
+                return true;
+            case ReadStatus::kMESSAGE:
                 break;
         }
 
+        if(!may_consume){
+            return made_progress;
+        }
         const auto ingress_ts_ns = predex::utils::monotonic_now_ns();
+
         switch(classify_incoming_message(read_result.payload)){
+            case IncomingMessageKind::kIGNORE:
+                break;
             case IncomingMessageKind::kCONTROL_RESPONSE:
                 handle_ws_control_response(read_result.payload);
                 break;
             case IncomingMessageKind::kMARKET_DATA:
                 publish_market_data_frame(read_result.payload, ingress_ts_ns);
                 break;
-            case IncomingMessageKind::kIGNORE:
             case IncomingMessageKind::kMALFORMED:
+                report_fault("Malformed websocket message received");
                 break;
         }
+
+        if(status_.connected){
+            ws_session_.consume_message();
+        }
         
+        return true;
     }
 
     IncomingMessageKind KalshiWireSession::classify_incoming_message(std::span<const std::byte> payload){
@@ -1404,7 +1441,10 @@ namespace predex::ingest::kalshi::market_data{
         });
         sub_it->second.phase = SubscriptionPhase::kUNSUBSCRIBE_PENDING;
         //NOTE: might change build_unsubscribe_message to just take a single sid instead of a span since it's only ever called one channel at a time here.
-        if(!ws_session_.send_text(market_data_handler_.build_unsubscribe_message(ws_command_id, {{sid}}))){
+        const auto send_status = ws_session_.send_text(
+            market_data_handler_.build_unsubscribe_message(ws_command_id, {{sid}})
+        );
+        if(send_status != exchange::kalshi::SendStatus::kACCEPTED){
             pending_ws_commands_.erase(ws_command_id);
             sub_it->second.phase = SubscriptionPhase::kSUBSCRIBED;
             sub_it->second.last_error = std::string{ws_session_.last_error()};
@@ -1415,11 +1455,10 @@ namespace predex::ingest::kalshi::market_data{
     }
 
     void KalshiWireSession::disconnect(std::string reason){
-        if(status_.connected){
-            ws_session_.close();
-        }
+        ws_session_.close();
         status_.connected = false;
         status_.last_error = std::move(reason);
+
         clear_transport_subscription_state();
         (void)push_control_status(core::control::IoDisconnected{
             .reason = status_.last_error,

@@ -151,9 +151,11 @@ namespace predex::ingest::kalshi::order_data{
         const auto ws_command_id = next_ws_command_id();
         const std::span<const std::string> ticker_filter{};//empty for no filter
 
-        const auto msg = order_data_handler_.build_subscribe_message(ws_command_id, channel, ticker_filter);
+        auto msg = order_data_handler_.build_subscribe_message(ws_command_id, channel, ticker_filter);
 
-        if (!ws_session_.send_text(msg)) {
+        const auto send_status = ws_session_.send_text(std::move(msg));
+
+        if (send_status != exchange::kalshi::SendStatus::kACCEPTED) {
             status_.last_error = std::string{"subscribe send failed: "} + std::string(ws_session_.last_error());
             active_subscriptions_[channel] = ActiveOrderSubscription{
                 .channel = channel,
@@ -163,12 +165,14 @@ namespace predex::ingest::kalshi::order_data{
             (void)push_control_status(core::control::PrivateOrderFeedFaulted{.error_message = status_.last_error});
             return false;
         }
+
         pending_ws_commands_[ws_command_id] = PendingOrderWsCommand{
             .ws_command_id = ws_command_id,
             .kind = OrderWsCommandKind::kSUBSCRIBE,
             .channel = channel,
             .universe_version = status_.installed_universe_version
         };
+        
         active_subscriptions_[channel] = ActiveOrderSubscription{
             .channel = channel,
             .phase = OrderSubscriptionPhase::kSUBSCRIBE_PENDING,
@@ -191,42 +195,55 @@ namespace predex::ingest::kalshi::order_data{
         const auto ws_command_id = next_ws_command_id();
         const std::span<const std::int64_t> session_ids{&sub_it->second.sid.value(), 1};
 
-        const auto msg = order_data_handler_.build_unsubscribe_message(ws_command_id, sub_it->second.channel, session_ids);
-        if (!ws_session_.send_text(msg)) {
+        auto msg = order_data_handler_.build_unsubscribe_message(ws_command_id, sub_it->second.channel, session_ids);
+        const auto send_status = ws_session_.send_text(std::move(msg));
+
+        if (send_status != exchange::kalshi::SendStatus::kACCEPTED) {
             status_.last_error = std::string{"unsubscribe send failed: "} + std::string(ws_session_.last_error());
             sub_it->second.phase = OrderSubscriptionPhase::kFAULTED;
             sub_it->second.last_error = status_.last_error;
             (void)push_control_status(core::control::PrivateOrderFeedFaulted{.error_message = status_.last_error});
             return false;
         }
+        
         pending_ws_commands_[ws_command_id] = PendingOrderWsCommand{
             .ws_command_id = ws_command_id,
             .kind = OrderWsCommandKind::kUNSUBSCRIBE,
             .channel = sub_it->second.channel,
             .universe_version = status_.installed_universe_version
         };
+        
         sub_it->second.phase = OrderSubscriptionPhase::kUNSUBSCRIBE_PENDING;
 
         return true;
     }
 
-    void KalshiOrderSession::pump_socket_once() noexcept{
+    bool KalshiOrderSession::service_transport_once() noexcept{
         using predex::exchange::kalshi::ReadStatus;
 
-        auto read_result = ws_session_.recv_text(std::chrono::milliseconds{1});
+        bool made_progress = ws_session_.poll() > 0;
+
+        const auto read_result = ws_session_.recv_text();
+
+
+
         switch(read_result.status){
-            case ReadStatus::kTimeout:
-                return;
-            case ReadStatus::kClosed:
+            case ReadStatus::kPENDING:
+                return made_progress;
+            case ReadStatus::kCLOSED:
                 disconnect("websocket closed");
-                return;
-            case ReadStatus::kError:
+                return true;
+            case ReadStatus::kERROR:
                 status_.last_error = "private order feed receive failed: " + std::string{ws_session_.last_error()};
+                
+                ws_session_.close();
                 clear_transport_subscription_state();
                 status_.connected = false;
+                
                 (void)push_control_status(core::control::PrivateOrderFeedFaulted{.error_message = status_.last_error});
-                return;
-            case ReadStatus::kMessage:
+                
+                return true;
+            case ReadStatus::kMESSAGE:
                 break;
         }
         ++telemetry_.messages_received;
@@ -241,13 +258,17 @@ namespace predex::ingest::kalshi::order_data{
             code == OrderParseCode::kINVALID_ORDER_ID){
             ++telemetry_.parse_failures;
             ++telemetry_.messages_dropped;
-            return;
+
+            ws_session_.consume_message();
+            
+            return true;
         }
 
         if (code == OrderParseCode::kIGNORE){
             parsed.kind = OrderIncomingMessageKind::kIGNORE;
             ++telemetry_.messages_decoded;
-            return;
+            ws_session_.consume_message();
+            return true;
         }
         switch(parsed.kind){
             case OrderIncomingMessageKind::kCONTROL_RESPONSE:
@@ -262,6 +283,10 @@ namespace predex::ingest::kalshi::order_data{
                 ++telemetry_.messages_dropped;
                 break;
         }
+        if(status_.connected){
+            ws_session_.consume_message();
+        }
+        return true;
     }
 
     void KalshiOrderSession::handle_ws_control_response(const ParsedOrderMessage& parsed) noexcept{
@@ -373,9 +398,8 @@ namespace predex::ingest::kalshi::order_data{
     }
 
     void KalshiOrderSession::disconnect(std::string reason){
-        if(status_.connected){
-            ws_session_.close();
-        }
+        ws_session_.close();
+        
         status_.connected = false;
         status_.last_error = std::move(reason);
         clear_transport_subscription_state();
@@ -423,19 +447,28 @@ namespace predex::ingest::kalshi::order_data{
     }
 
     void KalshiOrderSession::run(const std::stop_token& stop_token){
-        while(!stop_token.stop_requested()){
+        while (!stop_token.stop_requested()) {
             flush_deferred_oms_events();
             drain_control_commands();
 
-            if(status_.connected){
-                pump_socket_once();
+            bool transport_progressed = false;
+
+            if (status_.connected) {
+                transport_progressed =
+                    service_transport_once();
             }
-            else{
-                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+
+            if (!transport_progressed) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds{1});
             }
+
             maybe_send_telemetry();
         }
-        disconnect("private order feed session stopped");
+
+        disconnect(
+            "private order feed session stopped");
+
         flush_deferred_oms_events();
         maybe_send_telemetry();
     }

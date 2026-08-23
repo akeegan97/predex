@@ -86,6 +86,7 @@ add_executable(predex_tests
   src/exchange/kalshi/adapters/auth_signer.cpp
   src/exchange/kalshi/http2_session.cpp
   src/oms/oms.cpp
+  tests/websocket_session_tests.cpp
 )
 
 add_subdirectory(apps/research)

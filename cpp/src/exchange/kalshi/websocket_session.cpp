@@ -1,7 +1,8 @@
 #include "predex/exchange/kalshi/websocket_session.hpp"
-#include <openssl/ssl.h>
-#include <string>
 
+#include <boost/asio/registered_buffer.hpp>
+#include <openssl/ssl.h>
+#include <cassert>
 
 namespace {
 
@@ -204,72 +205,87 @@ namespace predex::exchange::kalshi {
         }
 
         ws_stream_->text(true);
-        last_ping_recv_ns_ = steady_now_ns(); // initialize to now 
-        connected_ = true;
+        last_ping_recv_ns_ = steady_now_ns();
+
+        state_ = TransportState::kRUNNING;
+
+        read_state_ = ReadState::kIDLE;
+        arm_read();
         return true;
 
     }
     
     void WebSocketSession::close(){
-        boost::system::error_code error_code;
         if(!ws_stream_){
-            connected_ = false;
+            state_ = TransportState::kDISCONNECTED;
             return;
         }
+        state_ = TransportState::kSTOPPED;
 
+        for(const auto& message : pending_writes_){
+            queued_write_bytes_ -= message.size();
+        }
+        pending_writes_.clear();
+        
         auto& lowest_layer = boost::beast::get_lowest_layer(*ws_stream_);
         lowest_layer.expires_never();
 
         auto& socket = lowest_layer.socket();
-        if(!socket.is_open()){
-            connected_ = false;
-            read_buffer_.consume(read_buffer_.size());
-            return;
+        boost::system::error_code ignore;
+
+        if(socket.is_open()){
+            const auto cancel_result = socket.cancel(ignore);
+            (void)cancel_result;
+            ignore.clear();
+            const auto shutdown_result = socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignore);
+            (void)shutdown_result;
+            ignore.clear();
+
+            const auto close_result = socket.close(ignore);
+            (void)close_result;
         }
 
-        const auto cancelled_operations = socket.cancel(error_code);
-        (void)cancelled_operations;
-
-        if(error_code && error_code != boost::beast::net::error::not_connected) {
-            last_error_ = "Failed to cancel outstanding operations: " + error_code.message();
+        if(io_context_.stopped()){
+            io_context_.restart();
         }
 
-        error_code.clear();
-
-        const auto shutdown_result = socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, error_code);
-        (void)shutdown_result;
-        if (error_code && error_code != boost::beast::net::error::not_connected) {
-            last_error_ = "Failed to shutdown socket: " + error_code.message();
+        while(read_state_ == ReadState::kPENDING || active_write_.has_value()){
+            const auto handlers = io_context_.run_one();
+            if(handlers == 0){
+                break;
+            }
         }
 
-        error_code.clear();
-
-        const auto close_result = socket.close(error_code);
-        (void)close_result;
-        if (error_code && error_code != boost::beast::net::error::not_connected) {
-            last_error_ = "Failed to close socket: " + error_code.message();
-        }
-
-        connected_ = false;
+        assert(read_state_ != ReadState::kPENDING);
+        assert(!active_write_);
         read_buffer_.consume(read_buffer_.size());
+
+        pending_writes_.clear();
+        queued_write_bytes_ = 0;
+
+        state_ = TransportState::kDISCONNECTED;
+        read_state_ = ReadState::kIDLE;
+
     }
 
-    bool WebSocketSession::send_text(std::string_view message){
-        if(!connected_){
-            last_error_ = "Websocket is not connected";
-            return false;
+    SendStatus WebSocketSession::send_text(std::string message){
+        if(state_ == TransportState::kFAULTED){
+            return SendStatus::kERROR;
         }
+        if(state_ != TransportState::kRUNNING){
+            return SendStatus::kCLOSED;
+        }
+        const auto message_size = message.size();
+        //TODO: consider max queued bytes limit
+        queued_write_bytes_ += message_size;
 
-        boost::system::error_code error_code;
-        auto& lowest_layer = boost::beast::get_lowest_layer(*ws_stream_);
-        lowest_layer.expires_after(kWriteTimeout);
-        ws_stream_->write(boost::asio::buffer(message), error_code);
-        lowest_layer.expires_never();
-        if(error_code){
-            last_error_ = "Failed to send message: " + error_code.message();
-            return false;
+        if(!active_write_){
+            active_write_.emplace(std::move(message));
+            start_active_write();
+            return SendStatus::kACCEPTED;
         }
-        return true;
+        pending_writes_.emplace_back(std::move(message));
+        return SendStatus::kACCEPTED;
     }
 
     const WsConnectRequest& WebSocketSession::connect_request() const noexcept {
@@ -280,33 +296,157 @@ namespace predex::exchange::kalshi {
         return last_error_;
     }
 
-    ReadResult WebSocketSession::recv_text(std::chrono::milliseconds timeout){
-        if(!connected_){
-            last_error_ = "Websocket is not connected";
-            return {.status = ReadStatus::kClosed};
+    ReadResult WebSocketSession::recv_text(){
+        if(state_ == TransportState::kFAULTED){
+            return ReadResult{.status = ReadStatus::kERROR};
         }
-        read_buffer_.consume(read_buffer_.size());
-        auto& stream = boost::beast::get_lowest_layer(*ws_stream_);
-        stream.expires_after(timeout);
-        boost::system::error_code error_code;
-        ws_stream_->read(read_buffer_, error_code);
-        stream.expires_never();
-        if (error_code) {
-            if (error_code == boost::beast::error::timeout || error_code == boost::beast::net::error::timed_out) {
-                return {.status = ReadStatus::kTimeout};
-            }
-            if (error_code == boost::beast::websocket::error::closed || error_code == boost::beast::net::error::operation_aborted ||
-                error_code == boost::beast::net::error::not_connected) {
-                connected_ = false;
-                return {.status = ReadStatus::kClosed};
-            }
-            last_error_ = "Failed to read message: " + error_code.message();
-            connected_ = false;
-            return {.status = ReadStatus::kError};
+        if(state_ == TransportState::kDISCONNECTED || state_ == TransportState::kSTOPPED){
+            return ReadResult{.status = ReadStatus::kCLOSED};
         }
+
+        if(read_state_ != ReadState::kMESSAGE_READY){
+            return ReadResult{.status = ReadStatus::kPENDING};
+        }
+
         const auto buffer = read_buffer_.data();
-        return {.status = ReadStatus::kMessage, 
-                .payload = std::span<const std::byte>{reinterpret_cast<const std::byte*>(buffer.data()), buffer.size()}
-                };
+        return ReadResult{
+            .status = ReadStatus::kMESSAGE,
+            .payload = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size())
+        };
     }
+
+    void WebSocketSession::reset_stream(){
+        assert(read_state_ != ReadState::kPENDING);
+        assert(!active_write_);
+
+        ws_stream_ = std::make_unique<WsStream>(io_context_, ssl_context_);
+
+        read_buffer_.consume(read_buffer_.size());
+
+        pending_writes_.clear();
+        queued_write_bytes_ = 0;
+
+        read_state_ = ReadState::kIDLE;
+        state_ = TransportState::kDISCONNECTED;
+
+        last_ping_recv_ns_ = 0;
+
+    }
+
+    std::size_t WebSocketSession::poll(){
+        if(io_context_.stopped()){
+            io_context_.restart();
+        }
+        return io_context_.poll();
+    }
+
+    void WebSocketSession::arm_read(){
+        assert(read_state_ == ReadState::kIDLE);
+        assert(state_ == TransportState::kRUNNING);
+        assert(read_buffer_.size() == 0);
+
+        if(io_context_.stopped()){
+            io_context_.restart();
+        }
+
+        read_state_ = ReadState::kPENDING;
+
+        ws_stream_->async_read(read_buffer_, 
+            [this](boost::beast::error_code error_code, std::size_t bytes_transferred){
+                assert(read_state_ == ReadState::kPENDING);
+                if(state_ == TransportState::kSTOPPED || state_ == TransportState::kFAULTED){
+                    read_state_ = ReadState::kIDLE;
+                    read_buffer_.consume(read_buffer_.size());
+                    return;
+                }
+                if(error_code){
+                    read_state_ = ReadState::kIDLE;
+                    if(
+                        error_code == boost::beast::websocket::error::closed || 
+                        error_code == boost::beast::net::error::not_connected
+                    ){
+                        state_ = TransportState::kDISCONNECTED;
+
+                        read_buffer_.consume(read_buffer_.size());
+                        return;
+                    }
+                    transition_fault("async_read", error_code);
+                    return;
+                }
+                read_state_ = ReadState::kMESSAGE_READY;
+            });
+    }
+
+    void WebSocketSession::consume_message(){
+        assert(state_ == TransportState::kRUNNING);
+        assert(read_state_ == ReadState::kMESSAGE_READY);
+        read_buffer_.consume(read_buffer_.size());
+        read_state_ = ReadState::kIDLE;
+
+        arm_read();
+    }
+    
+    void WebSocketSession::start_active_write(){
+        assert(state_ == TransportState::kRUNNING);
+        assert(active_write_);
+        if(io_context_.stopped()){
+            io_context_.restart();
+        }
+        ws_stream_->async_write(boost::asio::buffer(*active_write_),
+            [this](boost::beast::error_code error_code, std::size_t bytes_transferred){
+                assert(active_write_);
+                const auto completed_size = active_write_->size();
+
+                if(state_ == TransportState::kSTOPPED || state_ == TransportState::kFAULTED){
+                    queued_write_bytes_ -= completed_size;
+                    active_write_.reset();
+                    return;
+                }
+                if(error_code){
+                    queued_write_bytes_ -= completed_size;
+                    active_write_.reset();
+                    transition_fault("async_write", error_code);
+                    return;
+                }
+
+                queued_write_bytes_ -= completed_size;
+                active_write_.reset();
+                if(!pending_writes_.empty()){
+                    
+                    active_write_.emplace(std::move(pending_writes_.front()));
+                    pending_writes_.pop_front();
+                    
+                    start_active_write();
+                }
+            }
+        );
+    }
+
+    void WebSocketSession::transition_fault(std::string_view operation, const boost::system::error_code& error_code){
+        if(state_ == TransportState::kFAULTED || state_ == TransportState::kSTOPPED){
+            return;
+        }
+        last_error_ = std::string(operation) + " failed: " + error_code.message();
+        state_ = TransportState::kFAULTED;
+
+        for(const auto& message : pending_writes_){
+            queued_write_bytes_ -= message.size();
+        }
+        pending_writes_.clear();
+
+        boost::system::error_code ignore;
+
+        auto& socket = boost::beast::get_lowest_layer(*ws_stream_).socket();
+//NOLINTNEXTLINE -> already ignoring error code, + using ignore as ec->out
+        (void)socket.cancel(ignore);
+
+        ignore.clear();
+//NOLINTNEXTLINE -> already ignoring error code, + using ignore as ec->out
+        (void)socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignore);
+        ignore.clear();
+//NOLINTNEXTLINE -> already ignoring error code, + using ignore as ec->out        
+        (void)socket.close(ignore);
+
+    }
+
 }

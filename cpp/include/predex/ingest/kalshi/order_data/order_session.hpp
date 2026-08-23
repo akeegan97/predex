@@ -136,7 +136,7 @@ namespace predex::ingest::kalshi::order_data{
 
             void maybe_send_telemetry() noexcept;
 
-            void pump_socket_once() noexcept;
+            bool service_transport_once() noexcept;
 
             [[nodiscard]] std::uint64_t next_ws_command_id() noexcept {
                 return next_ws_command_id_++;

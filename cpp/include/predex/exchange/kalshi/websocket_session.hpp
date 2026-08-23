@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <deque>
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -24,14 +25,34 @@
 namespace predex::exchange::kalshi {
 
 enum class ReadStatus : std::uint8_t {
-    kMessage = 1,
-    kTimeout = 2,
-    kClosed = 3,
-    kError = 4,
+    kPENDING = 1,
+    kMESSAGE = 2,
+    kCLOSED = 3,
+    kERROR = 4,
+};
+
+enum class ReadState : std::uint8_t{
+    kIDLE = 0,
+    kPENDING = 1,
+    kMESSAGE_READY = 2
+};
+
+enum class TransportState : std::uint8_t{
+    kDISCONNECTED = 0,
+    kRUNNING = 1,
+    kSTOPPED = 2,
+    kFAULTED = 3
+};
+
+enum class SendStatus : std::uint8_t{
+    kACCEPTED,
+    kCLOSED,
+    kQUEUE_FULL,
+    kERROR
 };
 
 struct ReadResult {
-    ReadStatus status{ReadStatus::kError};
+    ReadStatus status{ReadStatus::kERROR};
     std::span<const std::byte> payload;
 };
 
@@ -54,8 +75,14 @@ class WebSocketSession {
     WebSocketSession& operator=(const WebSocketSession&) = delete;
 
     [[nodiscard]] bool connect();
-    [[nodiscard]] bool send_text(std::string_view message);
-    [[nodiscard]] ReadResult recv_text(std::chrono::milliseconds timeout);
+
+    [[nodiscard]] SendStatus send_text(std::string message);
+
+    [[nodiscard]] ReadResult recv_text();
+
+    void consume_message();
+
+    std::size_t poll();
     
     void close();
 
@@ -67,12 +94,12 @@ class WebSocketSession {
         boost::beast::websocket::stream<
             boost::beast::ssl_stream<boost::beast::tcp_stream>>;
 
-    void reset_stream() {
-        ws_stream_ = std::make_unique<WsStream>(io_context_, ssl_context_);
-        read_buffer_.consume(read_buffer_.size());
-        connected_ = false;
-        last_ping_recv_ns_ = 0;
-    }
+    void reset_stream();
+    void arm_read();
+    void start_active_write();
+    void transition_fault(std::string_view operation, const boost::system::error_code& error_code);
+
+    void maybe_finish_stop();
 
     const IWsAdapter& adapter_;
     WsConnectRequest connect_request_{};
@@ -86,7 +113,16 @@ class WebSocketSession {
     boost::asio::ssl::context ssl_context_{boost::asio::ssl::context::tls_client};
     boost::asio::ip::tcp::resolver resolver_{io_context_};
     std::unique_ptr<WsStream> ws_stream_;
+
+    TransportState state_{TransportState::kDISCONNECTED};
+    ReadState read_state_{ReadState::kIDLE};
+
     boost::beast::flat_buffer read_buffer_;
+
+    std::optional<std::string> active_write_;
+    std::deque<std::string> pending_writes_;
+
+    std::size_t queued_write_bytes_{0};
 
 };
 

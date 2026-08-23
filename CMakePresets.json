@@ -24,6 +24,19 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
       }
+    },{
+      "name" : "san",
+      "displayName": "Sanitizers (Clang ASan + UBSan)",
+      "inherits": "base-clang",
+      "binaryDir": "${fileDir}/build/san",
+      "cacheVariables":{
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS_DEBUG":
+          "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS_DEBUG":
+          "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined"
+      }
     },
     {
       "name": "rel",
@@ -83,6 +96,10 @@
       "name": "perf-vcpkg",
       "displayName": "Perf (Clang Release O3 + native tuning + vcpkg)",
       "inherits": ["perf", "base-vcpkg"]
+    },{
+      "name": "san-vcpkg",
+      "displayName": "Sanitizers (Clang ASan + UBSan + vcpkg)",
+      "inherits": ["san", "base-vcpkg"]
     }
   ],
   "buildPresets": [
@@ -117,6 +134,14 @@
     {
       "name": "build-perf-vcpkg",
       "configurePreset": "perf-vcpkg"
+    },
+    {
+      "name": "build-san-vcpkg",
+      "configurePreset": "san-vcpkg"
+    },
+    {
+      "name": "build-san",
+      "configurePreset": "san"
     }
   ],
   "testPresets": [
@@ -151,6 +176,13 @@
     {
       "name": "test-perf-vcpkg",
       "configurePreset": "perf-vcpkg",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "test-san-vcpkg",
+      "configurePreset": "san-vcpkg",
       "output": {
         "outputOnFailure": true
       }

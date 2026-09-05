@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
 from argparse import Namespace
 from datetime import UTC, datetime
 from email.message import Message
 import time
+from unittest.mock import patch
 from urllib.error import HTTPError
 
-from predex.discovery.cli import _resolve_run_artifacts, build_parser
+from predex.discovery.cli import (
+    _resolve_operator_socket_path,
+    _resolve_run_artifacts,
+    build_parser,
+    main,
+)
 from predex.discovery import (
     EventRecord,
     KalshiMarketDataSettings,
@@ -34,6 +45,68 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(args.thread_yield_iterations, 64)
         self.assertEqual(args.thread_min_sleep_us, 50)
         self.assertEqual(args.thread_max_sleep_us, 1000)
+
+    def test_app_generator_derives_stable_operator_socket_from_config_path(self) -> None:
+        first = _resolve_operator_socket_path(None, "runs/first/config.json")
+        repeated = _resolve_operator_socket_path(None, "runs/first/config.json")
+        second = _resolve_operator_socket_path(None, "runs/second/config.json")
+
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("/tmp/predex-operator-"))
+        self.assertTrue(first.endswith(".sock"))
+        self.assertLessEqual(len(first.encode("utf-8")), 107)
+
+    def test_app_generator_preserves_explicit_operator_socket_path(self) -> None:
+        explicit = "/tmp/operator-explicit.sock"
+
+        resolved = _resolve_operator_socket_path(explicit, "runs/first/config.json")
+
+        self.assertEqual(resolved, explicit)
+
+    def test_stdout_app_configs_receive_unique_operator_socket_paths(self) -> None:
+        first = _resolve_operator_socket_path(None, None)
+        second = _resolve_operator_socket_path(None, None)
+
+        self.assertNotEqual(first, second)
+        self.assertLessEqual(len(first.encode("utf-8")), 107)
+
+    def test_operator_socket_cli_default_is_deferred_until_generation(self) -> None:
+        default_args = build_parser().parse_args(["--config-format", "app"])
+        explicit_args = build_parser().parse_args(
+            ["--config-format", "app", "--operator-socket-path", "/tmp/custom.sock"]
+        )
+
+        self.assertIsNone(default_args.operator_socket_path)
+        self.assertEqual(explicit_args.operator_socket_path, "/tmp/custom.sock")
+
+    def test_app_generator_writes_resolved_operator_socket_path(self) -> None:
+        event = EventRecord(
+            event_ticker="EV-SOCKET",
+            markets=[MarketRecord(ticker="MKT-SOCKET", event_ticker="EV-SOCKET")],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            with patch("predex.discovery.cli.KalshiPublicClient") as client_type:
+                client_type.return_value.discover_events.return_value = [event]
+                with redirect_stderr(io.StringIO()):
+                    return_code = main(
+                        [
+                            "--config-format",
+                            "app",
+                            "--output",
+                            str(config_path),
+                        ]
+                    )
+
+            generated = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(
+            generated["runtime"]["operator_socket_path"],
+            _resolve_operator_socket_path(None, str(config_path)),
+        )
 
     def test_run_artifacts_bundle_defaults_into_run_directory(self) -> None:
         args = Namespace(

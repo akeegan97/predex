@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 import json
 from pathlib import Path
 import re
+import secrets
 import sys
 
 from predex.env import load_repo_dotenv
@@ -31,6 +33,7 @@ from .models import TopologyKind
 DEFAULT_TAPE_OUTPUT = "logs/live/predex_tape.bin"
 DEFAULT_AUDIT_OUTPUT = "logs/live/predex_audit.jsonl"
 DEFAULT_RUN_DIR_ROOT = "runs"
+DEFAULT_OPERATOR_SOCKET_PREFIX = "/tmp/predex-operator-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,25 @@ def _resolve_run_artifacts(
         tape_output=args.tape_output or str(run_dir / "tape.bin"),
         audit_output=args.audit_output or str(run_dir / "audit.jsonl"),
     )
+
+
+def _resolve_operator_socket_path(
+    explicit_path: str | None,
+    config_output: str | None,
+) -> str:
+    if explicit_path is not None:
+        return explicit_path
+
+    if config_output is not None:
+        config_identity = str(Path(config_output).expanduser().resolve())
+        socket_id = hashlib.blake2s(
+            config_identity.encode("utf-8"),
+            digest_size=10,
+        ).hexdigest()
+    else:
+        socket_id = secrets.token_hex(10)
+
+    return f"{DEFAULT_OPERATOR_SOCKET_PREFIX}{socket_id}.sock"
 
 
 def _write_text_file(path: str, payload: str) -> None:
@@ -278,8 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--operator-socket-path",
-        default="/tmp/predex_operator.sock",
-        help="Operator Unix socket path written into the C++ app config. Default: /tmp/predex_operator.sock.",
+        help=(
+            "Operator Unix socket path written into the C++ app config. "
+            "By default, file-backed configs receive a stable path derived from the config filename; "
+            "stdout-only configs receive a unique path."
+        ),
     )
     parser.add_argument(
         "--thread-polling-profile",
@@ -563,9 +588,14 @@ def main(argv: list[str] | None = None) -> int:
         status=args.status,
         limit=event_limit,
     )
+    operator_socket_path: str | None = None
     if args.config_format == "app":
         app_channels = tuple(dict.fromkeys(channels + lifecycle_channels))
         enable_market_data = args.enable_market_data or run_artifacts.run_dir is not None
+        operator_socket_path = _resolve_operator_socket_path(
+            args.operator_socket_path,
+            run_artifacts.output,
+        )
         build_result = build_app_config_result(
             events,
             runtime=RuntimeSettings(
@@ -574,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                 router_queue_capacity=args.router_queue_capacity or args.io_to_router_capacity,
                 frame_pool_capacity=args.frame_pool_capacity,
                 operator_queue_capacity=args.operator_queue_capacity,
-                operator_socket_path=args.operator_socket_path,
+                operator_socket_path=operator_socket_path,
                 market_data_tape_path=run_artifacts.tape_output,
                 thread_polling=ThreadPollingSettings(
                     profile=args.thread_polling_profile,
@@ -641,5 +671,7 @@ def main(argv: list[str] | None = None) -> int:
     if run_artifacts.report_output:
         sys.stderr.write(f" | report={run_artifacts.report_output}")
     sys.stderr.write(f" | tape={run_artifacts.tape_output}")
+    if operator_socket_path is not None:
+        sys.stderr.write(f" | operator_socket={operator_socket_path}")
     sys.stderr.write("\n")
     return 0

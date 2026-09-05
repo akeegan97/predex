@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  echo "predex-use: this helper must be sourced: source scripts/predex-use <config-or-run-dir>" >&2
+  exit 2
+fi
+
+_predex_use() {
+  if (( $# != 1 )); then
+    echo "predex-use: usage: source scripts/predex-use <config-or-run-dir>" >&2
+    return 2
+  fi
+
+  local root_dir
+  root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 1
+
+  local python_bin="python3"
+  if [[ -x "$root_dir/.venv/bin/python" ]]; then
+    python_bin="$root_dir/.venv/bin/python"
+  fi
+
+  local extracted
+  if ! extracted="$("$python_bin" - "$1" <<'PY'
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+
+config_path = Path(sys.argv[1]).expanduser()
+if config_path.is_dir():
+    config_path /= "config.json"
+
+try:
+    config_path = config_path.resolve(strict=True)
+except OSError as exc:
+    raise SystemExit(f"predex-use: cannot resolve config path: {exc}") from exc
+
+if not config_path.is_file():
+    raise SystemExit(f"predex-use: config path is not a regular file: {config_path}")
+
+try:
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"predex-use: cannot read config: {exc}") from exc
+
+if not isinstance(config, dict):
+    raise SystemExit("predex-use: config root must be a JSON object")
+
+runtime = config.get("runtime")
+if not isinstance(runtime, dict):
+    raise SystemExit("predex-use: config is missing the runtime object")
+
+socket_path = runtime.get("operator_socket_path")
+if not isinstance(socket_path, str) or not socket_path:
+    raise SystemExit("predex-use: runtime.operator_socket_path must be a non-empty string")
+
+for name, value in (("config path", str(config_path)), ("operator socket path", socket_path)):
+    if any(character in value for character in ("\0", "\n", "\r")):
+        raise SystemExit(f"predex-use: {name} contains an unsupported control character")
+
+sys.stdout.write(f"{config_path}\n{socket_path}\n")
+PY
+  )"; then
+    return 1
+  fi
+
+  local -a values
+  mapfile -t values <<< "$extracted"
+  if (( ${#values[@]} != 2 )); then
+    echo "predex-use: failed to extract config and socket paths" >&2
+    return 1
+  fi
+
+  export PREDEX_CONFIG="${values[0]}"
+  export PREDEX_SOCKET_PATH="${values[1]}"
+
+  printf 'predex-use: PREDEX_CONFIG=%q\n' "$PREDEX_CONFIG"
+  printf 'predex-use: PREDEX_SOCKET_PATH=%q\n' "$PREDEX_SOCKET_PATH"
+}
+
+if _predex_use "$@"; then
+  unset -f _predex_use
+  return 0
+fi
+
+unset -f _predex_use
+unset PREDEX_CONFIG PREDEX_SOCKET_PATH
+return 1

@@ -92,4 +92,5 @@ STRATEGY_RESEARCH_STATUS.md
 ORACLE_HARNESS_CURRENT.md
 
 scripts/*
+!scripts/predex-use
 *.py

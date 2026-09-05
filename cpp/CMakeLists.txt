@@ -56,6 +56,8 @@ add_executable(predex
   src/ingest/kalshi/order_data/order_session.cpp
   src/exchange/kalshi/adapters/order_data_handler.cpp
   src/control/recovery_coordinator.cpp
+  include/predex/socket/unique_fd.hpp
+  include/predex/socket/socket_path_guard.hpp
 )
 
 add_executable(predex_tests

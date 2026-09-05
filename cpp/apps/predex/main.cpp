@@ -15,7 +15,7 @@
 #include <cstdlib>
 #include <optional>
 #include <ranges>
-
+#include <future>
 #include <curl/curl.h>
 
 #include "predex/config/app_config.hpp"
@@ -435,6 +435,10 @@ market_data::RecycleQueues make_wire_recycle_queues(AppQueues& queues) {
     return recycle_queues;
 }
 
+struct ServerStartupResult {
+    bool ready{false};
+    std::string error;
+};
 
 struct ServerThreadState {
     std::mutex error_mutex;
@@ -442,13 +446,37 @@ struct ServerThreadState {
     std::atomic<bool> failed{false};
 };
 
-std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThreadState& state) {
-    return std::jthread([&server, &state](const std::stop_token& stop_token) {
+std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThreadState& state, std::promise<ServerStartupResult>&& startup_promise) {
+    return std::jthread([&server, &state, startup_promise = std::move(startup_promise)](const std::stop_token& stop_token) mutable {
+        bool ready_reported = false;
         std::string local_error;
-        server.run(stop_token, local_error);
+        try{
+            server.run(stop_token, local_error, [&] {
+                ready_reported = true;
+                startup_promise.set_value({
+                    .ready = true,
+                    .error = "",
+                });
+            });
+        }catch(const std::exception& e) {
+            local_error = std::string{"operator sever exception: "} + e.what();
+        }catch(...) {
+            local_error = "operator server exception: unknown error";
+        }
+
+        if (!ready_reported) {
+            startup_promise.set_value({
+                .ready = false,
+                .error = local_error.empty()
+                    ? "operator server exited before becoming ready"
+                    : std::move(local_error),
+            });
+            return;
+        }
+
         if (!local_error.empty()) {
             std::lock_guard<std::mutex> lock(state.error_mutex);
-            state.error = local_error;
+            state.error = std::move(local_error);
             state.failed.store(true);
         }
     });
@@ -720,6 +748,17 @@ int main(int argc, char** argv) {
         std::cerr << "predex universe init error: " << e.what() << '\n';
         return 1;
     }
+    ServerThreadState server_state;
+
+    std::promise<ServerStartupResult> server_startup_promise;
+    std::future<ServerStartupResult> server_startup_future = server_startup_promise.get_future();
+    
+    std::jthread server_thread = start_server_thread(server, server_state, std::move(server_startup_promise));
+    const ServerStartupResult server_startup_result = server_startup_future.get();
+    if(!server_startup_result.ready){
+        std::cerr << "predex server failed to start: " << server_startup_result.error << '\n';
+        return 1;
+    }
 
     std::vector<std::jthread> shard_threads;
     shard_threads.reserve(shards.size());
@@ -729,8 +768,7 @@ int main(int argc, char** argv) {
             app_config.runtime.thread_polling));
     }
 
-    ServerThreadState server_state;
-    std::jthread server_thread = start_server_thread(server, server_state);
+
     std::jthread router_thread = start_router_thread(
         router_instance,
         app_queues.wire_to_router,
@@ -878,8 +916,6 @@ int main(int argc, char** argv) {
         shard_thread.request_stop();
     }
     server_thread.request_stop();
-
-    server.stop();
 
     if (wire_session_thread.has_value()) {
         wire_session_thread->join();

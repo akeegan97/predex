@@ -377,11 +377,6 @@ namespace predex::ingest::kalshi::order_data{
             return;
         }
 
-        if (parsed.order_event.event_kind == oms::PrivateWsOrderEventKind::kMARKET_POSITION) {
-            ++telemetry_.messages_decoded;
-            return;
-        }
-
         if (!stamp_market_route(parsed)) {
             ++telemetry_.messages_dropped;
             return;

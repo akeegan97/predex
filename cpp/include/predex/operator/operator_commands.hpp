@@ -145,8 +145,21 @@ struct OmsCounterStats{
     std::uint64_t rest_responses_seen{};
     std::uint64_t private_ws_events_seen{};
     std::uint64_t reconciliation_events_seen{};
+    std::uint64_t portfolio_reconciliations_requested{};
+    std::uint64_t portfolio_reconciliations_completed{};
+    std::uint64_t portfolio_reconciliations_failed{};
+    std::uint64_t duplicate_fills_ignored{};
+    std::uint64_t venue_position_updates_seen{};
+    std::int64_t venue_available_balance_ticks{};
+    bool portfolio_reconciled{false};
     std::uint64_t order_state_updates_sent{};
     std::uint64_t strategy_response_backpressure{};
+    std::uint64_t execution_incidents_latched{};
+    std::uint64_t group_repair_attempts{};
+    std::uint64_t group_repair_commands_sent{};
+    std::uint64_t group_repairs_completed{};
+    std::uint64_t group_repairs_failed{};
+    bool execution_incident_active{false};
     std::uint64_t live_orders{};
     std::uint64_t pending_submit_orders{};
     std::uint64_t uncertain_orders{};
@@ -175,6 +188,7 @@ struct OrderRestCounterStats{
     std::uint64_t requests_failed{};
     std::uint64_t retry_count{};
     std::uint64_t oms_enqueue_failures{};
+    std::string last_portfolio_reconciliation_error;
     std::string last_error;
 };
 

@@ -58,6 +58,10 @@ add_executable(predex
   src/control/recovery_coordinator.cpp
   include/predex/socket/unique_fd.hpp
   include/predex/socket/socket_path_guard.hpp
+  include/predex/strategy/strategy_types.hpp
+  include/predex/strategy/monotonic_arb.hpp
+  src/strategy/monotonic_arb.cpp
+  src/strategy/strategy.cpp
 )
 
 add_executable(predex_tests
@@ -69,6 +73,9 @@ add_executable(predex_tests
   tests/idle_backoff_tests.cpp
   tests/latency_histogram_tests.cpp
   tests/oms_tests.cpp
+  tests/order_parser_tests.cpp
+  tests/order_rest_adapter_tests.cpp
+  tests/strategy_tests.cpp
   tests/recovery_coordinator_tests.cpp
   tests/router_tests.cpp
   tests/shard_tests.cpp
@@ -88,6 +95,10 @@ add_executable(predex_tests
   src/exchange/kalshi/adapters/auth_signer.cpp
   src/exchange/kalshi/http2_session.cpp
   src/oms/oms.cpp
+  src/ingest/kalshi/order_data/order_parser.cpp
+  src/exchange/kalshi/adapters/order_rest_adapter.cpp
+  src/strategy/monotonic_arb.cpp
+  src/strategy/strategy.cpp
   tests/websocket_session_tests.cpp
 )
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 
+from predex.discovery.kalshi import DEFAULT_KALSHI_API_BASE_URL
+
 from .config_summary import format_config_summary, summarize_config
 from .inspect import inspect_market_data_tape
 
@@ -66,8 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enrich_metadata.add_argument(
         "--api-base-url",
-        default="https://api.elections.kalshi.com/trade-api/v2",
-        help="Kalshi trade API base URL. Default: https://api.elections.kalshi.com/trade-api/v2.",
+        default=DEFAULT_KALSHI_API_BASE_URL,
+        help=f"Kalshi trade API base URL. Default: {DEFAULT_KALSHI_API_BASE_URL}.",
     )
     enrich_metadata.add_argument(
         "--event-fetch-workers",

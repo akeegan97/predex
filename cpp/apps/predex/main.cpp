@@ -38,6 +38,8 @@
 #include "predex/exchange/kalshi/http2_session.hpp"
 #include "predex/exchange/kalshi/order_rest_session.hpp"
 #include "predex/ingest/kalshi/market_data/wire_session.hpp"
+#include "predex/strategy/strategy_types.hpp"
+#include "predex/strategy/strategy.hpp"
 
 namespace {
 
@@ -53,6 +55,7 @@ namespace kalshi_exchange = predex::exchange::kalshi;
 namespace market_data = predex::ingest::kalshi::market_data;
 namespace order_data = predex::ingest::kalshi::order_data;
 namespace oms = predex::oms;
+namespace strategy = predex::strategy;
 
 std::atomic<bool> g_signal_stop_requested{false};
 
@@ -81,7 +84,8 @@ using OrderRestToControlStatusQueue = utils::SPSCQueue<control::OrderRestToContr
 using ControlToPrivateOrderFeedQueue = utils::SPSCQueue<control::ControlToPrivateOrderFeedCommand>;
 using PrivateOrderFeedToControlStatusQueue = utils::SPSCQueue<control::PrivateOrderFeedToControlStatus>;
 using FrameHandle = predex::ingest::kalshi::FrameHandle;
-
+using ShardToStrategyQueue =
+    utils::SPSCQueue<predex::strategy::ShardToStrategyMessage>;
 using FrameHandleQueue = utils::SPSCQueue<FrameHandle>;
 using MarketDataPathMessageQueue = utils::SPSCQueue<MarketDataPathMessage>;
 using FramePool = predex::ingest::kalshi::FramePool;
@@ -226,8 +230,16 @@ struct AppQueues {
         router_to_shard.reserve(runtime_config.shard_count);
         shard_to_logger.reserve(runtime_config.shard_count);
         shard_recycle.reserve(runtime_config.shard_count);
-        strategy_to_oms.reserve(runtime_config.shard_count);
-        oms_to_strategy.reserve(runtime_config.shard_count);
+        strategy_to_oms.reserve(1);
+        oms_to_strategy.reserve(1);
+        shard_to_strategy.reserve(runtime_config.shard_count);
+
+        strategy_to_oms.push_back(
+            std::make_unique<StrategyIntentQueue>(
+                runtime_config.shard_queue_capacity));
+        oms_to_strategy.push_back(
+            std::make_unique<OmsToStrategyQueue>(
+                runtime_config.shard_queue_capacity));
 
         for (std::size_t shard_index = 0; shard_index < runtime_config.shard_count; ++shard_index) {
             control_to_shard.push_back(std::make_unique<ControlToShardQueue>(runtime_config.shard_queue_capacity));
@@ -235,8 +247,7 @@ struct AppQueues {
             router_to_shard.push_back(std::make_unique<RouterToShardQueue>(runtime_config.shard_queue_capacity));
             shard_to_logger.push_back(std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
             shard_recycle.push_back(std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
-            strategy_to_oms.push_back(std::make_unique<StrategyIntentQueue>(runtime_config.shard_queue_capacity));
-            oms_to_strategy.push_back(std::make_unique<OmsToStrategyQueue>(runtime_config.shard_queue_capacity));
+            shard_to_strategy.push_back(std::make_unique<ShardToStrategyQueue>(runtime_config.shard_queue_capacity));
         }
     }
 
@@ -269,6 +280,7 @@ struct AppQueues {
     std::vector<std::unique_ptr<RouterToShardQueue>> router_to_shard;
     std::vector<std::unique_ptr<FrameHandleQueue>> shard_to_logger;
     std::vector<std::unique_ptr<FrameHandleQueue>> shard_recycle;
+    std::vector<std::unique_ptr<ShardToStrategyQueue>> shard_to_strategy;
 };
 
 control::OperatorQueues make_operator_queues(AppQueues& queues) {
@@ -373,6 +385,24 @@ oms::OmsQueues make_oms_queues(AppQueues& queues){
     return oms_queues;
 }
 
+strategy::StrategyQueues make_strategy_queues(AppQueues& queues){
+    strategy::StrategyQueues strategy_queues{
+        .strategy_to_oms_queue = queues.strategy_to_oms.front().get(),
+        .oms_to_strategy_queue = queues.oms_to_strategy.front().get(),
+    };
+    strategy_queues.shard_inputs.reserve(queues.shard_to_strategy.size());
+    for(std::size_t shard_index = 0;
+        shard_index < queues.shard_to_strategy.size();
+        ++shard_index){
+        strategy_queues.shard_inputs.push_back(
+            strategy::StrategyShardInput{
+                .shard_index = static_cast<std::uint32_t>(shard_index),
+                .queue = queues.shard_to_strategy[shard_index].get(),
+            });
+    }
+    return strategy_queues;
+}
+
 kalshi_exchange::OrderRestControlQueues make_order_rest_control_queues(AppQueues& queues){
     return kalshi_exchange::OrderRestControlQueues{
         .control_to_order_rest_queue = queues.control_to_order_rest,
@@ -407,6 +437,7 @@ shard::ShardQueues make_single_shard_queues(AppQueues& queues, std::size_t shard
         .last_resort_recycle_queue = *queues.shard_recycle[shard_index],
         .shard_to_control_queue = *queues.shard_to_control[shard_index],
         .control_to_shard_queue = *queues.control_to_shard[shard_index],
+        .shard_to_strategy_queue = *queues.shard_to_strategy[shard_index],
     };
 }
 
@@ -618,6 +649,24 @@ std::jthread start_oms_thread(
     });
 }
 
+std::jthread start_strategy_thread(
+    strategy::MonotonicArbStrategy& strategy_instance,
+    utils::IdleBackoffConfig polling_config) {
+    return std::jthread(
+        [&strategy_instance, polling_config](
+            const std::stop_token& stop_token) {
+            utils::IdleBackoff idle_backoff{polling_config};
+            while(!stop_token.stop_requested()) {
+                const auto result = strategy_instance.pump_once();
+                if(result.code == strategy::StrategyPumpCode::kNO_WORK) {
+                    idle_backoff.idle();
+                }else{
+                    idle_backoff.reset();
+                }
+            }
+        });
+}
+
 std::jthread start_market_data_logger_thread(
     logging::MarketDataLogger& market_data_logger,
     utils::IdleBackoffConfig polling_config) {
@@ -793,12 +842,54 @@ int main(int argc, char** argv) {
     std::optional<oms::Oms> oms_instance;
     std::optional<std::jthread> oms_thread;
     if(order_graph_enabled){
-        oms_instance.emplace(oms_queues);
+        oms_instance.emplace(
+            oms_queues,
+            oms::OmsRiskConfig{
+                .strategy_allocation_limit_ticks =
+                    app_config.oms.strategy_allocation_limit_ticks,
+                .venue_safety_reserve_ticks =
+                    app_config.oms.venue_safety_reserve_ticks,
+                .maximum_group_reservation_ticks =
+                    app_config.oms.maximum_group_reservation_ticks,
+                .maximum_group_legs =
+                    app_config.oms.maximum_group_legs,
+                .maximum_group_repair_attempts =
+                    app_config.oms.maximum_group_repair_attempts,
+                .maximum_group_intent_age_ns =
+                    app_config.oms.maximum_group_intent_age_ns,
+                .portfolio_reconciliation_interval_ns =
+                    app_config.oms.portfolio_reconciliation_interval_ns,
+                .require_portfolio_reconciliation =
+                    app_config.kalshi.order_rest.enable_order_rest,
+            });
         oms_thread.emplace(start_oms_thread(
             *oms_instance,
             app_config.runtime.thread_polling));
         if(!control_plane.send_active_order_universe_to_oms()){
             std::cerr << "predex OMS init error: failed to enqueue active order universe to OMS\n";
+            return 1;
+        }
+    }
+
+    std::optional<strategy::MonotonicArbStrategy> strategy_instance;
+    std::optional<std::jthread> strategy_thread;
+    if(app_config.strategy.enable_monotonic_arb){
+        try{
+            strategy_instance.emplace(
+                0,
+                control_plane.process_state().target_universe_version,
+                strategy::MonotonicArbStrategyConfig{
+                    .strategy_id = app_config.strategy.strategy_id,
+                    .arb_config = app_config.strategy.monotonic_arb,
+                    .maximum_observation_age_ns =
+                        app_config.strategy.maximum_observation_age_ns,
+                },
+                make_strategy_queues(app_queues));
+            strategy_thread.emplace(start_strategy_thread(
+                *strategy_instance,
+                app_config.runtime.thread_polling));
+        }catch(const std::exception& e){
+            std::cerr << "predex strategy init error: " << e.what() << '\n';
             return 1;
         }
     }
@@ -902,6 +993,9 @@ int main(int argc, char** argv) {
     if (wire_session_thread.has_value()) {
         wire_session_thread->request_stop();
     }
+    if (strategy_thread.has_value()) {
+        strategy_thread->request_stop();
+    }
     if (private_order_feed_thread.has_value()) {
         private_order_feed_thread->request_stop();
     }
@@ -925,6 +1019,9 @@ int main(int argc, char** argv) {
     }
     if (order_rest_thread.has_value()) {
         order_rest_thread->join();
+    }
+    if (strategy_thread.has_value()) {
+        strategy_thread->join();
     }
     if (oms_thread.has_value()) {
         oms_thread->join();

@@ -91,14 +91,170 @@ class KalshiMarketDataSettings:
 
 
 @dataclass(slots=True)
+class KalshiOrderRestSettings:
+    enable_order_rest: bool = False
+    endpoint: str = "https://api.elections.kalshi.com"
+    max_concurrent_streams: int = 10
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enable_order_rest": self.enable_order_rest,
+            "endpoint": self.endpoint,
+            "max_concurrent_streams": self.max_concurrent_streams,
+        }
+
+
+@dataclass(slots=True)
+class KalshiPrivateOrderFeedSettings:
+    enable_private_order_feed: bool = False
+    channels: tuple[str, ...] = ("user_orders", "fill", "market_positions")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enable_private_order_feed": self.enable_private_order_feed,
+            "channels": list(self.channels),
+        }
+
+
+@dataclass(slots=True)
 class KalshiSettings:
     credentials: CredentialSettings = field(default_factory=CredentialSettings)
     market_data: KalshiMarketDataSettings = field(default_factory=KalshiMarketDataSettings)
+    order_rest: KalshiOrderRestSettings = field(default_factory=KalshiOrderRestSettings)
+    private_order_feed: KalshiPrivateOrderFeedSettings = field(
+        default_factory=KalshiPrivateOrderFeedSettings
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "auth": self.credentials.to_dict(),
             "market_data": self.market_data.to_dict(),
+            "order_rest": self.order_rest.to_dict(),
+            "private_order_feed": self.private_order_feed.to_dict(),
+        }
+
+
+@dataclass(slots=True)
+class OmsSettings:
+    strategy_allocation_limit_ticks: int = 0
+    venue_safety_reserve_ticks: int = 0
+    maximum_group_reservation_ticks: int = 0
+    maximum_group_legs: int = 10
+    maximum_group_repair_attempts: int = 2
+    maximum_group_intent_age_ns: int = 0
+    portfolio_reconciliation_interval_ns: int = 5_000_000_000
+
+    def __post_init__(self) -> None:
+        if self.strategy_allocation_limit_ticks < 0:
+            raise ValueError("strategy allocation must be non-negative")
+        if self.venue_safety_reserve_ticks < 0:
+            raise ValueError("venue safety reserve must be non-negative")
+        if self.maximum_group_reservation_ticks < 0:
+            raise ValueError("maximum group reservation must be non-negative")
+        if not 1 <= self.maximum_group_legs <= 10:
+            raise ValueError("maximum_group_legs must be between 1 and 10")
+        if self.maximum_group_repair_attempts <= 0:
+            raise ValueError("maximum group repair attempts must be positive")
+        if self.maximum_group_intent_age_ns < 0:
+            raise ValueError("maximum group intent age must be non-negative")
+        if self.portfolio_reconciliation_interval_ns < 0:
+            raise ValueError("portfolio reconciliation interval must be non-negative")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "strategy_allocation_limit_ticks": self.strategy_allocation_limit_ticks,
+            "venue_safety_reserve_ticks": self.venue_safety_reserve_ticks,
+            "maximum_group_reservation_ticks": self.maximum_group_reservation_ticks,
+            "maximum_group_legs": self.maximum_group_legs,
+            "maximum_group_repair_attempts": self.maximum_group_repair_attempts,
+            "maximum_group_intent_age_ns": self.maximum_group_intent_age_ns,
+            "portfolio_reconciliation_interval_ns": self.portfolio_reconciliation_interval_ns,
+        }
+
+
+@dataclass(slots=True)
+class MonotonicArbSettings:
+    order_quantity_lots: int = 100
+    minimum_net_edge_ticks: int = 200
+    edge_cushion_ticks: int = 0
+    require_top_gap_continuity: bool = True
+    maximum_top_gap_ticks: int = 200
+    require_near_top_multilevel_support: bool = True
+    near_top_depth_window_ticks: int = 200
+    minimum_near_top_levels: int = 2
+    bounded_easier_aggression_enabled: bool = True
+    bounded_harder_aggression_enabled: bool = True
+    maximum_easier_aggression_ticks: int = 300
+    maximum_harder_aggression_ticks: int = 300
+    maximum_easier_book_levels: int = 3
+    maximum_harder_book_levels: int = 3
+    require_full_easier_depth_for_quantity: bool = True
+    require_full_harder_depth_for_quantity: bool = True
+    taker_fee_rate_numerator: int = 7
+    taker_fee_rate_denominator: int = 100
+    execution_rounding_reserve_ticks_per_leg: int = 0
+
+    def __post_init__(self) -> None:
+        if self.order_quantity_lots <= 0:
+            raise ValueError("order_quantity_lots must be positive")
+        if self.minimum_net_edge_ticks < 0 or self.edge_cushion_ticks < 0:
+            raise ValueError("edge thresholds must be non-negative")
+        if not 1 <= self.maximum_easier_book_levels <= 4:
+            raise ValueError("maximum_easier_book_levels must be between 1 and 4")
+        if not 1 <= self.maximum_harder_book_levels <= 4:
+            raise ValueError("maximum_harder_book_levels must be between 1 and 4")
+        if self.require_near_top_multilevel_support and not (
+            1 <= self.minimum_near_top_levels <= 4
+        ):
+            raise ValueError("minimum_near_top_levels must be between 1 and 4")
+        if self.taker_fee_rate_denominator <= 0:
+            raise ValueError("taker fee denominator must be positive")
+        if not 0 <= self.taker_fee_rate_numerator <= self.taker_fee_rate_denominator:
+            raise ValueError("taker fee rate must be between zero and one")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "order_quantity_lots": self.order_quantity_lots,
+            "minimum_net_edge_ticks": self.minimum_net_edge_ticks,
+            "edge_cushion_ticks": self.edge_cushion_ticks,
+            "require_top_gap_continuity": self.require_top_gap_continuity,
+            "maximum_top_gap_ticks": self.maximum_top_gap_ticks,
+            "require_near_top_multilevel_support": self.require_near_top_multilevel_support,
+            "near_top_depth_window_ticks": self.near_top_depth_window_ticks,
+            "minimum_near_top_levels": self.minimum_near_top_levels,
+            "bounded_easier_aggression_enabled": self.bounded_easier_aggression_enabled,
+            "bounded_harder_aggression_enabled": self.bounded_harder_aggression_enabled,
+            "maximum_easier_aggression_ticks": self.maximum_easier_aggression_ticks,
+            "maximum_harder_aggression_ticks": self.maximum_harder_aggression_ticks,
+            "maximum_easier_book_levels": self.maximum_easier_book_levels,
+            "maximum_harder_book_levels": self.maximum_harder_book_levels,
+            "require_full_easier_depth_for_quantity": self.require_full_easier_depth_for_quantity,
+            "require_full_harder_depth_for_quantity": self.require_full_harder_depth_for_quantity,
+            "taker_fee_rate_numerator": self.taker_fee_rate_numerator,
+            "taker_fee_rate_denominator": self.taker_fee_rate_denominator,
+            "execution_rounding_reserve_ticks_per_leg": self.execution_rounding_reserve_ticks_per_leg,
+        }
+
+
+@dataclass(slots=True)
+class StrategySettings:
+    enable_monotonic_arb: bool = False
+    strategy_id: int = 1
+    maximum_observation_age_ns: int = 50_000_000
+    monotonic_arb: MonotonicArbSettings = field(default_factory=MonotonicArbSettings)
+
+    def __post_init__(self) -> None:
+        if self.strategy_id <= 0:
+            raise ValueError("strategy_id must be positive")
+        if self.maximum_observation_age_ns <= 0:
+            raise ValueError("maximum_observation_age_ns must be positive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enable_monotonic_arb": self.enable_monotonic_arb,
+            "strategy_id": self.strategy_id,
+            "maximum_observation_age_ns": self.maximum_observation_age_ns,
+            "monotonic_arb": self.monotonic_arb.to_dict(),
         }
 
 
@@ -255,6 +411,8 @@ def build_app_config_result(
     *,
     runtime: RuntimeSettings | None = None,
     kalshi: KalshiSettings | None = None,
+    oms: OmsSettings | None = None,
+    strategy: StrategySettings | None = None,
     include_topologies: Iterable[TopologyKind | str] | None = None,
     exclude_topologies: Iterable[TopologyKind | str] | None = None,
     market_limit: int | None = None,
@@ -266,6 +424,8 @@ def build_app_config_result(
 
     runtime = runtime or RuntimeSettings()
     kalshi = kalshi or KalshiSettings()
+    oms = oms or OmsSettings()
+    strategy = strategy or StrategySettings()
     included_filter = _normalize_topology_set(include_topologies)
     excluded_filter = _normalize_topology_set(exclude_topologies) or set()
 
@@ -393,6 +553,8 @@ def build_app_config_result(
         config={
             "runtime": runtime.to_dict(),
             "kalshi": kalshi.to_dict(),
+            "oms": oms.to_dict(),
+            "strategy": strategy.to_dict(),
             "universe": {"events": universe_events},
         },
         included_events=tuple(included_events),
@@ -406,6 +568,8 @@ def build_app_config(
     *,
     runtime: RuntimeSettings | None = None,
     kalshi: KalshiSettings | None = None,
+    oms: OmsSettings | None = None,
+    strategy: StrategySettings | None = None,
     include_topologies: Iterable[TopologyKind | str] | None = None,
     exclude_topologies: Iterable[TopologyKind | str] | None = None,
     market_limit: int | None = None,
@@ -414,6 +578,8 @@ def build_app_config(
         events,
         runtime=runtime,
         kalshi=kalshi,
+        oms=oms,
+        strategy=strategy,
         include_topologies=include_topologies,
         exclude_topologies=exclude_topologies,
         market_limit=market_limit,

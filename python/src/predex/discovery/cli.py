@@ -14,9 +14,14 @@ from predex.env import load_repo_dotenv
 
 from .app_config import (
     KalshiMarketDataSettings,
+    KalshiOrderRestSettings,
+    KalshiPrivateOrderFeedSettings,
     KalshiSettings,
+    MonotonicArbSettings,
+    OmsSettings,
     RuntimeSettings,
     ThreadPollingSettings,
+    StrategySettings,
     build_app_config_result,
 )
 from .config import (
@@ -27,7 +32,7 @@ from .config import (
     PipelineSettings,
     build_trader_config_result,
 )
-from .kalshi import KalshiPublicClient
+from .kalshi import DEFAULT_KALSHI_API_BASE_URL, KalshiPublicClient
 from .models import TopologyKind
 
 DEFAULT_TAPE_OUTPUT = "logs/live/predex_tape.bin"
@@ -402,8 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--api-base-url",
-        default="https://api.elections.kalshi.com/trade-api/v2",
-        help="Kalshi REST API base URL used for discovery.",
+        default=DEFAULT_KALSHI_API_BASE_URL,
+        help=f"Kalshi REST API base URL used for discovery. Default: {DEFAULT_KALSHI_API_BASE_URL}.",
     )
     parser.add_argument(
         "--ws-endpoint",
@@ -468,6 +473,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of hot REST worker sessions in the generated config. Default: 8.",
     )
     parser.add_argument(
+        "--oms-venue-safety-reserve-ticks",
+        type=int,
+        default=0,
+        help="Venue balance held outside strategy allocations. Default: 0.",
+    )
+    parser.add_argument(
+        "--oms-maximum-group-reservation-ticks",
+        type=int,
+        help="Maximum capital for one group. Defaults to --oms-available-capital-ticks.",
+    )
+    parser.add_argument(
+        "--oms-maximum-group-intent-age-ns",
+        type=int,
+        default=100_000_000,
+        help="Maximum accepted group-intent age in nanoseconds. Default: 100000000.",
+    )
+    parser.add_argument(
+        "--oms-portfolio-reconciliation-interval-ns",
+        type=int,
+        default=5_000_000_000,
+        help="Periodic live account reconciliation interval in nanoseconds. Default: 5000000000.",
+    )
+    parser.add_argument(
+        "--enable-monotonic-arb-strategy",
+        action="store_true",
+        help="Enable the live monotonic arbitrage strategy (default: disabled).",
+    )
+    parser.add_argument(
+        "--monotonic-arb-order-quantity-lots",
+        type=int,
+        default=100,
+        help="Quantity for each monotonic arbitrage leg in fixed-point lots. Default: 100.",
+    )
+    parser.add_argument(
+        "--monotonic-arb-minimum-net-edge-ticks",
+        type=int,
+        default=200,
+        help="Minimum modeled net edge after fees in price ticks. Default: 200.",
+    )
+    parser.add_argument(
+        "--monotonic-arb-edge-cushion-ticks",
+        type=int,
+        default=0,
+        help="Additional edge required beyond the minimum threshold. Default: 0.",
+    )
+    parser.add_argument(
+        "--monotonic-arb-maximum-observation-age-ns",
+        type=int,
+        default=50_000_000,
+        help="Maximum shard observation age accepted by strategy. Default: 50000000.",
+    )
+    parser.add_argument(
         "--local-risk-max-net-position-lots-per-market",
         type=int,
         default=200,
@@ -499,6 +556,29 @@ def main(argv: list[str] | None = None) -> int:
     load_repo_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.enable_monotonic_arb_strategy and not args.oms_enabled:
+        parser.error("--enable-monotonic-arb-strategy requires --oms-enabled")
+    if args.enable_monotonic_arb_strategy and args.config_format != "app":
+        parser.error("--enable-monotonic-arb-strategy requires --config-format app")
+    if args.enable_monotonic_arb_strategy:
+        leg_reservation = (
+            args.monotonic_arb_order_quantity_lots * 10_000 + 99
+        ) // 100
+        group_reservation = leg_reservation * 2
+        configured_group_limit = (
+            args.oms_maximum_group_reservation_ticks
+            if args.oms_maximum_group_reservation_ticks is not None
+            else args.oms_available_capital_ticks
+        )
+        if (
+            args.oms_available_capital_ticks < group_reservation
+            or configured_group_limit < group_reservation
+        ):
+            parser.error(
+                "monotonic arbitrage order quantity requires at least "
+                f"{group_reservation} ticks of OMS allocation and group reservation"
+            )
 
     if args.materialize:
         if not args.path:
@@ -626,6 +706,45 @@ def main(argv: list[str] | None = None) -> int:
                 market_data=KalshiMarketDataSettings(
                     enable_market_data=enable_market_data,
                     channels=app_channels,
+                ),
+                order_rest=KalshiOrderRestSettings(
+                    enable_order_rest=args.oms_enabled,
+                    endpoint=args.oms_rest_endpoint,
+                    max_concurrent_streams=args.oms_rest_worker_count,
+                ),
+                private_order_feed=KalshiPrivateOrderFeedSettings(
+                    enable_private_order_feed=args.oms_enabled,
+                    channels=tuple(args.oms_private_ws_channel)
+                    if args.oms_private_ws_channel
+                    else ("user_orders", "fill", "market_positions"),
+                ),
+            ),
+            oms=OmsSettings(
+                strategy_allocation_limit_ticks=
+                    args.oms_available_capital_ticks,
+                venue_safety_reserve_ticks=
+                    args.oms_venue_safety_reserve_ticks,
+                maximum_group_reservation_ticks=(
+                    args.oms_maximum_group_reservation_ticks
+                    if args.oms_maximum_group_reservation_ticks is not None
+                    else args.oms_available_capital_ticks
+                ),
+                maximum_group_intent_age_ns=
+                    args.oms_maximum_group_intent_age_ns,
+                portfolio_reconciliation_interval_ns=
+                    args.oms_portfolio_reconciliation_interval_ns,
+            ),
+            strategy=StrategySettings(
+                enable_monotonic_arb=args.enable_monotonic_arb_strategy,
+                maximum_observation_age_ns=
+                    args.monotonic_arb_maximum_observation_age_ns,
+                monotonic_arb=MonotonicArbSettings(
+                    order_quantity_lots=
+                        args.monotonic_arb_order_quantity_lots,
+                    minimum_net_edge_ticks=
+                        args.monotonic_arb_minimum_net_edge_ticks,
+                    edge_cushion_ticks=
+                        args.monotonic_arb_edge_cushion_ticks,
                 ),
             ),
             include_topologies=args.include_topology or None,

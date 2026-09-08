@@ -68,6 +68,8 @@ namespace predex::shard{
         */
         std::vector<std::uint16_t> index_by_tick;
 
+        std::vector<PriceTicks> tick_by_index;
+
         std::uint16_t invalid_index{kInvalidBookIndex};
         std::vector<QtyLots> bids; 
         std::vector<QtyLots> asks;
@@ -86,9 +88,18 @@ namespace predex::shard{
 
             return index;
         }
+
+        [[nodiscard]] std::optional<PriceTicks> price_ticks_at_index(std::size_t index) const noexcept{
+            if (index >= tick_by_index.size()) {
+                return std::nullopt;
+            }
+
+            return tick_by_index[index];
+        }
+
+
         [[nodiscard]] bool set_index_grid() {
             index_by_tick.assign(kTICKSCALE + 1, invalid_index);
-
             std::uint64_t divisor = 0;
             std::size_t level_count = 0;
 
@@ -110,12 +121,21 @@ namespace predex::shard{
                     bids.clear();
                     asks.clear();
                     index_by_tick.clear();
+                    tick_by_index.clear(); 
                     return false;
             }
 
+            // Allocate space for the inverse map
+            tick_by_index.assign(level_count, static_cast<PriceTicks>(0));
+
             for (std::uint64_t tick = 0; tick <= kTICKSCALE; ++tick) {
                 if (tick % divisor == 0) {
-                    index_by_tick[tick] = static_cast<std::uint16_t>(tick / divisor);
+                    const auto idx = static_cast<std::uint16_t>(tick / divisor);
+                    index_by_tick[tick] = idx;
+                    
+                    if (idx < level_count) {
+                        tick_by_index[idx] = static_cast<PriceTicks>(tick);
+                    }
                 }
             }
 
@@ -147,6 +167,14 @@ namespace predex::shard{
         std::uint32_t event_market_index{};
         bool tradeable{false};
         KalshiBook book{};
+
+        std::optional<std::int64_t> strike_key;
+        
+        std::uint64_t market_time_s{};
+        std::uint64_t market_close_time_s{};
+        std::uint64_t market_expected_expiration_time_s{};
+        std::uint64_t market_expiration_time_s{};
+
     };
 
     struct SingleMarketState{};

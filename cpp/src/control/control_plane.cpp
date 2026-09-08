@@ -153,6 +153,7 @@ namespace predex::core::control{
                 event.topology = route.topology;
                 event.shard_event_index = route.shard_event_index;
 
+
                 if(route.event_market_index >= event.markets.size()){
                     event.markets.resize(route.event_market_index + 1);
                 }
@@ -162,6 +163,11 @@ namespace predex::core::control{
                 market.event_market_index = route.event_market_index;
                 market.tradeable = route.tradeable;
                 market.book.scale = to_shard_market_scale(route.price_level_structure);
+                market.strike_key = route.strike_key;
+                market.market_time_s = route.market_time_s;
+                market.market_close_time_s = route.market_close_time_s;
+                market.market_expected_expiration_time_s = route.market_expected_expiration_time_s;
+                market.market_expiration_time_s = route.market_expiration_time_s;
             }
 
             return events_by_shard;
@@ -181,6 +187,11 @@ namespace predex::core::control{
                     .kalshi_ticker = route.kalshi_ticker,
                     .tradeable = route.tradeable,
                     .price_level_structure = route.price_level_structure,
+                    .strike_key = route.strike_key,
+                    .market_time_s = route.market_time_s,
+                    .market_close_time_s = route.market_close_time_s,
+                    .market_expected_expiration_time_s = route.market_expected_expiration_time_s,
+                    .market_expiration_time_s = route.market_expiration_time_s,
                 });
             }
 
@@ -312,8 +323,21 @@ namespace predex::core::control{
                     .rest_responses_seen = oms_state.telemetry.rest_responses_seen,
                     .private_ws_events_seen = oms_state.telemetry.private_ws_events_seen,
                     .reconciliation_events_seen = oms_state.telemetry.reconciliation_events_seen,
+                    .portfolio_reconciliations_requested = oms_state.telemetry.portfolio_reconciliations_requested,
+                    .portfolio_reconciliations_completed = oms_state.telemetry.portfolio_reconciliations_completed,
+                    .portfolio_reconciliations_failed = oms_state.telemetry.portfolio_reconciliations_failed,
+                    .duplicate_fills_ignored = oms_state.telemetry.duplicate_fills_ignored,
+                    .venue_position_updates_seen = oms_state.telemetry.venue_position_updates_seen,
+                    .venue_available_balance_ticks = oms_state.telemetry.venue_available_balance_ticks,
+                    .portfolio_reconciled = oms_state.telemetry.portfolio_reconciled,
                     .order_state_updates_sent = oms_state.telemetry.order_state_updates_sent,
                     .strategy_response_backpressure = oms_state.telemetry.strategy_response_backpressure,
+                    .execution_incidents_latched = oms_state.telemetry.execution_incidents_latched,
+                    .group_repair_attempts = oms_state.telemetry.group_repair_attempts,
+                    .group_repair_commands_sent = oms_state.telemetry.group_repair_commands_sent,
+                    .group_repairs_completed = oms_state.telemetry.group_repairs_completed,
+                    .group_repairs_failed = oms_state.telemetry.group_repairs_failed,
+                    .execution_incident_active = oms_state.telemetry.execution_incident_active,
                     .live_orders = oms_state.telemetry.live_orders,
                     .pending_submit_orders = oms_state.telemetry.pending_submit_orders,
                     .uncertain_orders = oms_state.telemetry.uncertain_orders,
@@ -340,6 +364,8 @@ namespace predex::core::control{
                     .requests_failed = order_rest_state.telemetry.requests_failed,
                     .retry_count = order_rest_state.telemetry.retry_count,
                     .oms_enqueue_failures = order_rest_state.telemetry.oms_enqueue_failures,
+                    .last_portfolio_reconciliation_error =
+                        order_rest_state.telemetry.last_portfolio_reconciliation_error,
                     .last_error = order_rest_state.last_error,
                 },
                 .recovery_stats = process_state.recovery_telemetry,
@@ -726,6 +752,12 @@ namespace predex::core::control{
         if(required_components_.oms &&
            (process_state_.oms_component_state.status != ComponentStatus::kREADY ||
             process_state_.oms_component_state.installed_universe_version != target_version)){
+            return false;
+        }
+
+        if(required_components_.oms &&
+           required_components_.order_rest &&
+           !process_state_.oms_component_state.telemetry.portfolio_reconciled){
             return false;
         }
 

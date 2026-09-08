@@ -1,4 +1,5 @@
 #include "predex/shard/event.hpp"
+#include "predex/strategy/strategy_types.hpp"
 #include <algorithm>
 #include <cstddef>
 
@@ -25,29 +26,73 @@ namespace predex::shard{
             });
     }
 
-    EventApplyResult Event::apply(std::uint32_t event_market_index, const KalshiParsedEvent& parsed_event) noexcept{
-        if(event_market_index >= state_.markets.size()){
+    EventApplyResult Event::apply(
+        std::uint32_t event_market_index,
+        const KalshiParsedEvent& parsed_event) noexcept {
+
+        if (event_market_index >= state_.markets.size()) {
             return EventApplyResult{
                 .disposition = ApplyDisposition::kREJECTED,
-                .book_sync_transition = BookSyncTransition::kNONE,
-                .reason = MarketApplyReason::kINVALID_MARKET_INDEX
+                .book_sync_transition =
+                    BookSyncTransition::kNONE,
+                .reason =
+                    MarketApplyReason::kINVALID_MARKET_INDEX,
+                .book_changed = false,
+                .event_became_usable = false,
+                .event_revision = revision_,
             };
         }
+
+        const bool event_was_usable = usable();
+
+        const bool is_book_message =
+            std::holds_alternative<KalshiSnapshotEvent>(
+                parsed_event) ||
+            std::holds_alternative<KalshiDeltaData>(
+                parsed_event);
+
         auto& market = state_.markets[event_market_index];
-        const auto result = apply_to_market(market, parsed_event);
 
-        if(result.book_sync_transition == BookSyncTransition::kBECAME_UNUSABLE){
-            //future plug in: make sure all strategy derived features are cleared and communicated to strategy to avoid stale data.
+        const MarketApplyResult market_result =
+            apply_to_market(market, parsed_event);
+
+        const bool book_changed =
+            is_book_message &&
+            market_result.disposition ==
+                ApplyDisposition::kAPPLIED;
+
+        const bool sync_state_changed =
+            market_result.book_sync_transition !=
+                BookSyncTransition::kNONE;
+
+        if (book_changed || sync_state_changed) {
+            ++revision_;
         }
 
-        if(result.disposition == ApplyDisposition::kAPPLIED && usable()){
-            update_derived_state_after_market_update(event_market_index);
+        const bool event_is_usable = usable();
+
+        const bool event_became_usable =
+            !event_was_usable && event_is_usable;
+
+        if (book_changed && event_is_usable) {
+            update_derived_state_after_market_update(
+                event_market_index);
         }
+
         return EventApplyResult{
-            .disposition = result.disposition,
-            .book_sync_transition = result.book_sync_transition,
-            .reason = result.reason,
+            .disposition = market_result.disposition,
+            .book_sync_transition =
+                market_result.book_sync_transition,
+            .reason = market_result.reason,
+            .book_changed = book_changed,
+            .event_became_usable =
+                event_became_usable,
+            .event_revision = revision_,
         };
+    }
+
+    std::uint64_t Event::revision() const noexcept{
+        return revision_;
     }
 
     const KalshiMarket* Event::get_market(std::uint32_t event_market_index) const noexcept{
@@ -257,7 +302,8 @@ namespace predex::shard{
                 .target_found = false,
                 .book_sync_transition = BookSyncTransition::kNONE,
                 .reason = reason,
-                .reject_reason = InvalidationRejectReason::kINVALID_MARKET_INDEX
+                .reject_reason = InvalidationRejectReason::kINVALID_MARKET_INDEX,
+                .event_revision = revision_,
             };
         }
         auto& book = state_.markets[event_market_index].book;
@@ -282,15 +328,17 @@ namespace predex::shard{
                 break;
         }
 
-        if(transition != BookSyncTransition::kNONE){
-            //FUTURE: wipe/make all derived features stale for this market & communicate to strategy/model thread to avoid stale data.
+        if (transition != BookSyncTransition::kNONE) {
+            ++revision_;
         }
 
         return BookInvalidationResult{
             .target_found = true,
             .book_sync_transition = transition,
             .reason = reason,
-            .reject_reason = InvalidationRejectReason::kNONE
+            .reject_reason =
+                InvalidationRejectReason::kNONE,
+            .event_revision = revision_,
         };
     }
 
@@ -319,5 +367,195 @@ namespace predex::shard{
             }
         }
         return summary;
+    }
+
+    std::size_t Event::market_count() const noexcept{
+        return state_.markets.size();
+    }
+//NOLINTNEXTLINE
+    std::optional<strategy::MonotonicPairObservation> Event::build_monotonic_pair_observation(std::uint32_t easier_market_index, const strategy::StrategyObservationContext& context) const noexcept{
+        if(event_topology() != EventTopology::kMONOTONIC_CHAIN){
+            return std::nullopt;
+        }
+
+        if(!usable()){
+            return std::nullopt;
+        }
+
+        if (state_.markets.size() < 2 ||
+            easier_market_index >= state_.markets.size() - 1) {
+            return std::nullopt;
+        }
+        
+        const KalshiMarket& easier_market = state_.markets[easier_market_index];
+        const KalshiMarket& harder_market = state_.markets[easier_market_index + 1];
+        
+        if(easier_market.event_market_index != easier_market_index ||
+           harder_market.event_market_index != easier_market_index + 1 ||
+           !easier_market.strike_key.has_value() ||
+           !harder_market.strike_key.has_value() ||
+            (easier_market.strike_key.value() >= harder_market.strike_key.value())){
+            return std::nullopt;
+        }
+
+        strategy::StrategyMarketView easier_market_view{};
+        strategy::StrategyMarketView harder_market_view{};
+
+        easier_market_view.market_id = easier_market.market_id;
+        harder_market_view.market_id = harder_market.market_id;
+        
+        easier_market_view.event_market_index = easier_market.event_market_index;
+        harder_market_view.event_market_index = harder_market.event_market_index;
+        
+        easier_market_view.strike_key = easier_market.strike_key.value();
+        harder_market_view.strike_key = harder_market.strike_key.value();
+
+        easier_market_view.tradeable = easier_market.tradeable;
+        harder_market_view.tradeable = harder_market.tradeable;
+
+        easier_market_view.market_time_s = easier_market.market_time_s;
+        harder_market_view.market_time_s = harder_market.market_time_s;
+        
+        easier_market_view.market_close_time_s = easier_market.market_close_time_s;
+        harder_market_view.market_close_time_s = harder_market.market_close_time_s;
+        
+        easier_market_view.market_expected_expiration_time_s = easier_market.market_expected_expiration_time_s;
+        harder_market_view.market_expected_expiration_time_s = harder_market.market_expected_expiration_time_s;
+
+        easier_market_view.market_expiration_time_s = easier_market.market_expiration_time_s;
+        harder_market_view.market_expiration_time_s = harder_market.market_expiration_time_s;
+    
+        std::uint8_t bid_count = 0;
+
+        for (std::size_t index = easier_market.book.bids.size();
+            index > 0 && bid_count < strategy::kStrategyBookDepth;
+            --index) {
+
+            const std::size_t book_index = index - 1;
+            const QtyLots quantity = easier_market.book.bids[book_index];
+
+            if (quantity == 0) {
+                continue;
+            }
+
+            const auto price =
+                easier_market.book.price_ticks_at_index(book_index);
+
+            if (!price.has_value()) {
+                return std::nullopt;
+            }
+
+            easier_market_view.bids[bid_count] = {
+                .price_ticks = *price,
+                .quantity_lots = quantity,
+            };
+
+            ++bid_count;
+        }
+
+        easier_market_view.bid_count = bid_count;
+
+        std::uint8_t ask_count = 0;
+
+        for (std::size_t index = 0;
+            index < easier_market.book.asks.size() &&
+            ask_count < strategy::kStrategyBookDepth;
+            ++index) {
+
+            const QtyLots quantity = easier_market.book.asks[index];
+
+            if (quantity == 0) {
+                continue;
+            }
+
+            const auto price =
+                easier_market.book.price_ticks_at_index(index);
+
+            if (!price.has_value()) {
+                return std::nullopt;
+            }
+
+            easier_market_view.asks[ask_count] = {
+                .price_ticks = *price,
+                .quantity_lots = quantity,
+            };
+
+            ++ask_count;
+        }
+
+        easier_market_view.ask_count = ask_count;
+
+        bid_count = 0;
+        ask_count = 0;
+
+        for (std::size_t index = harder_market.book.bids.size();
+            index > 0 && bid_count < strategy::kStrategyBookDepth;
+            --index) {
+
+            const std::size_t book_index = index - 1;
+            const QtyLots quantity = harder_market.book.bids[book_index];
+
+            if (quantity == 0) {
+                continue;
+            }
+
+            const auto price =
+                harder_market.book.price_ticks_at_index(book_index);
+
+            if (!price.has_value()) {
+                return std::nullopt;
+            }
+
+            harder_market_view.bids[bid_count] = {
+                .price_ticks = *price,
+                .quantity_lots = quantity,
+            };
+
+            ++bid_count;
+        }
+
+        harder_market_view.bid_count = bid_count;
+
+        for (std::size_t index = 0;
+            index < harder_market.book.asks.size() &&
+            ask_count < strategy::kStrategyBookDepth;
+            ++index) {
+
+            const QtyLots quantity = harder_market.book.asks[index];
+
+            if (quantity == 0) {
+                continue;
+            }
+
+            const auto price =
+                harder_market.book.price_ticks_at_index(index);
+
+            if (!price.has_value()) {
+                return std::nullopt;
+            }
+
+            harder_market_view.asks[ask_count] = {
+                .price_ticks = *price,
+                .quantity_lots = quantity,
+            };
+
+            ++ask_count;
+        }
+
+        harder_market_view.ask_count = ask_count;
+
+        return strategy::MonotonicPairObservation{
+            .universe_version = context.universe_version,
+            .shard_index = context.shard_index,
+            .event_id = event_id(),
+            .event_revision = revision(),
+            .ingress_timestamp_ns = context.ingress_timestamp_ns,
+            .book_apply_timestamp_ns = context.book_apply_timestamp_ns,
+            .publish_timestamp_ns = context.publish_timestamp_ns,
+            .easier = (easier_market_view),
+            .harder = (harder_market_view)
+        };
+
+
     }
 }

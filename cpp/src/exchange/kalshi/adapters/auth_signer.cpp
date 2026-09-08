@@ -24,13 +24,33 @@ namespace {
 
 } // anonymous
 namespace predex::exchange::kalshi{
+
+    std::string detail::make_rest_signing_payload(
+        std::string_view timestamp_ms,
+        const RestAuthArguments& args){
+        const std::string_view request_target{args.path};
+        const std::size_t query_offset = request_target.find('?');
+        const std::string_view signing_path =
+            request_target.substr(0, query_offset);
+
+        std::string payload;
+        payload.reserve(
+            timestamp_ms.size() +
+            args.method.size() +
+            signing_path.size());
+        payload.append(timestamp_ms);
+        payload.append(args.method);
+        payload.append(signing_path);
+        return payload;
+    }
     
     AuthHeaders AuthSigner::make_rest_auth_headers(const RestAuthArguments& args) const{
         const auto timestamp_ms = 
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch())
                 .count());
-        const auto payload = timestamp_ms + args.method + args.path;
+        const auto payload =
+            detail::make_rest_signing_payload(timestamp_ms, args);
         return AuthHeaders{
             .key_id = credentials_.key_id,
             .timestamp_ms = timestamp_ms,

@@ -1,5 +1,6 @@
 #include "predex/ingest/kalshi/order_data/order_parser.hpp"
 
+#include "predex/exchange/kalshi/money_ticks.hpp"
 #include "predex/shard/models.hpp"
 
 #include <charconv>
@@ -9,7 +10,7 @@ namespace predex::ingest::kalshi::order_data{
     namespace{
         
         bool read_uint64(simdjson::ondemand::object& obj, std::string_view key, std::uint64_t& out_value) noexcept{
-            auto field_result = obj.find_field(key);
+            auto field_result = obj.find_field_unordered(key);
             if(field_result.error() != simdjson::SUCCESS){
                 return false;
             }
@@ -22,7 +23,7 @@ namespace predex::ingest::kalshi::order_data{
         }
 
         bool read_bool(simdjson::ondemand::object& obj, std::string_view key, bool& out_value) noexcept{
-            auto field_result = obj.find_field(key);
+            auto field_result = obj.find_field_unordered(key);
             if(field_result.error() != simdjson::SUCCESS){
                 return false;
             }
@@ -35,7 +36,7 @@ namespace predex::ingest::kalshi::order_data{
         }
 
         bool read_string(simdjson::ondemand::object& obj, std::string_view key, std::string_view& out_value) noexcept{
-            auto field_result = obj.find_field(key);
+            auto field_result = obj.find_field_unordered(key);
             if(field_result.error() != simdjson::SUCCESS){
                 return false;
             }
@@ -48,7 +49,7 @@ namespace predex::ingest::kalshi::order_data{
         }
 
         bool read_optional_string(simdjson::ondemand::object& obj, std::string_view key, std::string_view& out_value) noexcept{
-            auto field_result = obj.find_field(key);
+            auto field_result = obj.find_field_unordered(key);
             if(field_result.error() != simdjson::SUCCESS){
                 return false;
             }
@@ -61,7 +62,7 @@ namespace predex::ingest::kalshi::order_data{
         }
 
         bool read_object(simdjson::ondemand::object& obj, std::string_view key, simdjson::ondemand::object& out_value) noexcept{
-            auto field_result = obj.find_field(key);
+            auto field_result = obj.find_field_unordered(key);
             if(field_result.error() != simdjson::SUCCESS){
                 return false;
             }
@@ -152,6 +153,26 @@ namespace predex::ingest::kalshi::order_data{
             return parse_scaled_fp(value, shard::kQTY_SCALE, kQTY_DECIMAL_PLACES, false, out);
         }
 
+        bool parse_signed_qty_lots(std::string_view value, std::int64_t& out) noexcept{
+            constexpr std::size_t kQTY_DECIMAL_PLACES = 2;
+            return parse_scaled_fp(value, shard::kQTY_SCALE, kQTY_DECIMAL_PLACES, true, out);
+        }
+
+        bool parse_money_ticks(
+            std::string_view value,
+            exchange::kalshi::MoneyTickRounding rounding,
+            std::int64_t& out) noexcept {
+
+            const auto parsed = exchange::kalshi::parse_money_ticks(
+                value,
+                rounding);
+            if(!parsed.has_value()) {
+                return false;
+            }
+            out = *parsed;
+            return true;
+        }
+
         bool parse_ts_ms_to_ns(std::uint64_t ts_ms, std::uint64_t& out_ns) noexcept{
             constexpr std::uint64_t kNS_PER_MS = 1'000'000;
             if(ts_ms > std::numeric_limits<std::uint64_t>::max() / kNS_PER_MS){
@@ -168,6 +189,18 @@ namespace predex::ingest::kalshi::order_data{
             }
             if(token == "no"){
                 out = oms::intent::Outcome::kNO;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_action(std::string_view token, oms::intent::OrderAction& out) noexcept{
+            if(token == "buy"){
+                out = oms::intent::OrderAction::kBUY;
+                return true;
+            }
+            if(token == "sell"){
+                out = oms::intent::OrderAction::kSELL;
                 return true;
             }
             return false;
@@ -316,6 +349,12 @@ namespace predex::ingest::kalshi::order_data{
     OrderParseCode OrderParser::parse_fill_event(simdjson::ondemand::object& msg, ParsedOrderMessage& out_message) noexcept{
         out_message.order_event.event_kind = oms::PrivateWsOrderEventKind::kFILL;
 
+        std::string_view trade_id{};
+        if(!read_string(msg, "trade_id", trade_id) ||
+        !out_message.order_event.trade_id.assign_from(trade_id)){
+            return OrderParseCode::kINVALID_ORDER_ID;
+        }
+
         std::string_view order_id{};
         if(!read_string(msg, "order_id", order_id) || !assign_exchange_order_id(order_id, out_message)){
             return OrderParseCode::kINVALID_ORDER_ID;
@@ -328,6 +367,12 @@ namespace predex::ingest::kalshi::order_data{
 
         std::string_view side{};
         if(!read_string(msg, "side", side) || !parse_outcome(side, out_message.order_event.outcome)){
+            return OrderParseCode::kMISSING_FIELD;
+        }
+
+        std::string_view action{};
+        if(!read_string(msg, "action", action) ||
+        !parse_action(action, out_message.order_event.action)){
             return OrderParseCode::kMISSING_FIELD;
         }
 
@@ -421,7 +466,41 @@ namespace predex::ingest::kalshi::order_data{
             return OrderParseCode::kMISSING_FIELD;
         }
 
-        return OrderParseCode::kIGNORE;
+        std::string_view position{};
+        std::string_view position_cost{};
+        std::string_view realized_pnl{};
+        std::string_view fees_paid{};
+        std::string_view position_fee_cost{};
+        std::string_view volume{};
+
+        if(!read_string(msg, "position_fp", position) ||
+        !parse_signed_qty_lots(position, out_message.order_event.net_position_lots) ||
+        !read_string(msg, "position_cost_dollars", position_cost) ||
+        !parse_money_ticks(
+            position_cost,
+            exchange::kalshi::MoneyTickRounding::kAWAY_FROM_ZERO,
+            out_message.order_event.position_cost_ticks) ||
+        !read_string(msg, "realized_pnl_dollars", realized_pnl) ||
+        !parse_money_ticks(
+            realized_pnl,
+            exchange::kalshi::MoneyTickRounding::kFLOOR,
+            out_message.order_event.realized_pnl_ticks) ||
+        !read_string(msg, "fees_paid_dollars", fees_paid) ||
+        !parse_money_ticks(
+            fees_paid,
+            exchange::kalshi::MoneyTickRounding::kAWAY_FROM_ZERO,
+            out_message.order_event.fees_paid_ticks) ||
+        !read_string(msg, "position_fee_cost_dollars", position_fee_cost) ||
+        !parse_money_ticks(
+            position_fee_cost,
+            exchange::kalshi::MoneyTickRounding::kAWAY_FROM_ZERO,
+            out_message.order_event.position_fee_cost_ticks) ||
+        !read_string(msg, "volume_fp", volume) ||
+        !parse_qty_lots(volume, out_message.order_event.volume_lots)){
+            return OrderParseCode::kMISSING_FIELD;
+        }
+
+        return OrderParseCode::kOK;
     }
 
     OrderParseCode OrderParser::parse_order_event(std::span<const std::byte> message, ParsedOrderMessage& out_message) noexcept {
@@ -446,6 +525,8 @@ namespace predex::ingest::kalshi::order_data{
         }
 
         auto root = root_result.value();
+
+        (void)read_uint64(root, "seq", out_message.order_event.ws_sequence);
 
         std::string_view type{};
         if (!read_string(root, "type", type)) {

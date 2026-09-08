@@ -6,6 +6,9 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <variant>
+#include <vector>
+#include <limits>
 
 #include "predex/control/control_types.hpp"
 #include "predex/exchange/kalshi/adapters/order_rest_adapter.hpp"
@@ -61,19 +64,41 @@ namespace predex::exchange::kalshi {
 
         private:
             struct InflightRequest {
-                PreparedOrderRestRequest prepared;
+                std::variant<
+                    PreparedOrderRestRequest,
+                    PreparedPortfolioRestRequest
+                > prepared;
+            };
+
+            struct ActivePortfolioReconciliation {
+                oms::RequestPortfolioReconciliation command;
+                bool balance_complete{false};
+                bool positions_complete{false};
+                std::int64_t available_balance_ticks{};
+                std::int64_t portfolio_value_ticks{};
+                std::vector<oms::VenueMarketPositionSnapshot> positions;
             };
 
             void drain_control_commands() noexcept;
             void drain_oms_commands() noexcept;
             void handle_control_command(const core::control::ControlToOrderRestCommand& command);
             void handle_oms_command(const oms::OmsToKalshiCommand& command);
+            void handle_portfolio_reconciliation(
+                const oms::RequestPortfolioReconciliation& command) noexcept;
 
             void apply_order_route_universe(const std::shared_ptr<const core::control::OrderRouteUniverse>& snapshot);
             void enable() noexcept;
             void disable(std::string reason = {});
 
             void receive_http(std::size_t max_batch_size) noexcept;
+            [[nodiscard]] bool start_portfolio_request(
+                PreparedPortfolioRestRequest prepared) noexcept;
+            void complete_portfolio_request(
+                const PreparedPortfolioRestRequest& prepared,
+                const HttpResponse& response) noexcept;
+            void maybe_finish_portfolio_reconciliation() noexcept;
+            void fail_portfolio_reconciliation(std::string reason) noexcept;
+            [[nodiscard]] HttpRequestId next_portfolio_http_request_id() noexcept;
             void maybe_send_telemetry() noexcept;
 
             [[nodiscard]] bool try_push_control_status(core::control::OrderRestToControlStatus status) noexcept;
@@ -98,6 +123,8 @@ namespace predex::exchange::kalshi {
 
             OrderRestSessionState status_;
             std::unordered_map<HttpRequestId, InflightRequest> inflight_requests_;
+            std::optional<ActivePortfolioReconciliation>
+                active_portfolio_reconciliation_;
             core::control::OrderRestTelemetrySnapshot telemetry_;
             std::chrono::steady_clock::time_point next_telemetry_send_{
                 std::chrono::steady_clock::now() + kORDER_REST_TELEMETRY_INTERVAL
@@ -115,6 +142,9 @@ namespace predex::exchange::kalshi {
             bool egress_closed_{false};
             std::uint64_t shutdown_epoch_{0};
             bool drain_marker_sent_{false};
+            HttpRequestId next_portfolio_http_request_id_{
+                std::numeric_limits<HttpRequestId>::max()
+            };
     };
 
 } // namespace predex::exchange::kalshi

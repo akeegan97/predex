@@ -40,6 +40,29 @@ std::string required_env_value(const char* name) {
 
 } // namespace
 
+TEST(AuthSignerTest, RestSigningPayloadExcludesQueryParameters) {
+    const kalshi::RestAuthArguments arguments{
+        .method = "GET",
+        .path =
+            "/trade-api/v2/portfolio/positions?limit=1000&count_filter=position",
+    };
+
+    EXPECT_EQ(
+        kalshi::detail::make_rest_signing_payload("1703123456789", arguments),
+        "1703123456789GET/trade-api/v2/portfolio/positions");
+}
+
+TEST(AuthSignerTest, RestSigningPayloadPreservesQueryFreePath) {
+    const kalshi::RestAuthArguments arguments{
+        .method = "GET",
+        .path = "/trade-api/v2/portfolio/balance",
+    };
+
+    EXPECT_EQ(
+        kalshi::detail::make_rest_signing_payload("1703123456789", arguments),
+        "1703123456789GET/trade-api/v2/portfolio/balance");
+}
+
 TEST(Http2SessionLiveTest, DISABLED_UnauthenticatedMarketsGetNegotiatesHttp2) {
     CurlGlobalGuard curl_global;
 

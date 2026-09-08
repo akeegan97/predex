@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <algorithm>
 
 namespace {
 
@@ -26,6 +27,7 @@ using predex::core::control::PriceLevelStructure;
     }
     return parsed;
 }
+
 
 [[nodiscard]] MarketId parse_market_id(std::string_view value) {
     const std::uint64_t parsed = parse_uint64(value, "market_id");
@@ -114,10 +116,33 @@ predex::core::control::UniverseSnapshot build_universe_snapshot(
             .topology = topology,
             .markets = {},
         };
-        event.markets.reserve(event_config.markets.size());
+        std::vector<const MarketConfig*> ordered_markets;
+        ordered_markets.reserve(event_config.markets.size());
 
-        for (std::size_t market_index = 0; market_index < event_config.markets.size(); ++market_index) {
-            const auto& market_config = event_config.markets[market_index];
+        for(const auto& market : event_config.markets){
+            ordered_markets.push_back(&market);
+        }
+
+        if(topology == EventTopology::kMONOTONIC_CHAIN){
+            if(ordered_markets.size() < 2){
+                throw std::runtime_error("Monotonic chain topology requires at least two markets");
+            }
+            for(const MarketConfig* market : ordered_markets){
+                if(!market->strike_key.has_value()){
+                    throw std::runtime_error("Monotonic chain topology requires all markets to have a strike_key");
+                }
+            }
+            std::sort(ordered_markets.begin(), ordered_markets.end(), [](const MarketConfig* lhs, const MarketConfig* rhs){
+                return lhs->strike_key.value() < rhs->strike_key.value();
+            }); 
+        }
+        
+
+
+        event.markets.reserve(ordered_markets.size());
+
+        for (std::size_t market_index = 0; market_index < ordered_markets.size(); ++market_index) {
+            const auto& market_config = *ordered_markets[market_index];
             const MarketId market_id = parse_market_id(market_config.market_id);
             const PriceLevelStructure price_level_structure =
                 parse_price_level_structure(market_config.price_level_structure);
@@ -128,6 +153,11 @@ predex::core::control::UniverseSnapshot build_universe_snapshot(
                 .kalshi_ticker = market_config.kalshi_ticker,
                 .tradeable = market_config.tradeable,
                 .price_level_structure = price_level_structure,
+                .strike_key = market_config.strike_key,
+                .market_time_s = market_config.market_time_s,
+                .market_close_time_s = market_config.market_close_time_s,
+                .market_expected_expiration_time_s = market_config.market_expected_expiration_time_s,
+                .market_expiration_time_s = market_config.market_expiration_time_s,
             };
             event.markets.push_back(std::move(market));
 
@@ -142,6 +172,11 @@ predex::core::control::UniverseSnapshot build_universe_snapshot(
                 .event_market_index = event_market_index,
                 .tradeable = market_config.tradeable,
                 .price_level_structure = price_level_structure,
+                .strike_key = market_config.strike_key,
+                .market_time_s = market_config.market_time_s,
+                .market_close_time_s = market_config.market_close_time_s,
+                .market_expected_expiration_time_s = market_config.market_expected_expiration_time_s,
+                .market_expiration_time_s = market_config.market_expiration_time_s,
             });
         }
 

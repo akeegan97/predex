@@ -77,6 +77,13 @@ namespace predex::shard{
         core::control::MarketDataChannelLatency shard_service_latency{};
         core::control::MarketDataChannelLatency ingress_to_shard_latency{};
         core::control::MarketDataChannelLatency ingress_to_book_apply_latency{};
+
+        std::uint64_t strategy_observations_published{};
+        std::uint64_t strategy_event_unavailable_published{};
+        std::uint64_t strategy_shard_unavailable_published{};
+        std::uint64_t strategy_projection_failures{};
+        std::uint64_t strategy_enqueue_failures{};
+        std::uint64_t strategy_messages_suppressed{};
     };
 
     struct ShardSafeToStopUniverse{

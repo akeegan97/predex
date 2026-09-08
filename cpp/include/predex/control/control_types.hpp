@@ -1,5 +1,5 @@
 #pragma once
-
+#include <optional>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -184,9 +184,23 @@ namespace predex::core::control {
         std::uint64_t rest_responses_seen{0};
         std::uint64_t private_ws_events_seen{0};
         std::uint64_t reconciliation_events_seen{0};
+        std::uint64_t portfolio_reconciliations_requested{0};
+        std::uint64_t portfolio_reconciliations_completed{0};
+        std::uint64_t portfolio_reconciliations_failed{0};
+        std::uint64_t duplicate_fills_ignored{0};
+        std::uint64_t venue_position_updates_seen{0};
+        std::int64_t venue_available_balance_ticks{0};
+        bool portfolio_reconciled{false};
 
         std::uint64_t order_state_updates_sent{0};
         std::uint64_t strategy_response_backpressure{0};
+
+        std::uint64_t execution_incidents_latched{0};
+        std::uint64_t group_repair_attempts{0};
+        std::uint64_t group_repair_commands_sent{0};
+        std::uint64_t group_repairs_completed{0};
+        std::uint64_t group_repairs_failed{0};
+        bool execution_incident_active{false};
 
         std::uint64_t live_orders{0};
         std::uint64_t pending_submit_orders{0};
@@ -209,6 +223,7 @@ namespace predex::core::control {
         std::uint64_t requests_failed{0};
         std::uint64_t retry_count{0};
         std::uint64_t oms_enqueue_failures{0};
+        std::string last_portfolio_reconciliation_error;
     };
 
     struct IoComponentState{
@@ -316,6 +331,11 @@ namespace predex::core::control {
         std::string kalshi_ticker;
         bool tradeable{false};
         PriceLevelStructure price_level_structure{PriceLevelStructure::kLINEAR_CENT};
+        std::optional<std::int64_t> strike_key;
+        std::uint64_t market_time_s{};
+        std::uint64_t market_close_time_s{};
+        std::uint64_t market_expected_expiration_time_s{};
+        std::uint64_t market_expiration_time_s{};
     };
 
     struct UniverseEvent {
@@ -336,6 +356,11 @@ namespace predex::core::control {
         std::uint32_t event_market_index{};
         bool tradeable{false};
         PriceLevelStructure price_level_structure{PriceLevelStructure::kLINEAR_CENT};
+        std::optional<std::int64_t> strike_key;
+        std::uint64_t market_time_s{};
+        std::uint64_t market_close_time_s{};
+        std::uint64_t market_expected_expiration_time_s{};
+        std::uint64_t market_expiration_time_s{};
     };
 
     struct IoMarketSubscription{
@@ -355,6 +380,11 @@ namespace predex::core::control {
         std::string kalshi_ticker;
         bool tradeable{false};
         PriceLevelStructure price_level_structure{PriceLevelStructure::kLINEAR_CENT};
+        std::optional<std::int64_t> strike_key;
+        std::uint64_t market_time_s{};
+        std::uint64_t market_close_time_s{};
+        std::uint64_t market_expected_expiration_time_s{};
+        std::uint64_t market_expiration_time_s{};
     };
 
     struct OrderRouteUniverse{

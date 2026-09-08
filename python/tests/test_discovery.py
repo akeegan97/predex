@@ -24,6 +24,8 @@ from predex.discovery import (
     KalshiMarketDataSettings,
     KalshiSettings,
     MarketRecord,
+    OmsSettings,
+    StrategySettings,
     RuntimeSettings,
     ThreadPollingSettings,
     TopologyKind,
@@ -37,6 +39,14 @@ from predex.discovery.kalshi import KalshiPublicClient
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_generator_uses_recommended_kalshi_api_endpoint_by_default(self) -> None:
+        args = build_parser().parse_args([])
+
+        self.assertEqual(
+            args.api_base_url,
+            "https://external-api.kalshi.com/trade-api/v2",
+        )
+
     def test_app_generator_defaults_to_harvest_thread_polling(self) -> None:
         args = build_parser().parse_args(["--config-format", "app"])
 
@@ -45,6 +55,26 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(args.thread_yield_iterations, 64)
         self.assertEqual(args.thread_min_sleep_us, 50)
         self.assertEqual(args.thread_max_sleep_us, 1000)
+
+    def test_app_generator_parses_explicit_monotonic_arb_enablement(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--config-format",
+                "app",
+                "--oms-enabled",
+                "--enable-monotonic-arb-strategy",
+                "--monotonic-arb-order-quantity-lots",
+                "100",
+                "--monotonic-arb-minimum-net-edge-ticks",
+                "350",
+                "--oms-available-capital-ticks",
+                "50000",
+            ]
+        )
+
+        self.assertTrue(args.enable_monotonic_arb_strategy)
+        self.assertEqual(args.monotonic_arb_order_quantity_lots, 100)
+        self.assertEqual(args.monotonic_arb_minimum_net_edge_ticks, 350)
 
     def test_app_generator_derives_stable_operator_socket_from_config_path(self) -> None:
         first = _resolve_operator_socket_path(None, "runs/first/config.json")
@@ -1135,6 +1165,18 @@ class ConfigTests(unittest.TestCase):
                 "channels": ["orderbook_delta", "trade", "market_lifecycle_v2"],
             },
         )
+        self.assertEqual(
+            config["oms"],
+            OmsSettings().to_dict(),
+        )
+        self.assertEqual(
+            config["strategy"],
+            StrategySettings().to_dict(),
+        )
+        self.assertFalse(config["kalshi"]["order_rest"]["enable_order_rest"])
+        self.assertFalse(
+            config["kalshi"]["private_order_feed"]["enable_private_order_feed"]
+        )
         self.assertNotIn("market_routes", config)
         self.assertEqual(len(config["universe"]["events"]), 1)
 
@@ -1290,6 +1332,111 @@ class KalshiClientTests(unittest.TestCase):
 
         self.assertEqual(payload, {"ok": True})
         self.assertEqual(client.sleeps, [2.0, 2.0])
+
+    def test_get_json_reuses_connection_on_calling_thread(self) -> None:
+        class FakeResponse:
+            status = 200
+            reason = "OK"
+            headers = Message()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"ok": true}'
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.targets: list[str] = []
+
+            def request(self, method, target, body=None, headers=None) -> None:
+                self.targets.append(target)
+
+            def getresponse(self):
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        class FakeClient(KalshiPublicClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.created_connections: list[FakeConnection] = []
+
+            def _new_connection(self, scheme, hostname, port):
+                connection = FakeConnection()
+                self.created_connections.append(connection)
+                return connection
+
+        client = FakeClient()
+
+        first = client._get_json("/events", {"limit": 1})
+        second = client._get_json("/events/EV-1", {"with_nested_markets": "true"})
+
+        self.assertEqual(first, {"ok": True})
+        self.assertEqual(second, {"ok": True})
+        self.assertEqual(len(client.created_connections), 1)
+        self.assertEqual(
+            client.created_connections[0].targets,
+            [
+                "/trade-api/v2/events?limit=1",
+                "/trade-api/v2/events/EV-1?with_nested_markets=true",
+            ],
+        )
+
+    def test_transport_failure_discards_connection_before_retry(self) -> None:
+        class FakeResponse:
+            status = 200
+            reason = "OK"
+            headers = Message()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return b'{"ok": true}'
+
+        class FakeConnection:
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+                self.closed = False
+
+            def request(self, method, target, body=None, headers=None) -> None:
+                if self.fail:
+                    raise TimeoutError("connect timed out")
+
+            def getresponse(self):
+                return FakeResponse()
+
+            def close(self) -> None:
+                self.closed = True
+
+        class FakeClient(KalshiPublicClient):
+            def __init__(self) -> None:
+                super().__init__(max_retries=1)
+                self.created_connections: list[FakeConnection] = []
+
+            def _new_connection(self, scheme, hostname, port):
+                connection = FakeConnection(fail=not self.created_connections)
+                self.created_connections.append(connection)
+                return connection
+
+            def _sleep(self, seconds: float) -> None:
+                pass
+
+        client = FakeClient()
+
+        payload = client._get_json("/events", {"limit": 1})
+
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(len(client.created_connections), 2)
+        self.assertTrue(client.created_connections[0].closed)
 
     def test_retry_delay_falls_back_to_exponential_backoff(self) -> None:
         client = KalshiPublicClient(

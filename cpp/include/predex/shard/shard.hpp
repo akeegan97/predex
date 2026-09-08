@@ -9,6 +9,7 @@
 #include "predex/shard/market_parser.hpp"
 #include "predex/shard/event_store.hpp"
 #include "predex/ingest/kalshi/market_data/frame_pool.hpp"
+#include "predex/strategy/strategy_types.hpp"
 #include "predex/utils/spsc.hpp"
 #include "predex/shard/shard_types.hpp"
 
@@ -21,8 +22,12 @@ namespace predex::shard{
 
         predex::utils::SPSCQueue<ShardToControlMessage>& shard_to_control_queue;
         predex::utils::SPSCQueue<ControlToShardCommand>& control_to_shard_queue;
+
+        predex::utils::SPSCQueue<strategy::ShardToStrategyMessage>& shard_to_strategy_queue;
     };
+    
     const std::chrono::milliseconds kSHARD_TELEMETRY_INTERVAL{5000};
+
     enum class ShardPumpCode : std::uint8_t{
         kIDLE = 0,
         kAPPLIED = 1,
@@ -123,8 +128,28 @@ namespace predex::shard{
             ShardStats stats_;
             std::chrono::steady_clock::time_point next_telemetry_send_;
             std::optional<ShardToControlMessage> pending_recovery_status_;
+            bool strategy_publication_faulted_{false};
+
+
 
             [[nodiscard]] bool validate_handle_target(const ingest::kalshi::FrameHandle& handle) noexcept;
+
+            bool publish_strategy_message(
+                const strategy::ShardToStrategyMessage& message) noexcept;
+
+            void publish_event_unavailable(
+                std::uint64_t universe_version,
+                EventId event_id,
+                MarketId affected_market_id,
+                std::uint64_t event_revision) noexcept;
+                
+            void publish_affected_pairs(
+                const ingest::kalshi::FrameHandle& handle,
+                const EventApplyResult& apply_result,
+                std::uint64_t apply_complete_ts_ns) noexcept;
+
+            void publish_shard_unavailable(
+                std::uint64_t universe_version) noexcept;
     };
 
 }

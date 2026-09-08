@@ -1,22 +1,25 @@
 #pragma once 
 
 #include "predex/exchange/kalshi/kalshi_ws_protocol.hpp"
+#include "predex/strategy/monotonic_arb.hpp"
 #include "predex/utils/idle_backoff.hpp"
 #include <string>
 #include <vector>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <optional>
 
 namespace predex::config{
 
     constexpr std::size_t kDefaultShardCount = 4;
-    constexpr std::size_t kDefaultShardQueueCapacity = 8192;
-    constexpr std::size_t kDefaultRouterQueueCapacity = 8192;
-    constexpr std::size_t kDefaultFramePoolCapacity = 8192;
+    constexpr std::size_t kDefaultShardQueueCapacity = 16384;
+    constexpr std::size_t kDefaultRouterQueueCapacity = 16384;
+    constexpr std::size_t kDefaultFramePoolCapacity = 65536;
     constexpr std::size_t kDefaultOperatorQueueCapacity = 64;
     constexpr std::string_view kDefaultOperatorSocketPath = "/tmp/predex_operator.sock";
     constexpr std::string_view kDefaultMarketDataTapePath = "logs/live/predex_tape.bin";
+    constexpr std::size_t kMaxConcurrentStreams = 10;
 
     struct RuntimeConfig{
         std::size_t shard_count{kDefaultShardCount};
@@ -46,7 +49,7 @@ namespace predex::config{
     struct KalshiOrderRestConfig{
         bool enable_order_rest{false};
         std::string endpoint;
-        std::size_t max_concurrent_streams{10};
+        std::size_t max_concurrent_streams{kMaxConcurrentStreams};
     };
 
     struct KalshiPrivateOrderFeedConfig{
@@ -66,6 +69,11 @@ namespace predex::config{
         std::string kalshi_ticker;
         bool tradeable{false};
         std::string price_level_structure;
+        std::optional<std::int64_t> strike_key;
+        std::uint64_t market_time_s{};
+        std::uint64_t market_close_time_s{};
+        std::uint64_t market_expected_expiration_time_s{};
+        std::uint64_t market_expiration_time_s{};
     };
 
     struct EventConfig{
@@ -79,9 +87,30 @@ namespace predex::config{
         std::vector<EventConfig> events;
     };
 
+    struct OmsConfig{
+        std::int64_t strategy_allocation_limit_ticks{};
+        std::int64_t venue_safety_reserve_ticks{};
+        std::uint64_t maximum_group_reservation_ticks{};
+        std::uint8_t maximum_group_legs{10};
+        std::uint8_t maximum_group_repair_attempts{2};
+        std::uint64_t maximum_group_intent_age_ns{};
+        std::uint64_t portfolio_reconciliation_interval_ns{
+            5'000'000'000
+        };
+    };
+
+    struct StrategyConfig{
+        bool enable_monotonic_arb{false};
+        std::uint32_t strategy_id{1};
+        std::uint64_t maximum_observation_age_ns{50'000'000};
+        strategy::MonotonicArbConfig monotonic_arb{};
+    };
+
     struct AppConfig{
         RuntimeConfig runtime;
         KalshiConfig kalshi;
+        OmsConfig oms;
+        StrategyConfig strategy;
         UniverseConfig universe;
     };
 

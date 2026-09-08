@@ -60,6 +60,12 @@ namespace predex::exchange::kalshi{
         std::string path;
     };
 
+    namespace detail {
+        [[nodiscard]] std::string make_rest_signing_payload(
+            std::string_view timestamp_ms,
+            const RestAuthArguments& args);
+    }
+
 
     class AuthSigner{
         public: 

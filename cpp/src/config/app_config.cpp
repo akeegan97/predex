@@ -3,6 +3,8 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <limits>
+#include <algorithm>
 
 namespace {
     std::string get_string_or_unsigned(const nlohmann::json& json, const char* field_name){
@@ -226,6 +228,155 @@ namespace predex::config{
 
                 config.kalshi = std::move(kalshi_config);
             }
+            if(json_config.contains("oms")){
+                const auto& oms_json = json_config["oms"];
+                if(!oms_json.is_object()){
+                    throw std::runtime_error(
+                        "Invalid oms configuration: expected object");
+                }
+                OmsConfig oms_config{};
+                oms_config.strategy_allocation_limit_ticks =
+                    oms_json.value(
+                        "strategy_allocation_limit_ticks",
+                        std::int64_t{0});
+                oms_config.venue_safety_reserve_ticks =
+                    oms_json.value(
+                        "venue_safety_reserve_ticks",
+                        std::int64_t{0});
+                oms_config.maximum_group_reservation_ticks =
+                    oms_json.value(
+                        "maximum_group_reservation_ticks",
+                        std::uint64_t{0});
+                const auto maximum_group_legs = oms_json.value(
+                    "maximum_group_legs",
+                    std::uint64_t{10});
+                const auto maximum_group_repair_attempts = oms_json.value(
+                    "maximum_group_repair_attempts",
+                    std::uint64_t{2});
+                if(maximum_group_legs >
+                    std::numeric_limits<std::uint8_t>::max() ||
+                maximum_group_repair_attempts >
+                    std::numeric_limits<std::uint8_t>::max()){
+                    throw std::runtime_error(
+                        "OMS group limits exceed uint8 range");
+                }
+                oms_config.maximum_group_legs =
+                    static_cast<std::uint8_t>(maximum_group_legs);
+                oms_config.maximum_group_repair_attempts =
+                    static_cast<std::uint8_t>(
+                        maximum_group_repair_attempts);
+                oms_config.maximum_group_intent_age_ns =
+                    oms_json.value(
+                        "maximum_group_intent_age_ns",
+                        std::uint64_t{0});
+                oms_config.portfolio_reconciliation_interval_ns =
+                    oms_json.value(
+                        "portfolio_reconciliation_interval_ns",
+                        std::uint64_t{5'000'000'000});
+                config.oms = oms_config;
+            }
+            if(json_config.contains("strategy")){
+                const auto& strategy_json = json_config["strategy"];
+                if(!strategy_json.is_object()){
+                    throw std::runtime_error(
+                        "Invalid strategy configuration: expected object");
+                }
+                StrategyConfig strategy_config{};
+                strategy_config.enable_monotonic_arb =
+                    strategy_json.value("enable_monotonic_arb", false);
+                strategy_config.strategy_id =
+                    strategy_json.value("strategy_id", std::uint32_t{1});
+                strategy_config.maximum_observation_age_ns =
+                    strategy_json.value(
+                        "maximum_observation_age_ns",
+                        std::uint64_t{50'000'000});
+
+                if(strategy_json.contains("monotonic_arb")){
+                    const auto& arb_json = strategy_json["monotonic_arb"];
+                    if(!arb_json.is_object()){
+                        throw std::runtime_error(
+                            "Invalid monotonic_arb configuration: expected object");
+                    }
+                    auto& arb = strategy_config.monotonic_arb;
+                    arb.order_quantity_lots = arb_json.value(
+                        "order_quantity_lots",
+                        arb.order_quantity_lots);
+                    arb.minimum_net_edge_ticks = arb_json.value(
+                        "minimum_net_edge_ticks",
+                        arb.minimum_net_edge_ticks);
+                    arb.edge_cushion_ticks = arb_json.value(
+                        "edge_cushion_ticks",
+                        arb.edge_cushion_ticks);
+                    arb.require_top_gap_continuity = arb_json.value(
+                        "require_top_gap_continuity",
+                        arb.require_top_gap_continuity);
+                    arb.maximum_top_gap_ticks = arb_json.value(
+                        "maximum_top_gap_ticks",
+                        arb.maximum_top_gap_ticks);
+                    arb.require_near_top_multilevel_support = arb_json.value(
+                        "require_near_top_multilevel_support",
+                        arb.require_near_top_multilevel_support);
+                    arb.near_top_depth_window_ticks = arb_json.value(
+                        "near_top_depth_window_ticks",
+                        arb.near_top_depth_window_ticks);
+                    const auto minimum_near_top_levels = arb_json.value(
+                        "minimum_near_top_levels",
+                        static_cast<std::uint64_t>(
+                            arb.minimum_near_top_levels));
+                    arb.bounded_easier_aggression_enabled = arb_json.value(
+                        "bounded_easier_aggression_enabled",
+                        arb.bounded_easier_aggression_enabled);
+                    arb.bounded_harder_aggression_enabled = arb_json.value(
+                        "bounded_harder_aggression_enabled",
+                        arb.bounded_harder_aggression_enabled);
+                    arb.maximum_easier_aggression_ticks = arb_json.value(
+                        "maximum_easier_aggression_ticks",
+                        arb.maximum_easier_aggression_ticks);
+                    arb.maximum_harder_aggression_ticks = arb_json.value(
+                        "maximum_harder_aggression_ticks",
+                        arb.maximum_harder_aggression_ticks);
+                    const auto maximum_easier_book_levels = arb_json.value(
+                        "maximum_easier_book_levels",
+                        static_cast<std::uint64_t>(
+                            arb.maximum_easier_book_levels));
+                    const auto maximum_harder_book_levels = arb_json.value(
+                        "maximum_harder_book_levels",
+                        static_cast<std::uint64_t>(
+                            arb.maximum_harder_book_levels));
+                    if(minimum_near_top_levels >
+                        std::numeric_limits<std::uint8_t>::max() ||
+                    maximum_easier_book_levels >
+                        std::numeric_limits<std::uint8_t>::max() ||
+                    maximum_harder_book_levels >
+                        std::numeric_limits<std::uint8_t>::max()){
+                        throw std::runtime_error(
+                            "Monotonic arbitrage level count exceeds uint8 range");
+                    }
+                    arb.minimum_near_top_levels =
+                        static_cast<std::uint8_t>(minimum_near_top_levels);
+                    arb.maximum_easier_book_levels =
+                        static_cast<std::uint8_t>(maximum_easier_book_levels);
+                    arb.maximum_harder_book_levels =
+                        static_cast<std::uint8_t>(maximum_harder_book_levels);
+                    arb.require_full_easier_depth_for_quantity = arb_json.value(
+                        "require_full_easier_depth_for_quantity",
+                        arb.require_full_easier_depth_for_quantity);
+                    arb.require_full_harder_depth_for_quantity = arb_json.value(
+                        "require_full_harder_depth_for_quantity",
+                        arb.require_full_harder_depth_for_quantity);
+                    arb.taker_fee_rate_numerator = arb_json.value(
+                        "taker_fee_rate_numerator",
+                        arb.taker_fee_rate_numerator);
+                    arb.taker_fee_rate_denominator = arb_json.value(
+                        "taker_fee_rate_denominator",
+                        arb.taker_fee_rate_denominator);
+                    arb.execution_rounding_reserve_ticks_per_leg =
+                        arb_json.value(
+                            "execution_rounding_reserve_ticks_per_leg",
+                            arb.execution_rounding_reserve_ticks_per_leg);
+                }
+                config.strategy = strategy_config;
+            }
             if(json_config.contains("universe")){
                 const auto& universe_json = json_config["universe"];
                 UniverseConfig universe_config{};
@@ -248,6 +399,11 @@ namespace predex::config{
                                 .kalshi_ticker = get_required_string(market_json, "kalshi_ticker"),
                                 .tradeable = market_json.value("tradeable", false),
                                 .price_level_structure = get_required_string(market_json, "price_level_structure"),
+                                .strike_key = market_json.contains("strike_key") ? std::optional<std::int64_t>{market_json["strike_key"].get<std::int64_t>()} : std::nullopt,
+                                .market_time_s = static_cast<std::uint64_t>(market_json.value("market_time_s", 0)),
+                                .market_close_time_s = static_cast<std::uint64_t>(market_json.value("market_close_time_s", 0)),
+                                .market_expected_expiration_time_s = static_cast<std::uint64_t>(market_json.value("market_expected_expiration_time_s", 0)),
+                                .market_expiration_time_s = static_cast<std::uint64_t>(market_json.value("market_expiration_time_s", 0)),
                             };
                             event_config.markets.push_back(std::move(market_config));
                         }
@@ -266,6 +422,69 @@ namespace predex::config{
     }
 //NOLINTNEXTLINE: heavy config validation logic
     void validate_app_config(const AppConfig& config){
+        if(config.oms.strategy_allocation_limit_ticks < 0){
+            throw std::runtime_error(
+                "Invalid configuration: strategy_allocation_limit_ticks must be non-negative");
+        }
+        if(config.oms.venue_safety_reserve_ticks < 0){
+            throw std::runtime_error(
+                "Invalid configuration: venue_safety_reserve_ticks must be non-negative");
+        }
+        if(config.oms.maximum_group_legs == 0 ||
+        config.oms.maximum_group_legs > 10){
+            throw std::runtime_error(
+                "Invalid configuration: maximum_group_legs must be between 1 and 10");
+        }
+        if(config.strategy.enable_monotonic_arb){
+            if(config.strategy.strategy_id == 0 ||
+            config.strategy.maximum_observation_age_ns == 0 ||
+            !strategy::valid_monotonic_arb_config(
+                config.strategy.monotonic_arb)){
+                throw std::runtime_error(
+                    "Invalid configuration: monotonic arbitrage strategy settings are invalid");
+            }
+            if(!config.kalshi.market_data.enable_market_data ||
+            !config.kalshi.order_rest.enable_order_rest ||
+            !config.kalshi.private_order_feed.enable_private_order_feed){
+                throw std::runtime_error(
+                    "Invalid configuration: monotonic arbitrage requires market data, order REST, and private order feed");
+            }
+            if(config.oms.strategy_allocation_limit_ticks <= 0 ||
+            config.oms.maximum_group_reservation_ticks == 0 ||
+            config.oms.maximum_group_legs < 2 ||
+            config.oms.maximum_group_repair_attempts == 0 ||
+            config.oms.maximum_group_intent_age_ns == 0){
+                throw std::runtime_error(
+                    "Invalid configuration: monotonic arbitrage requires positive OMS capital, repair attempts, and two-leg group admission");
+            }
+            using WideUInt = unsigned __int128; //NOLINT
+            const WideUInt leg_product =
+                static_cast<WideUInt>(
+                    config.strategy.monotonic_arb.order_quantity_lots) *
+                strategy::kPriceTicksPerDollar;
+            const WideUInt leg_reservation =
+                leg_product / strategy::kQuantityLotsPerContract +
+                static_cast<WideUInt>(
+                    leg_product % strategy::kQuantityLotsPerContract != 0);
+            const WideUInt group_reservation = leg_reservation * 2;
+            if(group_reservation > static_cast<WideUInt>(
+                config.oms.maximum_group_reservation_ticks) ||
+            group_reservation > static_cast<WideUInt>(
+                config.oms.strategy_allocation_limit_ticks)){
+                throw std::runtime_error(
+                    "Invalid configuration: OMS capital cannot cover one monotonic arbitrage group");
+            }
+            const bool has_monotonic_chain = std::any_of(
+                config.universe.events.begin(),
+                config.universe.events.end(),
+                [](const EventConfig& event){
+                    return event.topology == "monotonic_chain";
+                });
+            if(!has_monotonic_chain){
+                throw std::runtime_error(
+                    "Invalid configuration: monotonic arbitrage requires a monotonic_chain event");
+            }
+        }
         if(config.runtime.shard_count == 0){
             throw std::runtime_error("Invalid configuration: shard_count must be greater than 0");
         }
@@ -343,6 +562,11 @@ namespace predex::config{
                 if(market.price_level_structure.empty()){
                     throw std::runtime_error("Invalid configuration: universe price_level_structure must not be empty");
                 }
+                if(event.topology == "monotonic_chain"){
+                    if(!market.strike_key.has_value()){
+                        throw std::runtime_error("Invalid configuration: universe market must have a strike_key when topology is monotonic chain");
+                    }
+                }
             }
         }
         if(config.kalshi.market_data.enable_market_data){
@@ -366,6 +590,10 @@ namespace predex::config{
             if(config.kalshi.order_rest.max_concurrent_streams == 0){
                 throw std::runtime_error("Invalid configuration: kalshi.order_rest.max_concurrent_streams must be greater than 0 when order REST is enabled");
             }
+            if(!config.kalshi.private_order_feed.enable_private_order_feed){
+                throw std::runtime_error(
+                    "Invalid configuration: private order feed must be enabled when order REST is enabled");
+            }
         }
         if(config.kalshi.private_order_feed.enable_private_order_feed){
             if(config.kalshi.auth.key_id_env.empty()){
@@ -376,6 +604,21 @@ namespace predex::config{
             }
             if(config.kalshi.private_order_feed.channels.empty()){
                 throw std::runtime_error("Invalid configuration: kalshi.private_order_feed.channels must not be empty when private order feed is enabled");
+            }
+            if(config.kalshi.order_rest.enable_order_rest){
+                for(const auto required_channel : {
+                    exchange::kalshi::KalshiOrderDataChannel::kUSER_ORDERS,
+                    exchange::kalshi::KalshiOrderDataChannel::kFILL,
+                    exchange::kalshi::KalshiOrderDataChannel::kMARKET_POSITIONS}){
+                    if(std::find(
+                        config.kalshi.private_order_feed.channels.begin(),
+                        config.kalshi.private_order_feed.channels.end(),
+                        required_channel) ==
+                        config.kalshi.private_order_feed.channels.end()){
+                        throw std::runtime_error(
+                            "Invalid configuration: live order graph requires user_orders, fill, and market_positions private channels");
+                    }
+                }
             }
         }
     }

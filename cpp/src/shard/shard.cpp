@@ -214,7 +214,16 @@ namespace predex::shard{
                         result.market_invalidation.target_found
                             ? "Invalid transition returned by missing-frame invalidation"
                             : "Market invalidation target not found for missing frame");
-                }else if(
+                }else {
+                    if(result.market_invalidation.book_sync_transition == BookSyncTransition::kBECAME_UNUSABLE){
+                        publish_event_unavailable(
+                            handle.universe_version,
+                            handle.event_id,
+                            handle.market_id,
+                            result.market_invalidation.event_revision);
+                    }
+                }
+                if(
                     result.market_invalidation.book_sync_transition ==
                         BookSyncTransition::kBECAME_UNUSABLE ||
                     result.market_invalidation.book_sync_transition ==
@@ -264,27 +273,36 @@ namespace predex::shard{
                         result.market_invalidation.target_found
                             ? "Invalid transition returned by parse-failure invalidation"
                             : "Market invalidation target not found for parse failure");
-                }else if(
-                    result.market_invalidation.book_sync_transition ==
-                        BookSyncTransition::kBECAME_UNUSABLE ||
-                    result.market_invalidation.book_sync_transition ==
-                        BookSyncTransition::kRECOVERY_REQUIRED){
-                    result.incident = ingest::kalshi::IntegrityIncidentKey{
-                        .origin = ingest::kalshi::IntegrityIncidentOrigin::kSHARD,
-                        .producer_index = shard_index_,
-                        .incident_id = next_shard_incident_id_++,
-                    };
-                    if(!report_market_recovery_required(
-                        handle.universe_version,
-                        result.incident,
-                        handle.sid,
-                        handle.sequence,
-                        handle.market_id,
-                        handle.event_id,
-                        ingest::kalshi::BookInvalidationReason::kSHARD_PARSE_FAILURE)){
-                        fault_shard(
+                }else {
+                    if(result.market_invalidation.book_sync_transition == BookSyncTransition::kBECAME_UNUSABLE){
+                        publish_event_unavailable(
                             handle.universe_version,
-                            "Could not retain parse-failure recovery status");
+                            handle.event_id,
+                            handle.market_id,
+                            result.market_invalidation.event_revision);
+                    }
+                    if(
+                        result.market_invalidation.book_sync_transition ==
+                            BookSyncTransition::kBECAME_UNUSABLE ||
+                        result.market_invalidation.book_sync_transition ==
+                            BookSyncTransition::kRECOVERY_REQUIRED){
+                        result.incident = ingest::kalshi::IntegrityIncidentKey{
+                            .origin = ingest::kalshi::IntegrityIncidentOrigin::kSHARD,
+                            .producer_index = shard_index_,
+                            .incident_id = next_shard_incident_id_++,
+                        };
+                        if(!report_market_recovery_required(
+                            handle.universe_version,
+                            result.incident,
+                            handle.sid,
+                            handle.sequence,
+                            handle.market_id,
+                            handle.event_id,
+                            ingest::kalshi::BookInvalidationReason::kSHARD_PARSE_FAILURE)){
+                            fault_shard(
+                                handle.universe_version,
+                                "Could not retain parse-failure recovery status");
+                        }
                     }
                 }
             }
@@ -296,8 +314,10 @@ namespace predex::shard{
         }
 
         EventApplyResult event_result = event_store_.apply(handle, parsed_event);
+
+        const std::uint64_t apply_complete_ts_ns = utils::monotonic_now_ns();
+
         if(is_order_book){
-            const auto apply_complete_ts_ns = utils::monotonic_now_ns();
             const auto channel_index = ingest::kalshi::market_data_channel_index(handle.kind);
             if(event_result.disposition == ApplyDisposition::kAPPLIED &&
                channel_index < core::control::kMarketDataChannelCount){
@@ -307,6 +327,7 @@ namespace predex::shard{
                     apply_complete_ts_ns);
             }
         }
+
         switch (event_result.book_sync_transition) {
             case BookSyncTransition::kBECAME_UNUSABLE:
                 ++stats_.markets_became_unusable;
@@ -322,6 +343,15 @@ namespace predex::shard{
             case BookSyncTransition::kRECOVERED:
                 break;
         }
+        
+        if(event_result.book_sync_transition == BookSyncTransition::kBECAME_UNUSABLE){
+            publish_event_unavailable(
+                handle.universe_version,
+                handle.event_id,
+                handle.market_id,
+                event_result.event_revision);
+        }
+
         if(event_result.disposition == ApplyDisposition::kREJECTED){
             ++stats_.event_rejects;
             result.code = ShardPumpCode::kEVENT_REJECTED;
@@ -344,6 +374,13 @@ namespace predex::shard{
             ++stats_.frames_applied;
             result.code = ShardPumpCode::kAPPLIED;
             result.event_result = event_result;
+            if(event_result.book_changed){
+                publish_affected_pairs(
+                    handle,
+                    event_result,
+                    apply_complete_ts_ns
+                );
+            }
             if(handle.recovery_id != 0 &&
                handle.kind == ingest::kalshi::FrameKind::kORDERBOOK_SNAPSHOT &&
                (event_result.book_sync_transition == BookSyncTransition::kRECOVERED ||
@@ -432,6 +469,14 @@ namespace predex::shard{
             return result;
         }
 
+        if(invalidation.book_sync_transition == BookSyncTransition::kBECAME_UNUSABLE){
+            publish_event_unavailable(
+                message.universe_version,
+                message.event_id,
+                message.market_id,
+                invalidation.event_revision);
+        }
+
         if(invalidation.book_sync_transition == BookSyncTransition::kBECAME_UNUSABLE ||
            invalidation.book_sync_transition == BookSyncTransition::kRECOVERY_REQUIRED){
             if(!report_market_recovery_required(
@@ -480,6 +525,10 @@ namespace predex::shard{
 
         const BookInvalidationSummary summary = event_store_.invalidate_all_markets(message.reason);
 
+        if(summary.targets_became_unusable > 0){
+            publish_shard_unavailable(message.universe_version);
+        }
+
         stats_.markets_became_unusable += summary.targets_became_unusable;
         stats_.markets_recovery_required += summary.targets_recovery_required;
         stats_.markets_already_awaiting_recovery +=summary.targets_already_awaiting_recovery;
@@ -488,7 +537,6 @@ namespace predex::shard{
         result.subscription_invalidation = summary;
         return result;
     }
-
 
     bool Shard::process_one_control_command() noexcept{
         ControlToShardCommand command{};
@@ -690,5 +738,116 @@ namespace predex::shard{
         }
         return true;
     }
+
+    bool Shard::publish_strategy_message(const strategy::ShardToStrategyMessage& message) noexcept{
+        if(strategy_publication_faulted_){
+            ++stats_.strategy_messages_suppressed;
+            return false;
+        }
+        if(!queues_.shard_to_strategy_queue.try_push(message)){
+            ++stats_.strategy_enqueue_failures;
+            strategy_publication_faulted_ = true;
+            return false;
+        }
+        std::visit([this](const auto& msg){
+            using T = std::decay_t<decltype(msg)>;
+            if constexpr(std::is_same_v<T, strategy::MonotonicPairObservation>){
+                ++stats_.strategy_observations_published;
+            }
+            else if constexpr(std::is_same_v<T, strategy::StrategyEventUnavailable>){
+                ++stats_.strategy_event_unavailable_published;
+            }
+            else if constexpr(std::is_same_v<T, strategy::StrategyShardUnavailable>){
+                ++stats_.strategy_shard_unavailable_published;
+            }
+        }, message);
+        return true;
+    }
+
+    void Shard::publish_event_unavailable(std::uint64_t universe_version, EventId event_id, MarketId affected_market_id, std::uint64_t event_revision) noexcept{//NOLINT
+        
+        (void)publish_strategy_message(strategy::ShardToStrategyMessage{
+            strategy::StrategyEventUnavailable{
+                .universe_version = universe_version,
+                .shard_index = shard_index_,
+                .event_id = event_id,
+                .affected_market_id = affected_market_id,
+                .event_revision = event_revision,
+            }
+        });
+    }
+
+    void Shard::publish_shard_unavailable(std::uint64_t universe_version) noexcept{
+        (void)publish_strategy_message(strategy::ShardToStrategyMessage{
+            strategy::StrategyShardUnavailable{
+                .universe_version = universe_version,
+                .shard_index = shard_index_,
+            }
+        });
+    }
+
+    void Shard::publish_affected_pairs(const ingest::kalshi::FrameHandle& handle, const EventApplyResult& apply_result, std::uint64_t apply_complete_ts_ns) noexcept{
+        if (strategy_publication_faulted_ ||
+            !apply_result.book_changed ||
+            handle.topology != EventTopology::kMONOTONIC_CHAIN) {
+            return;
+        }
+        const Event* event = event_store_.get_event(handle.shard_event_index);
+        
+        if (event == nullptr) {
+            ++stats_.strategy_projection_failures;
+            strategy_publication_faulted_ = true;
+            return;
+        }
+
+        if (!event->usable()) {
+            return;
+        }
+
+        const auto publish_pair = [this, event, &handle, apply_complete_ts_ns](
+            std::uint32_t easier_index) noexcept->bool{
+                strategy::StrategyObservationContext ctx{
+                    .universe_version = handle.universe_version,
+                    .shard_index = shard_index_,
+                    .ingress_timestamp_ns = handle.ingress_ts_ns,
+                    .book_apply_timestamp_ns = apply_complete_ts_ns,
+                    .publish_timestamp_ns = utils::monotonic_now_ns(),
+                };
+                auto observation = event->build_monotonic_pair_observation(easier_index, ctx);
+
+                if(!observation.has_value()){
+                    ++stats_.strategy_projection_failures;
+                    strategy_publication_faulted_ = true;
+                    return false;
+                }
+
+                return publish_strategy_message(
+                    strategy::ShardToStrategyMessage{
+                        *observation
+                    }
+                    );
+            };
+
+        if(apply_result.event_became_usable){
+            for(std::size_t idx = 0; idx + 1 < event->market_count(); ++idx){
+                if(!publish_pair(static_cast<std::uint32_t>(idx))){
+                    return;
+                }
+            }
+            return;
+        }
+
+        const auto changed_idx = handle.event_market_index;
+        if(changed_idx > 0){
+            if(!publish_pair(changed_idx - 1)){
+                return;
+            }
+        }
+        if(static_cast<std::size_t>(changed_idx) + 1 < event->market_count()){
+            (void)publish_pair(changed_idx);
+        }
+    } 
+
+
 
 }

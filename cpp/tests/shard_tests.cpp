@@ -11,6 +11,7 @@
 #include "predex/ingest/kalshi/market_data/integrity_messages.hpp"
 #include "predex/shard/shard.hpp"
 #include "predex/utils/monotonic_clock.hpp"
+#include "predex/strategy/strategy_types.hpp"
 
 namespace {
 
@@ -25,7 +26,7 @@ constexpr std::uint32_t kEventId = 11;
 constexpr std::uint32_t kMarketIndex = 0;
 constexpr std::uint32_t kMarketId = 101;
 
-shard::KalshiMarket market(std::uint32_t market_id, std::uint32_t market_index) {
+shard::KalshiMarket market(std::uint32_t market_id, std::uint32_t market_index) {//NOLINT
     shard::KalshiMarket result{};
     result.market_id = market_id;
     result.event_market_index = market_index;
@@ -51,6 +52,8 @@ protected:
     using HandleQueue = utils::SPSCQueue<ingest::FrameHandle>;
     using StatusQueue = utils::SPSCQueue<shard::ShardToControlMessage>;
     using CommandQueue = utils::SPSCQueue<shard::ControlToShardCommand>;
+    using StrategyQueue = utils::SPSCQueue<predex::strategy::ShardToStrategyMessage>;
+
 
     ShardTest()
         : shard_(
@@ -61,6 +64,7 @@ protected:
                   .last_resort_recycle_queue = recycle_queue_,
                   .shard_to_control_queue = shard_to_control_,
                   .control_to_shard_queue = control_to_shard_,
+                  .shard_to_strategy_queue = shard_to_strategy_,
               },
               frame_pool_) {}
 
@@ -171,6 +175,7 @@ protected:
     HandleQueue recycle_queue_{16};
     StatusQueue shard_to_control_{16};
     CommandQueue control_to_shard_{16};
+    StrategyQueue shard_to_strategy_{16};
     shard::Shard shard_;
 };
 

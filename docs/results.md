@@ -1,79 +1,156 @@
-# Results
+# Validation Results
 
-This document keeps measured runtime characteristics out of the main project README while still giving a concrete picture of how the system behaves.
+This document records bounded evidence for the current runtime. It separates
+what a run exercised from what it did not exercise; a healthy capture is not
+automatically an execution or strategy validation.
 
-These numbers are not universal guarantees or synthetic benchmarks. They are representative results from live soak and replay analysis artifacts in this repository.
+## 2026-09-08 live-system soak
 
-## Representative Latency Snapshot
+Runtime commit:
 
-Source:
+```text
+491aba15e19fd32b157e6c5d7f1b08fa224715f3
+```
 
-- [../logs/runs/live_2026_05_07/manifest.json](../logs/runs/live_2026_05_07/manifest.json)
-- [../logs/runs/live_2026_05_07/latencies.parquet](../logs/runs/live_2026_05_07/latencies.parquet)
-- [../logs/runs/live_2026_05_07/audit_events.parquet](../logs/runs/live_2026_05_07/audit_events.parquet)
+Config SHA-256:
 
-This run recorded `502,482` pipeline probes and `24` transport submissions before warm-state trimming.
+```text
+9bf9afac744dad09a6d091f2f9309b0f3e9c8f47b5c3724ab2b99aacbad1ad15
+```
 
-Warm-state trim used for the table below:
+The raw tape is intentionally not committed. The final operator snapshot was
+taken before graceful shutdown of a four-shard, low-latency-profile session
+with:
 
-- drop the first `128` pipeline probes to remove early shard wake-up and allocation noise
-- drop the first `4` order-path rows per relevant audit kind, which corresponds to the first two two-leg transport attempts on this run
+- frame pool: `65,536` slots;
+- router and shard queues: `32,768` entries;
+- public order-book, trade, and lifecycle channels enabled;
+- order REST and private order feed enabled;
+- monotonic-arbitrage strategy enabled;
+- strategy allocation: `50,000` money ticks (`$5.00`).
 
-### Steady-State By Stage
+### Throughput and persistence
 
-| Stage | Samples | P50 (ms) | P95 (ms) | P99 (ms) | Mean (ms) | Max (ms) | Notes |
-|---|---:|---:|---:|---:|---:|---:|---|
-| `tick_to_signal` | `502,354` | `0.005653` | `0.011279` | `0.019131` | `0.006575` | `6.900106` | Market-data event applied on shard to strategy signal creation |
-| `signal_to_submission` | `20` | `0.018530` | `0.025629` | `0.025629` | `0.016588` | `0.025629` | Shard-local signal accepted into the submit path |
-| `submission_to_decision` | `20` | `0.005879` | `0.019056` | `0.021341` | `0.007297` | `0.021912` | OMS decision latency after the shard enqueues work |
-| `decision_to_transport` | `20` | `0.720151` | `19.381644` | `19.387957` | `7.475000` | `19.389535` | Local OMS-to-transport dispatch; tails show connection/session wake-up cost |
-| `tick_to_transport_submit` | `20` | `0.741410` | `19.416481` | `19.416481` | `7.498884` | `19.416481` | End-to-end local path before bytes are on the wire |
-| `transport_submit_to_response` | `20` | `53.525742` | `63.400955` | `63.400955` | `54.193251` | `63.400955` | Venue/network round trip after request write |
-| `tick_to_transport_response` | `20` | `55.627107` | `80.091110` | `80.091110` | `61.692136` | `80.091110` | End-to-end from inbound market event to HTTP response |
+| Metric | Final value |
+|---|---:|
+| Frames received | `119,483,082` |
+| Frames published | `119,408,477` |
+| Order-book frames observed | `119,142,101` |
+| Trade frames observed | `252,372` |
+| Lifecycle frames observed | `88,609` |
+| Tape records written | `119,408,073` |
+| Tape bytes written | `40,215,055,365` |
+| Logger write failures | `0` |
+| Logger recycle failures | `0` |
 
-The main publication number for this run is therefore steady-state `tick_to_transport_response` at about `55.6 ms` p50, with venue/network RTT still dominating the full path.
+`74,605` frames were classified as dropped at the wire boundary. The total was
+fully accounted for by `72,231` lifecycle messages for markets outside the
+configured universe and `2,374` unsupported envelope types. Pool exhaustion,
+router enqueue failure, and logger fallback failure were all zero.
 
-## Interpretation
+### Integrity and capacity
 
-The broad pattern from recent runs has been:
+| Metric | Final value |
+|---|---:|
+| Sequence gaps | `0` |
+| Duplicate/stale sequences | `0` |
+| Downstream delivery losses | `0` |
+| Market/subscription barriers | `0` |
+| Shard parse/event rejects | `0` |
+| Shard desyncs | `0` |
+| Recovery incidents | `0` |
+| Leaked handles | `0` |
+| Frame-pool high-water | `22,228 / 65,536` |
+| Router-queue high-water | `74 / 32,768` |
+| Maximum shard-queue high-water | `6,275 / 32,768` |
 
-- shard-local strategy evaluation is very fast relative to the full order loop
-- the local path to "request written to the wire" is sub-millisecond at p50 on a healthy warm path, with a remaining long tail when transport-side wake-up shows through
-- venue/network round trip dominates end-to-end order latency
-- most recent strategy work has therefore focused more on execution quality and book durability than on squeezing tiny amounts out of the local compute path
+The capacity peaks left meaningful headroom. This run did not deliberately
+inject loss, so it validates that recovery remained dormant during a healthy
+session, not that every recovery branch works against the live venue.
 
-## Why These Numbers Matter
+### Order-book ingress latency
 
-Predex is not trying to claim exchange-like microsecond wire performance on a websocket + JSON venue. The useful engineering questions here are:
+`ingress_to_book_apply` for order-book traffic:
 
-- is the internal runtime architecture bounded and observable?
-- can order intent timing be decomposed stage by stage?
-- can failed executions be diagnosed from tape, audit, and REST traces?
-- can strategy behavior be improved empirically from soak results?
+| Statistic | Duration |
+|---|---:|
+| p50 | `5 us` |
+| p95 | `10 us` |
+| p99 | `25 us` |
+| p99.9 | `250 us` |
+| mean | `34.6 us` |
+| maximum | `184.6 ms` |
 
-These measurements are intended to answer those questions, not to act as a marketing benchmark.
+The isolated maximum is consistent with a scheduler/system pause. The stable
+p99.9 is the useful evidence that it was not a sustained latency regime.
 
-## Additional Result Artifacts
+### OMS and venue connectivity
 
-Historical and supporting artifacts live in:
+| Metric | Final value |
+|---|---:|
+| Portfolio reconciliations requested/completed | `6,608 / 6,608` |
+| Portfolio reconciliation failures | `0` |
+| REST requests/responses | `13,216 / 13,216` |
+| REST retries/failures | `0 / 0` |
+| Private-feed messages received | `3` |
+| Private-feed drops/parse failures | `0 / 0` |
+| Strategy intents | `0` |
+| Live/pending/uncertain orders | `0 / 0 / 0` |
+| Execution incidents | `0` |
 
-- `docs/replay/` — soak summaries, edge-lifetime analysis, exported timelines, charts
-- `logs/runs/` — normalized run datasets produced by `predex-replay ingest-run`
+The venue available balance was `298,800` money ticks (`$29.88`) and the
+configured strategy allocation remained `$5.00`.
 
-Useful examples:
+### What this run establishes
 
-- [../logs/runs/live_2026_05_07/manifest.json](../logs/runs/live_2026_05_07/manifest.json)
-- [replay/soak_analysis.json](replay/soak_analysis.json)
-- [replay/soak_analysis_2026-05-03.json](replay/soak_analysis_2026-05-03.json)
-- [replay/soak_analysis_overnight_2026-05-03.json](replay/soak_analysis_overnight_2026-05-03.json)
-- [replay/soak_live_2026-05-04.json](replay/soak_live_2026-05-04.json)
+- The public ingestion, router, shard, and tape path sustained more than 119
+  million frames without detected integrity or capacity loss.
+- Persistent order REST supported thousands of successful reconciliation
+  cycles without reconnect or retry.
+- The private order feed remained connected for the session.
+- Trading authorization and the complete component-readiness graph remained
+  live.
 
-## Future Expansion
+### What this run does not establish
 
-If this document grows, the next additions should probably be:
+- No strategy intent was emitted, so submit, fill, partial-group, and repair
+  mechanics were not exercised by this session.
+- Current operator telemetry does not expose raw strategy candidates and gate
+  rejections, so zero intents cannot yet be decomposed further.
+- Neither public nor private websocket disconnected, so automatic reconnect is
+  still an unimplemented and untested operational gap.
+- These results do not justify increasing trading limits.
 
-- one small table for execution outcomes from representative soaks
-- one section on one-sided fill mitigation before and after depth-aware IOC gating
-- one section on when dynamic sizing became justified, if it does
+## Local merge-gate rehearsal
 
-That keeps `README.md` lightweight while preserving the evidence trail for people who want to go deeper.
+On the documentation/merge-preparation branch, the current CI-equivalent C++
+configure and build completed all `129` Ninja build steps. CTest then passed:
+
+```text
+predex_tests           passed
+predex_research_tests  passed
+2/2 tests passed
+```
+
+The dependency-free Python operator/config subset passed `49` unit tests:
+
+```text
+python.tests.test_env
+python.tests.test_discovery
+python.tests.test_replay
+```
+
+The ASan/UBSan preset built and all `301` C++ tests passed with local leak
+detection disabled. LeakSanitizer could not initialize under the development
+environment's ptrace restriction, so leak detection remains a separate clean-
+runner check rather than a claimed local pass.
+
+Clang-tidy remains an advisory baseline with existing diagnostics. Build and
+tests are the required merge gates while that debt is reduced explicitly; the
+workflow does not represent static-analysis debt as a clean result.
+
+## Historical artifacts
+
+`docs/replay/` contains older charts, CSV summaries, and replay outputs. They
+are retained as research history, not presented as measurements of the current
+runtime architecture.

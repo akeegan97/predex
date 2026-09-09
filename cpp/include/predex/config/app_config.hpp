@@ -13,8 +13,8 @@
 namespace predex::config{
 
     constexpr std::size_t kDefaultShardCount = 4;
-    constexpr std::size_t kDefaultShardQueueCapacity = 16384;
-    constexpr std::size_t kDefaultRouterQueueCapacity = 16384;
+    constexpr std::size_t kDefaultShardQueueCapacity = 32768;
+    constexpr std::size_t kDefaultRouterQueueCapacity = 32768;
     constexpr std::size_t kDefaultFramePoolCapacity = 65536;
     constexpr std::size_t kDefaultOperatorQueueCapacity = 64;
     constexpr std::string_view kDefaultOperatorSocketPath = "/tmp/predex_operator.sock";

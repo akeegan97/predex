@@ -56,6 +56,15 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(args.thread_min_sleep_us, 50)
         self.assertEqual(args.thread_max_sleep_us, 1000)
 
+    def test_generator_defaults_to_validated_broad_universe_capacity(self) -> None:
+        args = build_parser().parse_args(["--config-format", "app"])
+
+        self.assertEqual(args.frame_pool_capacity, 65536)
+        self.assertEqual(args.io_to_router_capacity, 32768)
+        self.assertEqual(args.router_to_logger_capacity, 32768)
+        self.assertEqual(args.shard_input_capacity, 32768)
+        self.assertEqual(args.shard_to_logger_capacity, 32768)
+
     def test_app_generator_parses_explicit_monotonic_arb_enablement(self) -> None:
         args = build_parser().parse_args(
             [
@@ -736,12 +745,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             config["pipeline"],
             {
-                "frame_pool_capacity": 8192,
+                "frame_pool_capacity": 65536,
                 "shard_count": 4,
-                "io_to_router_capacity": 8192,
-                "router_to_logger_capacity": 8192,
-                "shard_input_capacity": 8192,
-                "shard_to_logger_capacity": 8192,
+                "io_to_router_capacity": 32768,
+                "router_to_logger_capacity": 32768,
+                "shard_input_capacity": 32768,
+                "shard_to_logger_capacity": 32768,
             },
         )
         self.assertEqual(

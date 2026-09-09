@@ -49,9 +49,9 @@ class ThreadPollingSettings:
 @dataclass(slots=True)
 class RuntimeSettings:
     shard_count: int = 4
-    shard_queue_capacity: int = 8192
-    router_queue_capacity: int = 8192
-    frame_pool_capacity: int = 8192
+    shard_queue_capacity: int = 32768
+    router_queue_capacity: int = 32768
+    frame_pool_capacity: int = 65536
     operator_queue_capacity: int = 64
     operator_socket_path: str = "/tmp/predex_operator.sock"
     market_data_tape_path: str = "logs/live/predex_tape.bin"

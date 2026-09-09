@@ -36,6 +36,14 @@ namespace{
             utils::ThreadPollingProfile::kLOW_LATENCY);
     }
 
+    TEST(AppConfigTests, DefaultsToValidatedBroadUniverseCapacity){
+        const auto config = default_app_config();
+
+        EXPECT_EQ(config.runtime.frame_pool_capacity, 65'536U);
+        EXPECT_EQ(config.runtime.router_queue_capacity, 32'768U);
+        EXPECT_EQ(config.runtime.shard_queue_capacity, 32'768U);
+    }
+
     TEST(AppConfigTests, LoadsHarvestThreadPollingConfiguration){
         TemporaryConfigFile file;
         {

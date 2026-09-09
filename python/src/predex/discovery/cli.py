@@ -265,32 +265,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frame-pool-capacity",
         type=int,
-        default=8192,
-        help="Pipeline frame pool capacity written into the generated config. Default: 8192.",
+        default=65536,
+        help="Pipeline frame pool capacity written into the generated config. Default: 65536.",
     )
     parser.add_argument(
         "--io-to-router-capacity",
         type=int,
-        default=8192,
-        help="IO-to-router queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="IO-to-router queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--router-to-logger-capacity",
         type=int,
-        default=8192,
-        help="Router-to-logger queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="Router-to-logger queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--shard-input-capacity",
         type=int,
-        default=8192,
-        help="Per-shard input queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="Per-shard input queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--shard-to-logger-capacity",
         type=int,
-        default=8192,
-        help="Per-shard logger queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="Per-shard logger queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--router-queue-capacity",

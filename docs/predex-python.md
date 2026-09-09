@@ -1,533 +1,284 @@
-# Predex Python Toolchain
+# Python Toolchain
 
-The Python toolchain lives in `python/src/predex/` and provides two CLI tools:
+The Python package provides two operator-facing entry points and a larger
+optional research surface:
 
-- **`predex`** (`predex.discovery`) — discover Kalshi events via the REST API and generate a trader config JSON for `trader_app`
-- **`predex-replay`** (`predex.replay`) — analyze audit logs and tape files produced by a live run
+- `predex` / `predex-discovery`: discover Kalshi events, classify topology,
+  generate run configs, and materialize completed runs;
+- `predex-replay`: inspect a current tape/config, summarize a config, or enrich
+  historical run metadata;
+- modules and scripts for frozen offline research experiments.
 
-Both CLIs are wrapped by scripts in `scripts/` that source `.env` and set `PYTHONPATH` automatically.
+The live process itself is C++. Python is not imported into the runtime hot
+path.
 
----
+## Installation
 
-## Credentials and Environment
-
-Credentials are loaded from the environment. The toolchain searches for a `.env` file starting from the current directory and walking up to ancestors:
-
-```bash
-KALSHI_KEY_ID=your-key-id
-KALSHI_PRIVATE_KEY_PEM='-----BEGIN PRIVATE KEY-----
-...
------END PRIVATE KEY-----'
-```
-
-You can also point to a specific env file:
+The discovery and basic replay/config tools use the standard library:
 
 ```bash
-PREDEX_ENV_FILE=/path/to/.env ./scripts/predex ...
+export PYTHONPATH="$PWD/python/src"
+python3 -m predex.discovery --help
+python3 -m predex.replay --help
 ```
 
-The credential variable names written into generated configs (`key_id_env`, `private_key_pem_env`) default to `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY_PEM` and can be overridden with `--key-id-env` / `--private-key-env`.
+For an installed command and the optional research/materialization stack:
 
----
-
-## `predex` — Event Discovery and Config Generation
-
-### What it does
-
-Calls the Kalshi REST API to fetch events and their markets, classifies each event into a topology kind, and emits a `trader_app`-compatible JSON config with stable `market_id`, `event_id`, and `affinity_key` values.
-
-### Quick examples
-
-Fetch specific events by ticker:
 ```bash
-./scripts/predex \
-  --event-ticker KXPGATOUR-VATO26 \
-  --event-ticker KXWMARMAD-26 \
-  --output docs/generated_config.json
+python3 -m venv .venv
+.venv/bin/pip install -e '.[research-ml]'
 ```
 
-Discover all open events under a series:
+`scripts/predex` loads the repository `.env` when present, prefers the installed
+`.venv/bin/predex`, and otherwise runs the source package with `PYTHONPATH`.
+
+## Generate the current C++ schema
+
+The production binary consumes the `app` schema. Always pass
+`--config-format app`; the `trader` format remains only for older artifacts.
+
+Generate an explicit small universe:
+
 ```bash
 ./scripts/predex \
-  --series-ticker KXPGATOUR \
-  --all-events \
-  --include-topology monotonic_chain \
-  --output docs/generated_config.json \
-  --report-output docs/generated_config.report.json
+  --config-format app \
+  --event-ticker KXEXAMPLE-26 \
+  --enable-market-data \
+  --output runs/example/config.json \
+  --report-output runs/example/report.json
 ```
 
-Generate a C++ app config and bundle an overnight market-data soak:
+Generate a complete run bundle from open events:
+
 ```bash
 ./scripts/predex \
   --config-format app \
   --all-events \
-  --enable-market-data \
-  --run-dir-root runs \
-  --run-label overnight-soak
+  --include-topology monotonic_chain \
+  --run-label market-data \
+  --frame-pool-capacity 65536 \
+  --router-queue-capacity 32768 \
+  --shard-input-capacity 32768
 ```
 
-This creates a directory like `runs/predex-2026-06-28-143012-market-data-overnight-soak/`
-with `config.json`, `report.json`, and a generated config that writes the binary tape to
-`tape.bin` in the same directory.
+`--run-label` creates a timestamped directory under `runs/` and defaults the
+config, report, tape, and materialization paths into that directory. Existing
+run directories fail closed unless `--overwrite-run-dir` is explicit.
 
-After the run is stopped, materialize the binary tape into parquet tables:
+The generator uses `https://external-api.kalshi.com/trade-api/v2` by default.
+It pages `GET /events`, fetches nested event details concurrently, and reuses a
+persistent HTTP connection per worker. Retryable HTTP/network failures use
+bounded exponential backoff and honor `Retry-After` when supplied.
+
+## Discovery and topology
+
+The generator converts Kalshi metadata into stable runtime identity:
+
+- stable event ID;
+- stable market ID;
+- event-derived affinity key;
+- event topology;
+- ordered `strike_key` for monotonic chains;
+- tradeability and price-level structure;
+- market and event time metadata.
+
+Supported topology classes include:
+
+- `monotonic_chain`
+- `mutually_exclusive`
+- `unordered_group`
+- `single_market`
+
+Classification fails closed when a set cannot safely be ordered. Event filters
+apply after classification:
+
+```bash
+--include-topology monotonic_chain
+--exclude-topology unordered_group
+--market-limit 5000
+```
+
+`--market-limit` keeps events whole; it does not truncate one event into an
+invalid partial topology.
+
+## Runtime settings
+
+The app generator writes these current runtime groups:
+
+- `runtime`: shard/queue/pool capacities, per-config operator socket, tape path,
+  polling policy, and optional synthetic session cutoffs;
+- `kalshi.auth`: names of credential environment variables;
+- `kalshi.market_data`: public channels and enablement;
+- `kalshi.order_rest`: persistent REST endpoint and concurrency;
+- `kalshi.private_order_feed`: private websocket channels and enablement;
+- `oms`: allocation, venue reserve, group limits/repair, intent age, and
+  reconciliation cadence;
+- `strategy`: monotonic-arbitrage enablement and gates;
+- `universe`: classified events and markets.
+
+The generator never embeds credential values. It writes only environment
+variable names, normally `KALSHI_KEY_ID` and `KALSHI_PRIVATE_KEY_PEM`.
+
+### Polling profiles
+
+```bash
+--thread-polling-profile harvest
+--thread-spin-iterations 64
+--thread-yield-iterations 64
+--thread-min-sleep-us 50
+--thread-max-sleep-us 1000
+```
+
+Use `harvest` for long captures where thermal/power behavior matters. Use
+`low_latency` for short latency-sensitive sessions after measuring the host.
+
+### OMS and live strategy
+
+OMS/private-order components remain disabled unless `--oms-enabled` is
+provided. The strategy additionally requires
+`--enable-monotonic-arb-strategy`.
+
+```bash
+./scripts/predex \
+  --config-format app \
+  --all-events \
+  --include-topology monotonic_chain \
+  --run-label monotonic-live \
+  --oms-enabled \
+  --enable-monotonic-arb-strategy \
+  --oms-available-capital-ticks 50000 \
+  --oms-maximum-group-reservation-ticks 20000 \
+  --monotonic-arb-order-quantity-lots 100
+```
+
+Generation validates that allocation and group reservation can cover one
+configured two-leg group. It does not authorize live trading. The C++ process
+still starts with trading disabled until the operator sends `allow-trading`.
+
+PredEx money uses `$0.0001` ticks. For example, `50000` ticks is `$5.00`.
+
+## Per-config operator targeting
+
+For a file-backed config without an explicit socket, the generator derives a
+stable `/tmp/predex-operator-<hash>.sock` path from the absolute config path.
+Stdout-only generation uses a random path because no file identity exists.
+
+After the process starts, source the helper once:
+
+```bash
+source scripts/predex-use runs/<run-name>
+```
+
+It resolves the config, validates `runtime.operator_socket_path`, and exports:
+
+```text
+PREDEX_CONFIG
+PREDEX_SOCKET_PATH
+```
+
+The helper must be sourced; executing it in a child shell cannot modify the
+current terminal environment.
+
+## Inspect a config or tape
+
+Summarize event and market distribution:
+
+```bash
+PYTHONPATH=python/src python3 -m predex.replay config-summary \
+  --config runs/<run-name>/config.json
+```
+
+Emit JSON for automation:
+
+```bash
+PYTHONPATH=python/src python3 -m predex.replay config-summary \
+  --config runs/<run-name>/config.json \
+  --json
+```
+
+Inspect the current `PDT2` tape header and sample records:
+
+```bash
+PYTHONPATH=python/src python3 -m predex.replay inspect-tape \
+  --config runs/<run-name>/config.json \
+  --tape runs/<run-name>/tape.bin \
+  --limit 20
+```
+
+The reader rejects unknown magic/version values and truncated records.
+
+## Materialize a completed run
+
+Materialization requires `pyarrow` from the optional research dependencies:
+
+```bash
+./scripts/predex --materialize --path runs/<run-name>
+```
+
+The streaming writer produces:
+
+```text
+tables/frames.parquet
+tables/deltas.parquet
+tables/trades.parquet
+tables/snapshots.parquet
+tables/snapshot_levels.parquet
+tables/lifecycles.parquet
+tables/event_routes.parquet
+tables/market_routes.parquet
+tables/manifest.json
+```
+
+The manifest records hashes, row counts, expected-table checks, and whether the
+materialization verified. Compression and raw-tape removal are explicitly
+gated:
+
 ```bash
 ./scripts/predex \
   --materialize \
-  --path runs/predex-2026-06-28-143012-market-data-overnight-soak \
-  --compress_if_verified \
-  --remove_if_verified
+  --path runs/<run-name> \
+  --compress-if-verified \
+  --remove-if-verified
 ```
 
-This writes `tables/*.parquet` plus `tables/manifest.json`. With
-`--compress_if_verified`, `.gz` copies of `config.json`, `report.json`, and
-`tape.bin` are written only if verification checks pass. The original raw files
-are left in place unless `--remove_if_verified` is also provided. That second
-flag removes only the raw `tape.bin`, and only when verification passed,
-`tape.bin.gz` exists, and all expected parquet tables are present.
+`--remove-if-verified` removes `tape.bin` only after the expected Parquet tables
+and compressed source artifact have been verified.
 
-Limit total markets and enable live trading:
-```bash
-./scripts/predex \
-  --series-ticker KXPGATOUR \
-  --market-limit 60 \
-  --oms-enabled \
-  --output docs/generated_config.json
-```
+## Enrich older runs
 
-### All arguments
-
-#### Event selection
-
-| Argument | Default | Description |
-|---|---|---|
-| `--event-ticker TICKER` | — | Fetch a specific event ticker. Repeatable. |
-| `--series-ticker TICKER` | — | Discover events under this series (used when explicit tickers not given). |
-| `--status STATUS` | `open` | Event status filter for series discovery. |
-| `--event-limit N` / `--limit N` | `50` | Max events fetched from the API. |
-| `--event-fetch-workers N` | `8` | Concurrent event-detail fetch workers. Use `1` to force serial fetching. |
-| `--all-events` | off | Page through all matching events (ignores `--event-limit`). |
-| `--market-limit N` | — | Max total included markets. Events are kept whole; an event is skipped if adding it would exceed the limit. |
-
-#### Materialization
-
-| Argument | Default | Description |
-|---|---|---|
-| `--materialize` | off | Convert an existing run directory's `config.json` / `report.json` / `tape.bin` into parquet tables. |
-| `--path DIR` | — | Run directory used with `--materialize`. |
-| `--tables-output DIR` | `<path>/tables` | Optional materialized table output directory. |
-| `--compress-if-verified` / `--compress_if_verified` | off | Write `.gz` copies of raw run artifacts after verification passes. |
-| `--remove-if-verified` / `--remove_if_verified` | off | Remove raw `tape.bin` only after verification passes, `tape.bin.gz` exists, and all expected tables exist. |
-| `--materialize-batch-size N` | `100000` | Parquet writer batch size. |
-
-#### Topology filtering
-
-| Argument | Description |
-|---|---|
-| `--include-topology TOPOLOGY` | Only include events with this topology. Repeatable. |
-| `--exclude-topology TOPOLOGY` | Exclude events with this topology. Repeatable. |
-
-Valid topology values: `monotonic_chain`, `mutually_exclusive`, `unordered_group`, `single_market`, `unknown`.
-
-#### Pipeline config
-
-| Argument | Default | Description |
-|---|---|---|
-| `--shard-count N` | `4` | Number of shard threads. |
-| `--frame-pool-capacity N` | `8192` | Frame pool slot count. |
-| `--io-to-router-capacity N` | `4096` | IO-to-router queue capacity. |
-| `--router-to-logger-capacity N` | `4096` | Router-to-logger queue capacity. |
-| `--shard-input-capacity N` | `1024` | Per-shard input queue capacity. |
-| `--shard-to-logger-capacity N` | `1024` | Per-shard logger queue capacity. |
-
-#### Subscription channels
-
-| Argument | Default | Description |
-|---|---|---|
-| `--channel CHANNEL` | `trade`, `orderbook_delta` | Market data subscription channels. Repeatable. |
-| `--lifecycle-channel CHANNEL` | `market_lifecycle_v2` | Lifecycle channels (no per-market filter). Repeatable. |
-
-#### OMS and risk
-
-| Argument | Default | Description |
-|---|---|---|
-| `--oms-enabled` | off | Enable live OMS transport in generated config. |
-| `--oms-rest-endpoint URL` | Kalshi prod | OMS REST endpoint. |
-| `--oms-private-ws-endpoint URL` | Kalshi prod | OMS private WS endpoint. |
-| `--oms-private-ws-channel CHANNEL` | `user_orders` | OMS private WS channels. Repeatable. |
-
-#### Output and endpoints
-
-| Argument | Default | Description |
-|---|---|---|
-| `--output PATH` | stdout | Write config JSON to file. |
-| `--report-output PATH` | — | Write a build report (included/skipped events, topology counts). |
-| `--run-dir-root DIR` | — | Create a timestamped run directory under this root and default config/report/tape/audit outputs into it. |
-| `--run-label LABEL` | derived | Label used in the generated run directory name. |
-| `--overwrite-run-dir` | off | Allow writing into an existing generated run directory. |
-| `--tape-output PATH` | `logs/live/predex_tape.bin` | Tape output path embedded in config. |
-| `--audit-output PATH` | `logs/live/predex_audit.jsonl` | Audit output path embedded in config. |
-| `--api-base-url URL` | Kalshi prod | Kalshi REST API base URL for discovery. |
-| `--ws-endpoint URL` | Kalshi prod | WebSocket endpoint embedded in config. |
-| `--key-id-env VAR` | `KALSHI_KEY_ID` | Env var name for key ID embedded in credentials block. |
-| `--private-key-env VAR` | `KALSHI_PRIVATE_KEY_PEM` | Env var name for private key PEM. |
-
-### Build report
-
-With `--report-output`, a JSON file is written alongside the config:
-
-```json
-{
-  "included_event_count": 12,
-  "included_market_count": 48,
-  "skipped_event_count": 3,
-  "topology_counts": { "monotonic_chain": 10, "mutually_exclusive": 2 },
-  "included_events": [...],
-  "skipped_events": [
-    {
-      "event_ticker": "KXFOO-26",
-      "topology_kind": "unordered_group",
-      "reason": "excluded by include_topologies filter: unordered_group"
-    }
-  ]
-}
-```
-
----
-
-## `predex-replay` — Post-Run Analysis
-
-### What it needs
-
-Most post-run subcommands require at minimum a `--config` (generated trader config) and an `--audit` (JSONL audit log from `trader_app`). Tape inspection also requires a `--tape` (binary tape file). Static config inspection only needs `--config`.
-
-### Subcommands
-
-#### `config-summary`
-
-Summarize the event/market distribution in a generated C++ app config.
+Historical configs may not contain the event-family and time metadata needed
+by newer research. Enrichment writes an overlay and can refresh route tables:
 
 ```bash
-./scripts/predex-replay config-summary \
-  --config runs/predex-2026-06-29-123310-market-data-monday-day/config.json \
-  --top-events 20
+PYTHONPATH=python/src python3 -m predex.replay enrich-metadata \
+  --run-dir runs/<run-name>
 ```
 
-| Argument | Default | Description |
-|---|---|---|
-| `--config PATH` | required | PredEx app config JSON. |
-| `--top-events N` | `20` | Number of largest events to list. |
-| `--sample-tickers N` | `5` | Number of representative market tickers shown per large event. |
-| `--json` | off | Emit machine-readable JSON instead of text. |
+Use `--runs-root runs` for multiple directories or
+`--no-rewrite-route-tables` to write only the metadata overlay.
 
-Output: text or JSON with event/market totals, markets-per-event distribution, market-count histogram, per-topology summary, shard balance, price-level counts, tradeable counts, and largest events.
+## Tests
 
----
-
-#### `audit-summary`
-
-Quick statistical overview of a run.
+The dependency-free operator/config suite is:
 
 ```bash
-./scripts/predex-replay audit-summary \
-  --config docs/generated_config.json \
-  --audit logs/live/predex_audit.jsonl \
-  --limit 10
+PYTHONPATH=python/src python3 -m unittest \
+  python.tests.test_env \
+  python.tests.test_discovery \
+  python.tests.test_replay
 ```
 
-| Argument | Default | Description |
-|---|---|---|
-| `--config PATH` | required | Trader config JSON. |
-| `--audit PATH` | required | Audit JSONL from `trader_app`. |
-| `--limit N` | `10` | Number of highest-edge group signals to display. |
+Research tests require the frozen optional dependency set and should be run in
+the repository virtual environment. Large cohort experiments are not ordinary
+unit tests and should retain their frozen manifests, development/holdout
+boundaries, and explicit promotion gates.
 
-Output: JSON with `audit_kind_counts`, `group_signal_count`, and a ranked `top_group_signals` list.
+## Research boundary
 
----
+Materialization produces causal input tables; it does not authorize a model or
+strategy. Research code must keep future-derived labels separate from causal
+features, preserve session-level holdouts, and report mechanical reproduction
+separately from economic or deployment conclusions.
 
-#### `inspect-signal`
-
-Verify a single signal against the order book tape.
-
-```bash
-./scripts/predex-replay inspect-signal \
-  --config docs/generated_config.json \
-  --audit logs/live/predex_audit.jsonl \
-  --tape logs/live/predex_tape.bin \
-  --signal-id 42 \
-  --shard-id 0
-```
-
-| Argument | Required | Description |
-|---|---|---|
-| `--config PATH` | yes | Trader config JSON. |
-| `--audit PATH` | yes | Audit JSONL. |
-| `--tape PATH` | yes | Binary tape. |
-| `--signal-id ID` | yes | Signal ID from the audit log. |
-| `--shard-id ID` | yes | Shard ID that generated the signal. |
-
-Output: JSON with signal details, leg prices, recomputed edge vs audited edge, fee impact, and OMS decision summary.
-
----
-
-#### `export-event-timeline`
-
-Replay the order book for a full event and export a time-series of top-of-book progression alongside signal hits.
-
-```bash
-./scripts/predex-replay export-event-timeline \
-  --config docs/generated_config.json \
-  --audit logs/live/predex_audit.jsonl \
-  --tape logs/live/predex_tape.bin \
-  --event-id 88422102 \
-  --output-dir logs/replay \
-  --prefix pgatour_event
-```
-
-With a single-market focus:
-```bash
-./scripts/predex-replay export-event-timeline \
-  --config docs/generated_config.json \
-  --audit logs/live/predex_audit.jsonl \
-  --tape logs/live/predex_tape.bin \
-  --market-ticker KXPGATOUR-VATO26-JSPA \
-  --output-dir logs/replay \
-  --prefix jspa_market \
-  --parquet
-```
-
-| Argument | Default | Description |
-|---|---|---|
-| `--config PATH` | required | Trader config JSON. |
-| `--audit PATH` | required | Audit JSONL. |
-| `--tape PATH` | required | Binary tape. |
-| `--event-id ID` | — | Event ID to export. |
-| `--market-ticker TICKER` | — | Restrict to a single market within the event. |
-| `--output-dir DIR` | `logs/replay` | Output directory. |
-| `--prefix NAME` | `event_timeline` | Filename prefix for all outputs. |
-| `--parquet` | off | Also write `.parquet` files (requires `pyarrow`). |
-
-Outputs written to `output-dir/prefix.*`:
-
-| File | Contents |
-|---|---|
-| `*.csv` | Top-of-book progression for all markets in the event |
-| `*.signals.csv` | Signal hit rows with recomputed edge vs audited edge |
-| `*.summary.json` | Machine-readable summary; used by the replay dashboard |
-| `*.html` | Standalone interactive chart (no server required) |
-| `*.parquet` / `*.signals.parquet` | Parquet equivalents (with `--parquet`) |
-
----
-
-#### `latency-histograms`
-
-Analyse latency span distributions from the audit log.
-
-```bash
-./scripts/predex-replay latency-histograms \
-  --audit logs/live/predex_audit.jsonl \
-  --backend plotly \
-  --output-html logs/replay/latency.html \
-  --output-csv logs/replay/latency.csv
-```
-
-| Argument | Default | Description |
-|---|---|---|
-| `--audit PATH` | required | Audit JSONL. |
-| `--backend` | `plotly` | Plot backend: `plotly`, `matplotlib`, or `both`. |
-| `--output-html PATH` | `logs/replay/latency_histograms.html` | HTML output path. |
-| `--output-png-prefix PATH` | — | PNG prefix; writes `<prefix>.hist.png` and `<prefix>.trend.png`. |
-| `--output-csv PATH` | `logs/replay/latency_histograms.csv` | CSV of raw latency rows. |
-| `--output-json PATH` | — | Optional JSON summary. |
-| `--event-id ID` | — | Filter to a single event. |
-| `--market-id ID` | — | Filter to a single market. |
-| `--kinds KINDS_CSV` | all default kinds | Comma-separated audit event kinds to include. |
-| `--spans SPANS_CSV` | all default spans | Comma-separated span field names to plot. |
-| `--bins N` | `80` | Histogram bin count. |
-| `--max-ms FLOAT` | — | Upper cap in ms; drops values above this. |
-| `--time-bucket-ms N` | `1000` | Bucket size for time-trend chart. |
-| `--histogram-every-seconds N` | — | Emit time-sliced histogram panels every N runtime seconds (matplotlib/both). |
-| `--max-bucket-plots N` | `24` | Max time-slice panels per span. |
-
-Default latency span fields analysed:
-
-| Field | Description |
-|---|---|
-| `tick_to_signal_ns` | Tick received → strategy signal |
-| `signal_to_submission_ns` | Signal → intent enqueued to OMS |
-| `submission_to_decision_ns` | Intent enqueued → OMS decision |
-| `decision_to_transport_ns` | OMS decision → REST submit dispatched |
-| `transport_to_first_fill_ns` | REST submit → first fill received |
-| `tick_to_first_fill_ns` | End-to-end: tick received → first fill |
-| `tick_to_terminal_ns` | End-to-end: tick received → order terminal |
-
----
-
-#### `ingest-run`
-
-Normalize one runtime artifact set into reusable parquet tables.
-
-```bash
-./scripts/predex-replay ingest-run \
-  --config docs/generated_config.json \
-  --audit logs/live/predex_audit.jsonl \
-  --tape logs/live/predex_tape.bin \
-  --run-id live_2026_05_04
-```
-
-If `--trace` is omitted, the command auto-detects `predex_rest_trace*.jsonl` beside the audit log.
-
-| Argument | Default | Description |
-|---|---|---|
-| `--config PATH` | required | Trader config JSON. |
-| `--audit PATH` | required | Audit JSONL. |
-| `--tape PATH` | required | Binary tape. |
-| `--trace PATH` | auto-detect | Optional REST trace JSONL path. Repeat for multiple workers. |
-| `--output-root DIR` | `logs/runs` | Root directory for normalized run datasets. |
-| `--run-id NAME` | UTC timestamp + tape stem | Optional directory name under `output-root`. |
-| `--format {parquet,both}` | `parquet` | Write parquet only, or parquet plus CSV sidecars. |
-
-Outputs written to `logs/runs/<run_id>/`:
-
-| File | Contents |
-|---|---|
-| `market_routes.parquet` | Config-derived market routing table |
-| `frames.parquet` | One row per raw tape frame |
-| `market_events.parquet` | Normalized snapshots, deltas, and trades |
-| `audit_events.parquet` | Flattened audit JSONL rows |
-| `signals.parquet` | One row per grouped signal bundle |
-| `legs.parquet` | One row per signal leg with OMS state summary |
-| `latencies.parquet` | Slim latency table for stage and E2E analysis |
-| `trace_requests.parquet` | Per-request REST transport timings |
-| `trace_orders.parquet` | Per-order REST outcomes from batched responses |
-| `manifest.json` | Source metadata and table row counts |
-
-Use `--format both` to also emit CSV sidecars next to each parquet table.
-
-### Replay Dashboard (Streamlit)
-
-```bash
-.venv/bin/pip install '.[replay-viz]'
-./scripts/predex-replay-dashboard
-```
-
-Shows a run-wide view from config + audit (all events, sub-markets, signals) and lets you drill into per-market timeline charts when `export-event-timeline` summary files are present in `logs/replay/`.
-
----
-
-## Config Generation Flow
-
-```
-KalshiPublicClient.discover_events()
-        │
-        ▼
-list[EventRecord]           (event_ticker, series_ticker, markets[])
-        │
-        ▼
-classifier.classify_event()
-        │
-        ▼
-list[ClassifiedEvent]       (topology_kind, markets with strike_keys)
-        │
-        ▼
-build_trader_config_result()
-        │
-        ├── topology filtering (include/exclude)
-        ├── market_limit gating (whole-event granularity)
-        ├── stable ID generation
-        │     stable_event_id(event_ticker)   → event_id   [1, 2^32-2]
-        │     stable_affinity_key(event_ticker) → affinity_key [0, 2^16-1]
-        │     stable_market_id(market_ticker) → market_id  [1, 2^32-2]
-        │     (all Blake2B-based; deterministic across runs)
-        ├── market route construction per market
-        │     { market_ticker, market_id, event_id, affinity_key,
-        │       topology_kind, strike_key, close_time_s, tradeable }
-        └── final config dict
-```
-
-### Topology classification
-
-| Topology | Detection rule |
-|---|---|
-| `single_market` | Event has exactly one market |
-| `monotonic_chain` | All markets have comparable numeric strike types (greater/less) — ordered by threshold; or all markets have distinct close-times with a direction hint (before/after) in titles |
-| `mutually_exclusive` | Exchange `mutually_exclusive` flag is set; or all markets share the same close-time and have structurally distinct entities |
-| `unordered_group` | Fallback |
-
-### Strike keys
-
-| Pattern | Key value |
-|---|---|
-| Numeric threshold (greater) | `int(threshold * 1_000_000)` |
-| Numeric threshold (less) | `int(threshold * 1_000_000)` negated |
-| Time-based (after) | Nanoseconds since epoch |
-| Time-based (before) | Nanoseconds since epoch, negated |
-| Mutually exclusive / unknown | `0` |
-
-The shard affinity assignment is `affinity_key % shard_count`. All markets in the same event share an affinity key so they land on the same shard.
-
----
-
-## Programmatic API
-
-The discovery and config modules can be used directly from Python:
-
-```python
-from predex.discovery.kalshi import KalshiPublicClient
-from predex.discovery.config import (
-    build_trader_config_result,
-    DiscoverySettings,
-    PipelineSettings,
-    OmsTransportSettings,
-    LocalRiskSettings,
-)
-
-client = KalshiPublicClient()
-events = client.discover_events(series_ticker="KXPGATOUR", limit=50)
-
-result = build_trader_config_result(
-    events,
-    pipeline=PipelineSettings(shard_count=4),
-    oms_transport=OmsTransportSettings(enabled=False, max_session_loss_ticks=50),
-    local_risk=LocalRiskSettings(
-        max_net_position_lots_per_market=10,
-        min_seconds_to_close=60,
-        trading_enabled=True,
-    ),
-    include_topologies=["monotonic_chain"],
-    market_limit=80,
-)
-
-import json
-with open("config.json", "w") as f:
-    json.dump(result.config, f, indent=2)
-
-print(result.report())
-```
-
----
-
-## Module Layout
-
-```
-python/src/predex/
-├── discovery/
-│   ├── __main__.py          # Entry point: python -m predex.discovery
-│   ├── cli.py               # Argument parsing and CLI wiring
-│   ├── models.py            # MarketRecord, EventRecord, ClassifiedEvent, TopologyKind
-│   ├── classifier.py        # classify_event() — topology detection and strike key assignment
-│   ├── affinity.py          # stable_event_id / stable_market_id / stable_affinity_key
-│   ├── kalshi.py            # KalshiPublicClient — REST API with retry and pagination
-│   └── config.py            # build_trader_config_result / build_trader_config
-└── replay/
-    ├── __main__.py          # Entry point: python -m predex.replay
-    ├── cli.py               # Subcommand routing
-    ├── audit.py             # AuditEvent, SignalBundle, load_audit_events
-    ├── config.py            # ConfigIndex, load_config_index
-    ├── tape.py              # iter_tape_payloads, iter_market_events (binary tape reader)
-    ├── books.py             # ReplayBookState — order book replay from tape
-    ├── timeline.py          # build_event_timeline, export functions
-    ├── verify.py            # verify_signal_bundle — recompute edge vs audit
-    ├── latency.py           # export_latency_histograms
-    └── dashboard.py         # Streamlit replay dashboard
-```
+The C++ research ownership model is documented in
+[Research binary architecture](../cpp/apps/research/README.md).

@@ -1,207 +1,227 @@
-# Ownership And Lifetime Invariants
+# Ownership and Invariants
 
-This document captures the operational rules that keep the current runtime coherent.
+PredEx relies on ownership rules more than internal locking. Most mutable
+objects are intentionally not thread-safe because exactly one thread owns each
+one. Cross-thread communication occurs through bounded SPSC queues.
 
-## Runtime Ownership
+Breaking an ownership rule is a correctness bug even when the code appears to
+work during a light run.
 
-`predex::App::Runtime` owns:
-- websocket transport/session objects (public data WS; OMS private-WS transport is scaffolded but not constructed today)
-- the frame pool
-- all queues
-- router, shards, logger, audit writer, OMS coordinator, OMS Gateway
-- worker threads (IO, router, N shards, OMS coordinator, OMS Gateway, logger, audit). A private-WS worker thread will join this list when that transport is wired.
+## Single-owner state
 
-Other components mostly hold references or non-owning pointers into runtime-owned state.
+| State | Sole owner |
+|---|---|
+| Process lifecycle, readiness, active universes, recovery coordinator | Control-plane thread |
+| Public websocket and subscription sequence baselines | Wire-session thread |
+| Frame-pool allocation and recycling | Wire-session thread |
+| Router pending barrier and routing telemetry | Router thread |
+| One `EventStore`, its events, markets, and books | Corresponding shard thread |
+| Strategy observations, active group view, and strategy portfolio cache | Strategy thread |
+| OMS group/order state, reservations, venue portfolio, and repairs | OMS thread |
+| Persistent HTTP/2 connection and REST in-flight requests | Order-REST thread |
+| Private websocket subscriptions and parser state | Private-feed thread |
+| Tape file and logger counters | Logger thread |
+| Unix listen socket and connected operator client | Operator-server thread |
 
-## Thread Ownership
+Readers must consume snapshots or typed messages. They must not retain a
+pointer into another owner's mutable state.
 
-The runtime is designed around single-owner stage execution:
+## Immutable universe views
 
-- The public websocket transport/session is owned by the IO thread during steady-state operation
-- The router is owned by the router thread
-- Shard `i` is owned by shard thread `i`
-- The OMS coordinator (including `OrderStore` and `GlobalRisk`) is owned by the OMS coordinator thread
-- The OMS Gateway pipeline (including `AsyncRestConnection` pool) is owned by the OMS Gateway thread
-- The logger is owned by the logger thread
-- The audit writer is owned by the audit thread
-- Each `BookStore` is shard-local and only written by its shard thread
+`ControlPlane` owns the active universe version. It distributes immutable
+`shared_ptr<const ...>` snapshots tailored to each component:
 
-This is the core concurrency assumption behind the current design. Crossing these ownership boundaries requires going through the designated queues.
+- market-data routing/subscription data to the wire session;
+- event/market installation commands to shards;
+- order-route metadata to OMS, order REST, and private order feed.
 
-## Queue Invariants
+Messages and handles carry a universe version. A receiving component validates
+that version before applying work. Universe replacement must not make an old
+handle valid against new routing state.
 
-Each queue has exactly one producer and one consumer (SPSC), except where noted.
+## SPSC topology
 
-**Public data pipeline:**
+Every queue must have exactly one producer thread and one consumer thread.
+Fan-in uses multiple SPSC queues; fan-out uses one SPSC queue per destination.
 
-- `io_to_router_queue`
-  - producer: IO thread
-  - consumer: router thread
+### Operator and control
 
-- `router_to_logger_queue`
-  - producer: router thread
-  - consumer: logger thread
+| Queue | Producer | Consumer |
+|---|---|---|
+| `server_to_control` | operator server | control plane |
+| `control_to_server` | control plane | operator server |
+| `control_to_io` | control plane | wire session |
+| `io_to_control_status` | wire session | control plane |
+| `router_to_control` | router | control plane |
+| `logger_to_control_status` | logger | control plane |
+| `control_to_shard[i]` | control plane | shard `i` |
+| `shard_to_control[i]` | shard `i` | control plane |
+| `control_to_oms` | control plane | OMS |
+| `oms_to_control_status` | OMS | control plane |
+| `control_to_order_rest` | control plane | order REST |
+| `order_rest_to_control_status` | order REST | control plane |
+| `control_to_private_order_feed` | control plane | private feed |
+| `private_order_feed_to_control_status` | private feed | control plane |
 
-- `shard_input_queue[i]`
-  - producer: router thread
-  - consumer: shard thread `i`
+### Market data
 
-- `shard_to_logger_queue[i]`
-  - producer: shard thread `i`
-  - consumer: logger thread
+| Queue | Producer | Consumer |
+|---|---|---|
+| `wire_to_router` | wire session | router |
+| `router_to_shard[i]` | router | shard `i` |
+| `wire_to_logger` | wire session | logger |
+| `router_to_logger` | router | logger |
+| `shard_to_logger[i]` | shard `i` | logger |
 
-**Frame recycle (per-producer SPSC + consumer fan-in):**
+`wire_to_logger` is a fallback path for a frame that cannot enter the router;
+it preserves raw capture when possible but does not repair the missing book
+application. Order-book loss still emits an integrity barrier.
 
-Every frame-handle producer owns its own recycle SPSC; `IOWriter` (running on the IO thread) is the sole consumer and round-robins across all producer queues. This is the correct way to preserve SPSC discipline when multiple producers need to return frames — adding more producers to a single shared recycle queue would violate the strict one-writer rule (see [[feedback_spsc_producers]]).
+### Recycling
 
-- `recycle_from_logger` — producer: logger thread; consumer: IO thread
-- `recycle_from_router` — producer: router thread; consumer: IO thread
-- `recycle_from_shards[i]` — producer: shard thread `i`; consumer: IO thread
+| Queue | Producer | Consumer |
+|---|---|---|
+| `router_recycle` | router | wire session |
+| `logger_recycle` | logger | wire session |
+| `shard_recycle[i]` | shard `i` | wire session |
 
-**Shard → OMS:**
+These queues cannot be combined without replacing the SPSC implementation with
+an MPSC design. Each terminal producer owns one return path; the wire session
+round-robins over all of them.
 
-- `shard_to_oms_intent_queue[i]`
-  - producer: shard thread `i`
-  - consumer: OMS coordinator thread (polls all, round-robin)
+### Strategy and execution
 
-**OMS → shard:**
+| Queue | Producer | Consumer |
+|---|---|---|
+| `shard_to_strategy[i]` | shard `i` | strategy |
+| `strategy_to_oms[0]` | strategy | OMS |
+| `oms_to_strategy[0]` | OMS | strategy |
+| `oms_to_order_rest` | OMS | order REST |
+| `order_rest_to_oms` | order REST | OMS |
+| `private_order_feed_to_oms` | private feed | OMS |
 
-- `oms_to_shard_decision_queue[i]`
-  - producer: OMS coordinator thread
-  - consumer: shard thread `i`
+REST and private websocket events intentionally use different queues. Having
+both transports push into one queue would violate the single-producer rule.
 
-- `oms_to_shard_lifecycle_queue[i]`
-  - producer: OMS coordinator thread
-  - consumer: shard thread `i`
+## Frame-pool lifecycle
 
-**OMS coordinator → Gateway thread:**
+`FramePool` preallocates fixed-size slots. The wire session is the only owner
+allowed to call `try_acquire` or recycle a slot.
 
-- `oms_command_queue`
-  - producer: OMS coordinator thread
-  - consumer: OMS Gateway thread (`CommandIngress` stage)
-  - carries: `OmsToKalshiCommand` variant (`SubmitOrderCmd | CancelOrderCmd | ModifyOrderCmd`)
+For a normal market-data frame:
 
-**Gateway thread → OMS coordinator:**
+1. The wire session acquires a slot and copies the payload.
+2. It stamps `FrameHandle` with pool index and generation plus routing identity.
+3. Router and shard read the slot through the handle; neither mutates pool
+   ownership.
+4. Logger writes the payload to tape.
+5. The terminal stage pushes the handle onto its dedicated recycle queue.
+6. The wire session validates and recycles the slot.
 
-- `oms_rest_event_queue`
-  - producer: OMS Gateway thread (`AsyncRestConnection` via `SessionPool`)
-  - consumer: OMS coordinator thread
+A handle is valid only while both its slot index and generation match. Every
+terminal path must either hand off the handle or report a leak. A failed book
+delivery must additionally invalidate the affected state.
 
-- `ws_event_queue` (reserved; pointer is `nullptr` today, will be wired when private-WS transport lands)
-  - producer: private-WS worker thread (not constructed today)
-  - consumer: OMS coordinator thread
+## Market-data ordering
 
-`ExecutionTransport::try_pop_event()` checks `ws_event_queue` first (skipped if `nullptr`), then round-robins across `rest_event_queues`. All queues are strict SPSC.
+Sequence observation occurs in the wire session before configured-market
+filtering. This preserves the exchange subscription's SID sequence domain.
 
-**Audit:**
+The router queue carries frames and integrity barriers in one variant so the
+barrier is ordered with the loss it describes. The router does not consume new
+input while a barrier or its control-plane recovery fact is pending delivery.
 
-- `shard_audit_queue[i]`
-  - producer: shard thread `i`
-  - consumer: audit thread (polls all)
+A subscription-wide barrier is pushed to every shard in index order. It is not
+reported as delivered until all shard queues accepted it.
 
-- `oms_audit_queue`
-  - producer: OMS coordinator thread
-  - consumer: audit thread
+## Shard and book invariants
 
-## Frame Pool Invariants
+- One event and all of its related markets are installed on one shard.
+- A frame's shard, event, market, and universe identity is validated before
+  parsing/application.
+- A usable book becomes unusable exactly once per incident.
+- Deltas never mutate an unusable book.
+- A replacement snapshot is constructed and validated before it replaces live
+  state.
+- A recovery snapshot must match the expected market/universe/recovery
+  identity.
+- Event revision increases only after an accepted state mutation.
+- Strategy receives immutable value messages, never references to shard state.
+- When event/shard state becomes unavailable, strategy receives an explicit
+  unavailable message.
 
-`FramePool` holds the backing storage for all live frames in the public data pipeline.
+## Recovery invariants
 
-The rules are:
-- `IOWriter` is the only stage that acquires fresh frame slots
-- `IOWriter` is also the only stage that calls `FramePool::recycle(...)`
-- Router, shards, and logger only read frame contents through a handle
-- A `FrameHandle` remains valid only while its generation matches the pool slot generation
+- SID sequence gaps and market-local delivery losses remain distinct facts.
+- A subscription gap invalidates all installed books affected by that
+  order-book subscription.
+- Pool, wire-to-router, or router-to-shard loss invalidates the known target
+  market.
+- `RecoveryCoordinator` is the sole owner of incident deduplication, attempts,
+  timeouts, and terminal outcome.
+- At most one active recovery incident owns a market at a time.
+- `RecoverMarketIo` requests a fresh snapshot; it does not replace or mutate
+  the delta subscription.
+- Recovery completes only after the shard accepts the correlated replacement
+  snapshot, not when the websocket command is merely acknowledged.
 
-This keeps pool mutation centralized on the IO thread and avoids any cross-thread synchronization on the pool itself.
+## Strategy invariants
 
-## Handle Lifecycle Invariants
+- Strategy consumes observations only from its configured universe and source
+  shard.
+- Stale revisions and observations older than the configured age are rejected.
+- A strategy intent is a value message containing all execution inputs needed
+  by OMS; OMS does not read strategy internals.
+- Strategy may cache OMS-published portfolio state but cannot mutate the OMS
+  portfolio.
+- An event-unavailable or shard-unavailable message removes the corresponding
+  observation from eligibility.
 
-For each inbound websocket message:
+## OMS invariants
 
-1. A frame slot is acquired by `IOWriter`
-2. The payload is copied once into the pool
-3. The same handle moves through router → shard → logger (or short-circuits to a producer-side recycle on router-drop / shard-drop paths)
-4. Whichever stage terminates the handle's journey pushes it to that stage's recycle SPSC (`recycle_from_logger` / `recycle_from_router` / `recycle_from_shards[i]`)
-5. The IO thread (`IOWriter`) must eventually drain all recycle SPSCs and call `FramePool::recycle()`
+- OMS is the only writer to group and order execution state.
+- Trading authorization and trading-session phase are checked before accepting
+  new risk.
+- A venue portfolio reconciliation is required when order REST is part of the
+  configured graph.
+- Reservation occurs before a venue command is published.
+- Terminal or repaired outcomes release/convert reservations through OMS.
+- Duplicate fills are idempotently ignored.
+- Transport acknowledgements do not override contradictory private-feed or
+  reconciliation evidence.
+- An incomplete multi-leg group is an execution incident; it is not reported
+  as an atomic success.
+- Repair attempts are bounded by configuration and remain visible in
+  telemetry.
+- Unknown or non-tradeable market targets fail closed.
 
-Every producer must recycle even after a write or apply failure so the pool does not silently lose capacity.
+## Operator and socket invariants
 
-## Message Classification Invariants
+- A file-backed config owns one deterministic socket path.
+- A sibling lock file prevents two processes from starting against that same
+  operator identity.
+- Only a verified stale Unix socket node may be removed before bind.
+- Client reads and writes are bounded and support partial progress, `EINTR`,
+  `EAGAIN`, timeout, hangup, and shutdown wakeup.
+- `predexctl` transport success is not the same as command acceptance; callers
+  must inspect the JSON response.
 
-The router classifies frames into one of three buckets:
-- shard-bound market data (trade, orderbook_delta, snapshot)
-- logger-only control-plane data (subscribed acknowledgements, lifecycle messages)
-- drop (unrecognized or filtered messages)
+## Shutdown invariants
 
-Logger-only frames must not force shard work. The shard should never receive a frame it cannot parse into a `NormalizedEvent`.
+For an operator-initiated routine stop:
 
-## Shard Invariants
+1. Disable new trading.
+2. Inspect live, pending, and uncertain OMS state.
+3. Cancel orders if required.
+4. Request graceful shutdown.
+5. Stop network producers and internal consumers.
+6. Stop the logger last so accepted handles can drain to tape.
 
-Each shard owns:
-- one `shard_input_queue`
-- one `shard_to_logger_queue`
-- one `shard_to_oms_intent_queue`
-- one `oms_to_shard_decision_queue`
-- one `oms_to_shard_lifecycle_queue`
-- one `shard_audit_queue`
-- one parser instance
-- one `EventStore` (containing `BookStore` instances and `EventDerivedState` per event)
-- one `ShardPipeline` (LocalRiskManager + strategies)
-- one `LocalRiskState`
+The process must never silently abandon an uncertain order or claim a clean
+flat shutdown solely because its local transport thread exited.
 
-The shard does not own the frame pool, logger queue backing storage, or OMS coordinator state.
+## Documentation rule
 
-The shard is responsible for:
-- Parsing `FrameHandle` into `NormalizedEvent`
-- Applying events to `EventStore` (books + derived topology state)
-- Running `ShardPipeline` on each applied event
-- Draining `oms_to_shard_decision_queue` and `oms_to_shard_lifecycle_queue` to update `LocalRiskState`
-- Forwarding the `FrameHandle` to `shard_to_logger_queue` after applying
-
-## OMS Invariants
-
-- `OrderStore` and `GlobalRisk` are single-writer: only the OMS coordinator thread modifies them during normal operation
-- `Oms::seed_reconciled_order()` is the designated pre-thread-start adoption path. It is currently uncalled — the future `adopt` mode of `oms_transport.startup_open_orders_policy` will call it before the OMS thread starts (see [[project_operational_modes]]).
-- `halt_mode_` is an `std::atomic<uint8_t>` — safe to read from any thread, written by `request_soft_halt()` and `request_hard_halt()`
-- A cancel-all-on-hard-halt sweep on the OMS thread is designed (guarded by `hard_halt_cancel_triggered_`) but not yet implemented. Today's discrete-session strategies leave no resting orders for it to clean up; the invariant is reserved for the long-range strategy landing.
-
-## Logger Invariants
-
-The logger is the terminal sink for raw payload persistence.
-
-It is responsible for:
-- Polling `router_to_logger_queue` and all `shard_to_logger_queue[i]`
-- Writing length-prefixed payloads to the binary tape file
-- Pushing `FrameHandle` instances to `recycle_from_logger` after writing
-
-The logger must not retain ownership of a handle after it finishes with the frame.
-
-## Audit Invariants
-
-The audit thread is the terminal sink for structured audit events. It polls `shard_audit_queue[i]` and `oms_audit_queue`, then writes `AuditEvent` records as JSONL. Audit writes are best-effort; audit queue overflow does not affect the market data pipeline.
-
-## Error And Shutdown Invariants
-
-Runtime shutdown is ordered to preserve data integrity:
-
-1. `request_hard_halt()` on OMS — blocks new submissions
-2. `running = false` — signals IO and pipeline threads
-3. IO thread join (closes public WS)
-4. Router thread join + drain
-5. Shard thread joins + drain
-6. OMS coordinator join (pumps until idle)
-7. OMS Gateway thread join
-8. Logger thread drain + join
-9. Audit thread drain + join
-
-When the cancel-all-on-hard-halt sweep lands (currently designed-not-wired), it will run on the OMS coordinator thread in response to `halt_mode_ == kHard` detected at the top of `pump()`. `App::Runtime::stop()` will continue to be its only trigger via `request_hard_halt()`; nothing else may invoke that path. A private-WS worker thread join will be added once that transport is wired.
-
-## Documentation Rule
-
-When the implementation changes, update this file and:
-- [Architecture](architecture.md)
-- [Data Contract](data_contract.md)
-- [OMS Design](oms_design.md)
-
-These docs are meant to stay aligned with the real runtime, not an aspirational design.
+When a component owner, queue direction, state transition, or failure scope
+changes, update this file together with [Architecture](architecture.md),
+[Data Contract](data_contract.md), and [OMS Design](oms_design.md).

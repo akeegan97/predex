@@ -93,7 +93,7 @@ Implemented and exercised:
 - Private order-feed parsing for orders, fills, and market positions
 - Runtime trading authorization and operator kill controls
 - Per-stage steady-clock latency histograms and component counters
-- Binary raw-feed capture and a separate C++/Python research toolchain
+- Binary raw-feed capture plus Python replay and materialization tooling
 
 Known limitations:
 
@@ -114,13 +114,12 @@ Known limitations:
 ```text
 cpp/apps/predex/       runtime composition root
 cpp/apps/predexctl/    local operator client
-cpp/apps/research/     historical replay and counterfactual research binary
 cpp/include/predex/    runtime interfaces and message contracts
 cpp/src/               runtime implementations
 cpp/tests/             C++ unit and component tests
 python/src/predex/     discovery, config generation, and replay tooling
-python/tests/          Python discovery and research tests
-scripts/               operator and research wrappers
+python/tests/tooling/  tests for the supported Python surface
+scripts/ops/           supported operator and replay wrappers
 docs/                  canonical design docs and historical artifacts
 ```
 
@@ -132,7 +131,6 @@ Prerequisites:
 - Ninja
 - Clang with C++20 support
 - vcpkg
-- `flex` and `bison` for the Arrow/Thrift dependency graph
 
 ```bash
 export VCPKG_ROOT=/path/to/vcpkg
@@ -155,16 +153,17 @@ dependencies:
 
 ```bash
 PYTHONPATH=python/src python3 -m unittest \
-  python.tests.test_env \
-  python.tests.test_discovery \
-  python.tests.test_replay
+  python.tests.tooling.test_env \
+  python.tests.tooling.test_discovery \
+  python.tests.tooling.test_replay
 ```
 
-The optional frozen research stack is installed with:
+Install the optional Arrow dependency for materialization and route-table
+rewrites with:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[research-ml]'
+.venv/bin/pip install -e '.[replay]'
 ```
 
 ## Generate a run configuration
@@ -174,7 +173,7 @@ discover open events, classify event topology, build stable IDs and shard
 affinity, and create a run directory containing the config and report.
 
 ```bash
-./scripts/predex \
+./scripts/ops/predex \
   --config-format app \
   --all-events \
   --include-topology monotonic_chain \
@@ -207,7 +206,7 @@ Each file-backed config receives a deterministic Unix socket path. Source the
 activation helper once so subsequent commands address the correct process:
 
 ```bash
-source scripts/predex-use runs/<run-name>
+source scripts/ops/predex-use runs/<run-name>
 
 ./build/perf/cpp/predexctl status
 ./build/perf/cpp/predexctl stats
@@ -267,14 +266,14 @@ durations inside one process and are intentionally not wall-clock timestamps.
 
 ## Research boundary
 
-The production runtime and historical research binary are separate targets.
-The research side reconstructs causal state from materialized runs, evaluates
-bounded counterfactual continuations, and writes versioned outputs. It does not
-share mutable production state or silently promote experimental models.
+The public Python surface ends at discovery, configuration, tape inspection,
+metadata enrichment, and materialization. Experimental models, cohorts, and
+counterfactual research remain in a local workspace and are intentionally not
+distributed by this repository. Their results do not silently promote a live
+controller or change runtime authorization.
 
-Start with [Research binary architecture](cpp/apps/research/README.md) for the
-current research ownership model and [Data Contract](docs/data_contract.md) for
-the boundary between recorded data and downstream analysis.
+See [Data Contract](docs/data_contract.md) for the boundary between recorded
+data and downstream analysis.
 
 ## Further documentation
 

@@ -23,7 +23,7 @@ invariant rather than presented as one undifferentiated feature diff.
 - [x] Clean CI-equivalent CMake configure with the vcpkg manifest
 - [x] Clean CI-equivalent C++ build
 - [x] `predex_tests` passes
-- [x] `predex_research_tests` passes
+- [x] The distributed C++ runtime test target passes
 - [x] Dependency-free Python operator/config suite passes
 - [x] Current app config example is valid JSON and reflects the live schema
 - [x] README names the current binaries and operator workflow
@@ -50,21 +50,21 @@ cmake --build --preset build-ci-vcpkg --parallel 2
 ctest --preset test-ci-vcpkg
 
 PYTHONPATH=python/src .venv/bin/python -m unittest \
-  python.tests.test_env \
-  python.tests.test_discovery \
-  python.tests.test_replay
+  python.tests.tooling.test_env \
+  python.tests.tooling.test_discovery \
+  python.tests.tooling.test_replay
 ```
 
 Observed result:
 
 ```text
-C++ build: 129/129 Ninja steps completed
-CTest: 2/2 test executables passed
-Python: 49 tests passed
+C++ build: completed
+CTest: distributed runtime test target passed
+Python: supported tooling suite passed
 ```
 
-The sanitizer preset also built successfully. All `301` C++ tests passed under
-ASan/UBSan with `ASAN_OPTIONS=detect_leaks=0`. LeakSanitizer itself cannot run
+The sanitizer preset also built successfully. The distributed runtime tests
+passed under ASan/UBSan with `ASAN_OPTIONS=detect_leaks=0`. LeakSanitizer itself cannot run
 inside the local ptrace-constrained environment and must be exercised on the
 GitHub runner.
 

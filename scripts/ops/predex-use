@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  echo "predex-use: this helper must be sourced: source scripts/predex-use <config-or-run-dir>" >&2
+  echo "predex-use: this helper must be sourced: source scripts/ops/predex-use <config-or-run-dir>" >&2
   exit 2
 fi
 
 _predex_use() {
   if (( $# != 1 )); then
-    echo "predex-use: usage: source scripts/predex-use <config-or-run-dir>" >&2
+    echo "predex-use: usage: source scripts/ops/predex-use <config-or-run-dir>" >&2
     return 2
   fi
 
   local root_dir
-  root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || return 1
+  root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || return 1
 
   local python_bin="python3"
   if [[ -x "$root_dir/.venv/bin/python" ]]; then

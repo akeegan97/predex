@@ -9,9 +9,6 @@
     "nlohmann-json",
     "gtest",
     "simdjson",
-    "spdlog",
-    {"name": "arrow",
-     "features" : ["parquet", "dataset", "filesystem", "csv", "json"]},
     {"name": "curl",
      "features": ["http2"]
     }

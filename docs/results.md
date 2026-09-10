@@ -123,25 +123,26 @@ configured strategy allocation remained `$5.00`.
 
 ## Local merge-gate rehearsal
 
-On the documentation/merge-preparation branch, the current CI-equivalent C++
-configure and build completed all `129` Ninja build steps. CTest then passed:
+On the documentation/merge-preparation branch, an index-only clean checkout
+configured and built the complete public C++ graph. CTest then passed:
 
 ```text
-predex_tests           passed
-predex_research_tests  passed
-2/2 tests passed
+predex_tests  passed
+1/1 distributed test executable passed
 ```
 
-The dependency-free Python operator/config subset passed `49` unit tests:
+The supported Python tooling suite passed `50` unit tests with the optional
+Arrow dependency installed. In the dependency-free CI environment, the one
+materialization test is skipped and the remaining `49` pass:
 
 ```text
-python.tests.test_env
-python.tests.test_discovery
-python.tests.test_replay
+python.tests.tooling.test_env
+python.tests.tooling.test_discovery
+python.tests.tooling.test_replay
 ```
 
-The ASan/UBSan preset built and all `301` C++ tests passed with local leak
-detection disabled. LeakSanitizer could not initialize under the development
+The ASan/UBSan preset built and the distributed runtime tests passed with local
+leak detection disabled. LeakSanitizer could not initialize under the development
 environment's ptrace restriction, so leak detection remains a separate clean-
 runner check rather than a claimed local pass.
 

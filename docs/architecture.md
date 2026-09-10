@@ -1,8 +1,8 @@
 # Runtime Architecture
 
 This document describes the runtime built by `cpp/apps/predex/main.cpp`. It is
-an implementation map, not an aspirational design. Experimental replay and
-controller work lives behind the separate `research` target.
+an implementation map, not an aspirational design. Experimental model and
+controller work remains outside the distributed runtime tree.
 
 ## Process topology
 

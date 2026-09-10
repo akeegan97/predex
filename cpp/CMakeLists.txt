@@ -7,6 +7,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 
+option(
+  PREDEX_BUILD_LOCAL_RESEARCH
+  "Build the local research tree, which is intentionally not distributed"
+  OFF
+)
+
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
@@ -102,18 +108,16 @@ add_executable(predex_tests
   tests/websocket_session_tests.cpp
 )
 
-add_subdirectory(apps/research)
-
-add_executable(predex_http_smoke
-  apps/testing/main.cpp
-  src/exchange/kalshi/adapters/auth_signer.cpp
-  src/exchange/kalshi/http2_session.cpp
-)
+if(PREDEX_BUILD_LOCAL_RESEARCH)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/apps/research/CMakeLists.txt")
+    message(FATAL_ERROR "PREDEX_BUILD_LOCAL_RESEARCH requires the local cpp/apps/research tree")
+  endif()
+  add_subdirectory(apps/research)
+endif()
 
 target_include_directories(predex_tests PRIVATE include)
 target_include_directories(predexctl PRIVATE include)
 target_include_directories(predex PRIVATE include)
-target_include_directories(predex_http_smoke PRIVATE include)
 target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(predex PRIVATE simdjson::simdjson)
@@ -129,5 +133,4 @@ target_link_libraries(predex_tests PRIVATE
   Boost::system
   nlohmann_json::nlohmann_json
 )
-target_link_libraries(predex_http_smoke PRIVATE OpenSSL::SSL OpenSSL::Crypto CURL::libcurl)
 add_test(NAME predex_tests COMMAND predex_tests)

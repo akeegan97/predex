@@ -41,7 +41,7 @@ def _require_pyarrow():
         import pyarrow.parquet as pq
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "materialization requires pyarrow; install the repo venv dependencies or run through ./scripts/predex"
+            "materialization requires pyarrow; install the replay extra or run through ./scripts/ops/predex"
         ) from exc
     return pa, pq
 

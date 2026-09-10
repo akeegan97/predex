@@ -1,13 +1,11 @@
 # Python Toolchain
 
-The Python package provides two operator-facing entry points and a larger
-optional research surface:
+The supported Python package provides two operator-facing entry points:
 
 - `predex` / `predex-discovery`: discover Kalshi events, classify topology,
   generate run configs, and materialize completed runs;
-- `predex-replay`: inspect a current tape/config, summarize a config, or enrich
-  historical run metadata;
-- modules and scripts for frozen offline research experiments.
+- `predex-replay`: inspect a current tape/config, summarize a config, enrich
+  historical run metadata, or materialize a completed run.
 
 The live process itself is C++. Python is not imported into the runtime hot
 path.
@@ -22,15 +20,16 @@ python3 -m predex.discovery --help
 python3 -m predex.replay --help
 ```
 
-For an installed command and the optional research/materialization stack:
+For installed commands with the optional Arrow materialization dependency:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[research-ml]'
+.venv/bin/pip install -e '.[replay]'
 ```
 
-`scripts/predex` loads the repository `.env` when present, prefers the installed
-`.venv/bin/predex`, and otherwise runs the source package with `PYTHONPATH`.
+`scripts/ops/predex` loads the repository `.env` when present, prefers the
+installed `.venv/bin/predex`, and otherwise runs the source package with
+`PYTHONPATH`.
 
 ## Generate the current C++ schema
 
@@ -40,7 +39,7 @@ The production binary consumes the `app` schema. Always pass
 Generate an explicit small universe:
 
 ```bash
-./scripts/predex \
+./scripts/ops/predex \
   --config-format app \
   --event-ticker KXEXAMPLE-26 \
   --enable-market-data \
@@ -51,7 +50,7 @@ Generate an explicit small universe:
 Generate a complete run bundle from open events:
 
 ```bash
-./scripts/predex \
+./scripts/ops/predex \
   --config-format app \
   --all-events \
   --include-topology monotonic_chain \
@@ -139,7 +138,7 @@ provided. The strategy additionally requires
 `--enable-monotonic-arb-strategy`.
 
 ```bash
-./scripts/predex \
+./scripts/ops/predex \
   --config-format app \
   --all-events \
   --include-topology monotonic_chain \
@@ -166,7 +165,7 @@ Stdout-only generation uses a random path because no file identity exists.
 After the process starts, source the helper once:
 
 ```bash
-source scripts/predex-use runs/<run-name>
+source scripts/ops/predex-use runs/<run-name>
 ```
 
 It resolves the config, validates `runtime.operator_socket_path`, and exports:
@@ -209,10 +208,10 @@ The reader rejects unknown magic/version values and truncated records.
 
 ## Materialize a completed run
 
-Materialization requires `pyarrow` from the optional research dependencies:
+Materialization requires `pyarrow` from the optional `replay` dependencies:
 
 ```bash
-./scripts/predex --materialize --path runs/<run-name>
+./scripts/ops/predex --materialize --path runs/<run-name>
 ```
 
 The streaming writer produces:
@@ -234,7 +233,7 @@ materialization verified. Compression and raw-tape removal are explicitly
 gated:
 
 ```bash
-./scripts/predex \
+./scripts/ops/predex \
   --materialize \
   --path runs/<run-name> \
   --compress-if-verified \
@@ -263,22 +262,18 @@ The dependency-free operator/config suite is:
 
 ```bash
 PYTHONPATH=python/src python3 -m unittest \
-  python.tests.test_env \
-  python.tests.test_discovery \
-  python.tests.test_replay
+  python.tests.tooling.test_env \
+  python.tests.tooling.test_discovery \
+  python.tests.tooling.test_replay
 ```
 
-Research tests require the frozen optional dependency set and should be run in
-the repository virtual environment. Large cohort experiments are not ordinary
-unit tests and should retain their frozen manifests, development/holdout
-boundaries, and explicit promotion gates.
+The CI job installs this supported package from a clean checkout before running
+the same tests and smoke-checking both console entry points.
 
 ## Research boundary
 
-Materialization produces causal input tables; it does not authorize a model or
-strategy. Research code must keep future-derived labels separate from causal
-features, preserve session-level holdouts, and report mechanical reproduction
-separately from economic or deployment conclusions.
-
-The C++ research ownership model is documented in
-[Research binary architecture](../cpp/apps/research/README.md).
+Materialization produces offline input tables; it does not authorize a model or
+strategy. Experimental model, cohort, and counterfactual code is kept in a
+separate local workspace and is not part of the distributed Python package.
+Research outputs must still preserve holdouts and report mechanical
+reproduction separately from economic or deployment conclusions.

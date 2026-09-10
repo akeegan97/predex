@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Repository sanity check
         run: |
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Detect CMake and vcpkg config
         id: detect_cmake
@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang clang-tidy flex bison
+          sudo apt-get install -y cmake ninja-build clang clang-tidy
 
       - name: Verify Ninja/CMake toolchain
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' }}
@@ -74,10 +74,10 @@ jobs:
 
       - name: Cache vcpkg artifacts
         if: ${{ steps.detect_cmake.outputs.has_cmake == 'true' && steps.detect_cmake.outputs.has_vcpkg == 'true' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
-            ${{ runner.temp }}/vcpkg/downloads
+            ${{ runner.temp }}/vcpkg-downloads
             ${{ github.workspace }}/.vcpkg_installed
           key: ${{ runner.os }}-vcpkg-${{ hashFiles('cpp/vcpkg.json') }}
           restore-keys: |
@@ -94,6 +94,7 @@ jobs:
           git -C "$RUNNER_TEMP/vcpkg" checkout 1e199d32ad53aab1defda61ce41c380302e3f95c
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          echo "VCPKG_DOWNLOADS=$RUNNER_TEMP/vcpkg-downloads" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/vcpkg" >> "$GITHUB_PATH"
 
       - name: Configure (CMake)
@@ -190,24 +191,29 @@ jobs:
             --warnings-as-errors='*' \
             "${cpp_files[@]}"
 
-  python-operator-tests:
-    name: Python operator/config tests
+  python-tooling-tests:
+    name: Python tooling + package tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Test dependency-free Python surface
+      - name: Install supported Python package
+        run: python -m pip install --no-deps .
+
+      - name: Test supported Python surface
         env:
           PYTHONPATH: python/src
         run: |
           set -euo pipefail
           python -m unittest \
-            python.tests.test_env \
-            python.tests.test_discovery \
-            python.tests.test_replay
+            python.tests.tooling.test_env \
+            python.tests.tooling.test_discovery \
+            python.tests.tooling.test_replay
+          predex --help >/dev/null
+          predex-replay --help >/dev/null

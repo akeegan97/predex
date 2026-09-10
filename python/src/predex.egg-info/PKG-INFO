@@ -1,5 +1,0 @@
-Metadata-Version: 2.4
-Name: predex
-Version: 0.1.0
-Summary: Python discovery and config synthesis tooling for Predex
-Requires-Python: >=3.11

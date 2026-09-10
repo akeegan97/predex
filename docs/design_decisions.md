@@ -153,15 +153,17 @@ Generated file-backed configs receive a deterministic socket path and the
 server takes a sibling lock before binding. Starting a second process with the
 same config fails instead of stealing the operator endpoint.
 
-`scripts/predex-use` makes repeated terminal commands convenient by exporting
+`scripts/ops/predex-use` makes repeated terminal commands convenient by exporting
 the config's socket path. `--socket` remains the explicit override for scripts
 that require maximum targeting clarity.
 
-## Separate production and research binaries
+## Keep local research outside the distributed runtime
 
 The production target does not link the historical replay/controller stack.
-Research owns Parquet, simulation, counterfactual branching, and frozen model
-artifacts behind a separate target and test binary.
+The public repository provides tape materialization as an input boundary, while
+experimental simulation, counterfactual branching, models, and frozen cohorts
+remain in a local research workspace. CMake can opt into that tree explicitly
+when it is present, but the distributed build never requires it.
 
 This preserves a hard promotion boundary: deterministic or predictive research
 success does not silently add a model to the live dependency graph.

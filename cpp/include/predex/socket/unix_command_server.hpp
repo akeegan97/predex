@@ -35,7 +35,7 @@ namespace predex::socket{
             UnixCommandServer(UnixCommandServer&&) = delete;
             UnixCommandServer& operator=(UnixCommandServer&&) = delete;
 
-            void run(const std::stop_token& stop_token, std::string& error_out, ServerReadyCallback on_ready);
+            void run(const std::stop_token& stop_token, std::string& error_out, const ServerReadyCallback& on_ready);
 
         private:
             ICommandHandler* command_handler_{nullptr};

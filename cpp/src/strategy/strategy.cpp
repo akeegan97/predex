@@ -33,9 +33,9 @@ namespace {
 
 namespace predex::strategy {
 
-MonotonicArbStrategy::MonotonicArbStrategy(std::uint16_t strategy_index, //NOLINT -- suppress warning for easily swapped params
-                                           std::uint64_t active_universe_version,
-                                           MonotonicArbStrategyConfig config, StrategyQueues queues)
+MonotonicArbStrategy::MonotonicArbStrategy(
+    std::uint16_t strategy_index, // NOLINT -- suppress warning for easily swapped params
+    std::uint64_t active_universe_version, MonotonicArbStrategyConfig config, StrategyQueues queues)
     : strategy_index_(strategy_index), active_universe_version_(active_universe_version),
       config_(config), queues_(std::move(queues)) {
     if (active_universe_version_ == 0 || config_.strategy_id == 0 ||
@@ -87,13 +87,13 @@ MonotonicArbStrategy::shard_input_stats() const noexcept {
     return shard_input_stats_;
 }
 
-StrategyPumpResult //NOLINTNEXTLINE - bugprone-exception-escape guaranteed to not throw regardless of std::visits throw-ness
+StrategyPumpResult // NOLINTNEXTLINE - bugprone-exception-escape guaranteed to not throw
 MonotonicArbStrategy::dispatch_message(std::size_t input_index,
                                        const ShardToStrategyMessage& message,
                                        std::uint64_t dequeue_timestamp_ns) noexcept {
     ++stats_.messages_seen;
     ++shard_input_stats_[input_index].messages_seen;
-    
+
     assert(!message.valueless_by_exception());
 
     return std::visit(
@@ -103,10 +103,10 @@ MonotonicArbStrategy::dispatch_message(std::size_t input_index,
         message);
 }
 
-bool MonotonicArbStrategy::message_matches_input(std::size_t input_index,
-                                                 std::uint32_t message_shard_index, //NOLINT -- suppress warning for easily swapped params
-                                                 std::uint64_t message_universe_version,
-                                                 StrategyPumpResult& result) noexcept {
+bool MonotonicArbStrategy::message_matches_input(
+    std::size_t input_index,
+    std::uint32_t message_shard_index, // NOLINT -- suppress warning for easily swapped params
+    std::uint64_t message_universe_version, StrategyPumpResult& result) noexcept {
     result.source_shard_index = message_shard_index;
     if (input_index >= queues_.shard_inputs.size() ||
         queues_.shard_inputs[input_index].shard_index != message_shard_index) {
@@ -218,10 +218,11 @@ MonotonicArbStrategy::handle_message(std::size_t input_index,
     }
 
     result.candidate = evaluation.candidate;
-    
+
     ++stats_.candidates_found;
-    
-    const auto& candidate = *evaluation.candidate; //NOLINT - bugprone-unchecked-optional-access checked above with .accepted() 211
+
+    const auto& candidate = *evaluation.candidate; // NOLINT - bugprone-unchecked-optional-access
+                                                   // checked above with .accepted() 211
 
     const auto required_capital = required_capital_ticks(candidate);
     if (!required_capital.has_value()) {
@@ -314,13 +315,16 @@ MonotonicArbStrategy::handle_message(std::size_t input_index,
     return result;
 }
 
-StrategyPumpResult
-MonotonicArbStrategy::handle_oms_message(const oms::OmsToStrategyMessage& message) noexcept { //NOLINT -- suppress warning for cognitively complex function due to the lambda call inside
+StrategyPumpResult MonotonicArbStrategy::handle_oms_message( // NOLINT -- suppress warning for
+                                                             // cognitively complex function due to
+                                                             // the lambda call inside
+    const oms::OmsToStrategyMessage& message) noexcept {
     StrategyPumpResult result{.code = StrategyPumpCode::kOMS_MESSAGE_HANDLED};
     ++stats_.oms_messages_seen;
 
     std::visit(
-        [this, &result](const auto& item) { //NOLINT -- suppress warning for cognitively complex lambda
+        [this, // NOLINT -- suppress warning for cognitively complex lambda
+         &result](const auto& item) {
             using T = std::decay_t<decltype(item)>;
             if constexpr (std::is_same_v<T, oms::StrategyPortfolioUpdate>) {
                 if (item.strategy_index != strategy_index_) {
@@ -479,26 +483,27 @@ MonotonicArbStrategy::make_group_intent(const MonotonicArbCandidate& candidate,
         .intent_publish_timestamp_ns = intent_publish_timestamp_ns,
     };
 
-    auto make_leg = [&](const MonotonicArbLeg& candidate_leg, 
-        std::uint8_t leg_index,//NOLINT -- suppress warning for easily swapped params 
-        std::uint32_t strategy_intent_id
-    ) {
-        auto context = group_context;
-        context.market_id = candidate_leg.market_id;
-        context.strategy_intent_id = strategy_intent_id;
-        context.leg_index = leg_index;
-        return oms::intent::NewOrderIntent{
-            .context = context,
-            .outcome = oms::intent::Outcome::kYES,
-            .action = candidate_leg.action == ArbAction::kBUY_YES ? oms::intent::OrderAction::kBUY
-                                                                  : oms::intent::OrderAction::kSELL,
-            .liquidity_intent = oms::intent::LiquidityIntent::kTAKER,
-            .order_type = oms::intent::OrderType::kMARKETABLE_LIMIT,
-            .time_in_force = oms::intent::TimeInForce::kFOK,
-            .price_ticks = static_cast<std::int64_t>(candidate_leg.limit_price_ticks),
-            .quantity_lots = static_cast<std::int64_t>(candidate_leg.quantity_lots),
+    auto make_leg =
+        [&](const MonotonicArbLeg& candidate_leg,
+            std::uint8_t leg_index, // NOLINT -- suppress warning for easily swapped params
+            std::uint32_t strategy_intent_id) {
+            auto context = group_context;
+            context.market_id = candidate_leg.market_id;
+            context.strategy_intent_id = strategy_intent_id;
+            context.leg_index = leg_index;
+            return oms::intent::NewOrderIntent{
+                .context = context,
+                .outcome = oms::intent::Outcome::kYES,
+                .action = candidate_leg.action == ArbAction::kBUY_YES
+                              ? oms::intent::OrderAction::kBUY
+                              : oms::intent::OrderAction::kSELL,
+                .liquidity_intent = oms::intent::LiquidityIntent::kTAKER,
+                .order_type = oms::intent::OrderType::kMARKETABLE_LIMIT,
+                .time_in_force = oms::intent::TimeInForce::kFOK,
+                .price_ticks = static_cast<std::int64_t>(candidate_leg.limit_price_ticks),
+                .quantity_lots = static_cast<std::int64_t>(candidate_leg.quantity_lots),
+            };
         };
-    };
 
     oms::intent::GroupOrderIntent intent{
         .context = group_context,

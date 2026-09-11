@@ -2,44 +2,44 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
+#include <curl/curl.h>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
-#include <cstdlib>
-#include <optional>
-#include <ranges>
-#include <future>
-#include <curl/curl.h>
 
 #include "predex/config/app_config.hpp"
 #include "predex/config/universe_builder.hpp"
 #include "predex/control/control_plane.hpp"
-#include "predex/ingest/kalshi/market_data/frame_pool.hpp"
-#include "predex/ingest/kalshi/order_data/order_session.hpp"
-#include "predex/operator/operator_command_handler.hpp"
-#include "predex/oms/oms.hpp"
-#include "predex/router/router.hpp"
-#include "predex/shard/shard.hpp"
-#include "predex/socket/unix_command_server.hpp"
-#include "predex/utils/spsc.hpp"
-#include "predex/utils/idle_backoff.hpp"
-#include "predex/logging/market_data_logger.hpp"
 #include "predex/exchange/kalshi/adapters/auth_signer.hpp"
 #include "predex/exchange/kalshi/adapters/market_data_handler.hpp"
 #include "predex/exchange/kalshi/adapters/order_data_handler.hpp"
 #include "predex/exchange/kalshi/adapters/order_rest_adapter.hpp"
 #include "predex/exchange/kalshi/http2_session.hpp"
 #include "predex/exchange/kalshi/order_rest_session.hpp"
+#include "predex/ingest/kalshi/market_data/frame_pool.hpp"
 #include "predex/ingest/kalshi/market_data/wire_session.hpp"
-#include "predex/strategy/strategy_types.hpp"
+#include "predex/ingest/kalshi/order_data/order_session.hpp"
+#include "predex/logging/market_data_logger.hpp"
+#include "predex/oms/oms.hpp"
+#include "predex/operator/operator_command_handler.hpp"
+#include "predex/router/router.hpp"
+#include "predex/shard/shard.hpp"
+#include "predex/socket/unix_command_server.hpp"
 #include "predex/strategy/strategy.hpp"
+#include "predex/strategy/strategy_types.hpp"
+#include "predex/utils/idle_backoff.hpp"
+#include "predex/utils/spsc.hpp"
 
 namespace {
 
@@ -82,10 +82,10 @@ using KalshiToOmsQueue = utils::SPSCQueue<oms::KalshiToOmsEvent>;
 using ControlToOrderRestQueue = utils::SPSCQueue<control::ControlToOrderRestCommand>;
 using OrderRestToControlStatusQueue = utils::SPSCQueue<control::OrderRestToControlStatus>;
 using ControlToPrivateOrderFeedQueue = utils::SPSCQueue<control::ControlToPrivateOrderFeedCommand>;
-using PrivateOrderFeedToControlStatusQueue = utils::SPSCQueue<control::PrivateOrderFeedToControlStatus>;
+using PrivateOrderFeedToControlStatusQueue =
+    utils::SPSCQueue<control::PrivateOrderFeedToControlStatus>;
 using FrameHandle = predex::ingest::kalshi::FrameHandle;
-using ShardToStrategyQueue =
-    utils::SPSCQueue<predex::strategy::ShardToStrategyMessage>;
+using ShardToStrategyQueue = utils::SPSCQueue<predex::strategy::ShardToStrategyMessage>;
 using FrameHandleQueue = utils::SPSCQueue<FrameHandle>;
 using MarketDataPathMessageQueue = utils::SPSCQueue<MarketDataPathMessage>;
 using FramePool = predex::ingest::kalshi::FramePool;
@@ -97,17 +97,13 @@ struct CurlGlobalGuard {
         }
     }
 
-    ~CurlGlobalGuard() {
-        curl_global_cleanup();
-    }
+    ~CurlGlobalGuard() { curl_global_cleanup(); }
 
     CurlGlobalGuard(const CurlGlobalGuard&) = delete;
     CurlGlobalGuard& operator=(const CurlGlobalGuard&) = delete;
 };
 
-void signal_handler(int /*signal_number*/) {
-    g_signal_stop_requested.store(true);
-}
+void signal_handler(int /*signal_number*/) { g_signal_stop_requested.store(true); }
 
 void install_signal_handlers() {
     std::signal(SIGINT, signal_handler);
@@ -142,35 +138,31 @@ kalshi_exchange::Credentials make_kalshi_credentials(const config::KalshiAuthCon
     };
 }
 
-kalshi_exchange::KalshiMarketDataHandler make_market_data_handler(
-    const config::KalshiAuthConfig& auth_config
-) {
+kalshi_exchange::KalshiMarketDataHandler
+make_market_data_handler(const config::KalshiAuthConfig& auth_config) {
     kalshi_exchange::Credentials credentials = make_kalshi_credentials(auth_config);
 
     return kalshi_exchange::KalshiMarketDataHandler{
-        kalshi_exchange::AuthSigner{std::move(credentials)}
-    };
+        kalshi_exchange::AuthSigner{std::move(credentials)}};
 }
 
-kalshi_exchange::KalshiOrderDataHandler make_order_data_handler(
-    const config::KalshiAuthConfig& auth_config
-) {
+kalshi_exchange::KalshiOrderDataHandler
+make_order_data_handler(const config::KalshiAuthConfig& auth_config) {
     kalshi_exchange::Credentials credentials = make_kalshi_credentials(auth_config);
 
     return kalshi_exchange::KalshiOrderDataHandler{
-        kalshi_exchange::AuthSigner{std::move(credentials)}
-    };
+        kalshi_exchange::AuthSigner{std::move(credentials)}};
 }
 
-kalshi_exchange::Http2Session make_http_session(
-    const config::KalshiAuthConfig& auth_config,
-    const config::KalshiOrderRestConfig& order_rest_config
-) {
+kalshi_exchange::Http2Session
+make_http_session(const config::KalshiAuthConfig& auth_config,
+                  const config::KalshiOrderRestConfig& order_rest_config) {
     kalshi_exchange::Http2SessionConfig http_config{};
-    if(!order_rest_config.endpoint.empty()){
+    if (!order_rest_config.endpoint.empty()) {
         http_config.endpoint = order_rest_config.endpoint;
     }
-    http_config.max_concurrent_streams = static_cast<std::uint16_t>(order_rest_config.max_concurrent_streams);
+    http_config.max_concurrent_streams =
+        static_cast<std::uint16_t>(order_rest_config.max_concurrent_streams);
 
     return kalshi_exchange::Http2Session{
         kalshi_exchange::AuthSigner{make_kalshi_credentials(auth_config)},
@@ -179,9 +171,8 @@ kalshi_exchange::Http2Session make_http_session(
 }
 
 control::RequiredComponents make_required_components(const config::AppConfig& app_config) {
-    const bool order_graph_enabled =
-        app_config.kalshi.order_rest.enable_order_rest ||
-        app_config.kalshi.private_order_feed.enable_private_order_feed;
+    const bool order_graph_enabled = app_config.kalshi.order_rest.enable_order_rest ||
+                                     app_config.kalshi.private_order_feed.enable_private_order_feed;
 
     return control::RequiredComponents{
         .market_data = app_config.kalshi.market_data.enable_market_data,
@@ -193,7 +184,8 @@ control::RequiredComponents make_required_components(const config::AppConfig& ap
     };
 }
 
-control::SyntheticTradingSessionConfig make_synthetic_session_config(const config::RuntimeConfig& runtime_config) {
+control::SyntheticTradingSessionConfig
+make_synthetic_session_config(const config::RuntimeConfig& runtime_config) {
     constexpr std::uint64_t kNsPerSecond = 1'000'000'000ULL;
     return control::SyntheticTradingSessionConfig{
         .enabled = runtime_config.synthetic_trading_session_enabled,
@@ -235,19 +227,23 @@ struct AppQueues {
         shard_to_strategy.reserve(runtime_config.shard_count);
 
         strategy_to_oms.push_back(
-            std::make_unique<StrategyIntentQueue>(
-                runtime_config.shard_queue_capacity));
+            std::make_unique<StrategyIntentQueue>(runtime_config.shard_queue_capacity));
         oms_to_strategy.push_back(
-            std::make_unique<OmsToStrategyQueue>(
-                runtime_config.shard_queue_capacity));
+            std::make_unique<OmsToStrategyQueue>(runtime_config.shard_queue_capacity));
 
         for (std::size_t shard_index = 0; shard_index < runtime_config.shard_count; ++shard_index) {
-            control_to_shard.push_back(std::make_unique<ControlToShardQueue>(runtime_config.shard_queue_capacity));
-            shard_to_control.push_back(std::make_unique<ShardToControlQueue>(runtime_config.shard_queue_capacity));
-            router_to_shard.push_back(std::make_unique<RouterToShardQueue>(runtime_config.shard_queue_capacity));
-            shard_to_logger.push_back(std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
-            shard_recycle.push_back(std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
-            shard_to_strategy.push_back(std::make_unique<ShardToStrategyQueue>(runtime_config.shard_queue_capacity));
+            control_to_shard.push_back(
+                std::make_unique<ControlToShardQueue>(runtime_config.shard_queue_capacity));
+            shard_to_control.push_back(
+                std::make_unique<ShardToControlQueue>(runtime_config.shard_queue_capacity));
+            router_to_shard.push_back(
+                std::make_unique<RouterToShardQueue>(runtime_config.shard_queue_capacity));
+            shard_to_logger.push_back(
+                std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
+            shard_recycle.push_back(
+                std::make_unique<FrameHandleQueue>(runtime_config.router_queue_capacity));
+            shard_to_strategy.push_back(
+                std::make_unique<ShardToStrategyQueue>(runtime_config.shard_queue_capacity));
         }
     }
 
@@ -350,20 +346,21 @@ operator_admin::ControlQueues make_operator_handler_queues(AppQueues& queues) {
     };
 }
 
-predex::router::RouterQueues make_router_queues(AppQueues& queues){
+predex::router::RouterQueues make_router_queues(AppQueues& queues) {
     predex::router::RouterQueues router_queues;
     router_queues.router_to_control_queue = &queues.router_to_control;
     router_queues.router_to_logger_queue = &queues.router_to_logger;
     router_queues.last_resort_recycle_queue = &queues.router_recycle;
 
-    for (const auto& shard_index : std::views::iota(std::size_t{0}, queues.router_to_shard.size())) {
+    for (const auto& shard_index :
+         std::views::iota(std::size_t{0}, queues.router_to_shard.size())) {
         router_queues.router_to_shard_queues.push_back(queues.router_to_shard[shard_index].get());
     }
 
     return router_queues;
 }
 
-oms::OmsQueues make_oms_queues(AppQueues& queues){
+oms::OmsQueues make_oms_queues(AppQueues& queues) {
     oms::OmsQueues oms_queues{
         .control_command_queue = queues.control_to_oms,
         .oms_status_queue = queues.oms_to_control_status,
@@ -372,10 +369,10 @@ oms::OmsQueues make_oms_queues(AppQueues& queues){
 
     oms_queues.strategy_intent_queues.reserve(queues.strategy_to_oms.size());
     oms_queues.strategy_response_queues.reserve(queues.oms_to_strategy.size());
-    for(const auto& strategy_queue : queues.strategy_to_oms){
+    for (const auto& strategy_queue : queues.strategy_to_oms) {
         oms_queues.strategy_intent_queues.push_back(strategy_queue.get());
     }
-    for(const auto& response_queue : queues.oms_to_strategy){
+    for (const auto& response_queue : queues.oms_to_strategy) {
         oms_queues.strategy_response_queues.push_back(response_queue.get());
     }
 
@@ -385,46 +382,44 @@ oms::OmsQueues make_oms_queues(AppQueues& queues){
     return oms_queues;
 }
 
-strategy::StrategyQueues make_strategy_queues(AppQueues& queues){
+strategy::StrategyQueues make_strategy_queues(AppQueues& queues) {
     strategy::StrategyQueues strategy_queues{
         .strategy_to_oms_queue = queues.strategy_to_oms.front().get(),
         .oms_to_strategy_queue = queues.oms_to_strategy.front().get(),
     };
     strategy_queues.shard_inputs.reserve(queues.shard_to_strategy.size());
-    for(std::size_t shard_index = 0;
-        shard_index < queues.shard_to_strategy.size();
-        ++shard_index){
-        strategy_queues.shard_inputs.push_back(
-            strategy::StrategyShardInput{
-                .shard_index = static_cast<std::uint32_t>(shard_index),
-                .queue = queues.shard_to_strategy[shard_index].get(),
-            });
+    for (std::size_t shard_index = 0; shard_index < queues.shard_to_strategy.size();
+         ++shard_index) {
+        strategy_queues.shard_inputs.push_back(strategy::StrategyShardInput{
+            .shard_index = static_cast<std::uint32_t>(shard_index),
+            .queue = queues.shard_to_strategy[shard_index].get(),
+        });
     }
     return strategy_queues;
 }
 
-kalshi_exchange::OrderRestControlQueues make_order_rest_control_queues(AppQueues& queues){
+kalshi_exchange::OrderRestControlQueues make_order_rest_control_queues(AppQueues& queues) {
     return kalshi_exchange::OrderRestControlQueues{
         .control_to_order_rest_queue = queues.control_to_order_rest,
         .order_rest_to_control_queue = queues.order_rest_to_control_status,
     };
 }
 
-kalshi_exchange::OrderRestOmsQueues make_order_rest_oms_queues(AppQueues& queues){
+kalshi_exchange::OrderRestOmsQueues make_order_rest_oms_queues(AppQueues& queues) {
     return kalshi_exchange::OrderRestOmsQueues{
         .oms_to_order_rest_queue = queues.oms_to_order_rest,
         .order_rest_to_oms_queue = queues.order_rest_to_oms,
     };
 }
 
-order_data::OrderSessionControlQueues make_order_session_control_queues(AppQueues& queues){
+order_data::OrderSessionControlQueues make_order_session_control_queues(AppQueues& queues) {
     return order_data::OrderSessionControlQueues{
         .control_to_order_session_queue = queues.control_to_private_order_feed,
         .order_session_to_control_queue = queues.private_order_feed_to_control_status,
     };
 }
 
-order_data::OrderSessionOmsQueues make_order_session_oms_queues(AppQueues& queues){
+order_data::OrderSessionOmsQueues make_order_session_oms_queues(AppQueues& queues) {
     return order_data::OrderSessionOmsQueues{
         .private_ws_to_oms_queue = queues.private_order_feed_to_oms,
     };
@@ -477,11 +472,13 @@ struct ServerThreadState {
     std::atomic<bool> failed{false};
 };
 
-std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThreadState& state, std::promise<ServerStartupResult>&& startup_promise) {
-    return std::jthread([&server, &state, startup_promise = std::move(startup_promise)](const std::stop_token& stop_token) mutable {
+std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThreadState& state,
+                                 std::promise<ServerStartupResult>&& startup_promise) {
+    return std::jthread([&server, &state, startup_promise = std::move(startup_promise)](
+                            const std::stop_token& stop_token) mutable {
         bool ready_reported = false;
         std::string local_error;
-        try{
+        try {
             server.run(stop_token, local_error, [&] {
                 ready_reported = true;
                 startup_promise.set_value({
@@ -489,18 +486,17 @@ std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThread
                     .error = "",
                 });
             });
-        }catch(const std::exception& e) {
+        } catch (const std::exception& e) {
             local_error = std::string{"operator sever exception: "} + e.what();
-        }catch(...) {
+        } catch (...) {
             local_error = "operator server exception: unknown error";
         }
 
         if (!ready_reported) {
             startup_promise.set_value({
                 .ready = false,
-                .error = local_error.empty()
-                    ? "operator server exited before becoming ready"
-                    : std::move(local_error),
+                .error = local_error.empty() ? "operator server exited before becoming ready"
+                                             : std::move(local_error),
             });
             return;
         }
@@ -513,103 +509,90 @@ std::jthread start_server_thread(socket::UnixCommandServer& server, ServerThread
     });
 }
 
-std::jthread start_router_thread(
-    router::Router& router_instance,
-    MarketDataPathMessageQueue& input_queue,
-    utils::IdleBackoffConfig polling_config) {
-    return std::jthread([&router_instance, &input_queue, polling_config](const std::stop_token& stop_token) {
-        utils::IdleBackoff idle_backoff{polling_config};
-        MarketDataPathMessage message{};
-        while (!stop_token.stop_requested()) {
-            const auto pending_result = router_instance.flush_pending_barrier();
-            if (pending_result == router::RouterRouteResult::kFAULTED) {
-                break;
-            }
-            if (pending_result == router::RouterRouteResult::kBLOCKED) {
-                idle_backoff.idle();
-                continue;
-            }
-            if (input_queue.try_pop(message)) {
-                idle_backoff.reset();
-                const auto route_result = router_instance.route_message(message);
-                if (route_result == router::RouterRouteResult::kFAULTED) {
+std::jthread start_router_thread(router::Router& router_instance,
+                                 MarketDataPathMessageQueue& input_queue,
+                                 utils::IdleBackoffConfig polling_config) {
+    return std::jthread(
+        [&router_instance, &input_queue, polling_config](const std::stop_token& stop_token) {
+            utils::IdleBackoff idle_backoff{polling_config};
+            MarketDataPathMessage message{};
+            while (!stop_token.stop_requested()) {
+                const auto pending_result = router_instance.flush_pending_barrier();
+                if (pending_result == router::RouterRouteResult::kFAULTED) {
                     break;
                 }
-            } else {
-                idle_backoff.idle();
+                if (pending_result == router::RouterRouteResult::kBLOCKED) {
+                    idle_backoff.idle();
+                    continue;
+                }
+                if (input_queue.try_pop(message)) {
+                    idle_backoff.reset();
+                    const auto route_result = router_instance.route_message(message);
+                    if (route_result == router::RouterRouteResult::kFAULTED) {
+                        break;
+                    }
+                } else {
+                    idle_backoff.idle();
+                }
             }
-        }
-    });
+        });
 }
 
-std::jthread start_shard_thread(
-    shard::Shard& shard_instance,
-    utils::IdleBackoffConfig polling_config) {
+std::jthread start_shard_thread(shard::Shard& shard_instance,
+                                utils::IdleBackoffConfig polling_config) {
     return std::jthread([&shard_instance, polling_config](const std::stop_token& stop_token) {
         utils::IdleBackoff idle_backoff{polling_config};
         while (!stop_token.stop_requested()) {
-            const auto commands_processed =
-                shard_instance.drain_control_commands(64); //NOLINT: arbitrary max commands to process per iteration
+            const auto commands_processed = shard_instance.drain_control_commands(
+                64); // NOLINT: arbitrary max commands to process per iteration
             shard_instance.maybe_send_telemetry();
             const auto result = shard_instance.pump_once();
-            switch(result.code){
-                case shard::ShardPumpCode::kIDLE:
-                case shard::ShardPumpCode::kAPPLIED:
-                case shard::ShardPumpCode::kEVENT_IGNORED:
-                case shard::ShardPumpCode::kMARKET_BARRIER_HANDLED:
-                case shard::ShardPumpCode::kSUBSCRIPTION_BARRIER_HANDLED:
-                case shard::ShardPumpCode::kDRAINED_FRAME:
-                case shard::ShardPumpCode::kDRAIN_COMPLETE:
-                    break;
+            switch (result.code) {
+            case shard::ShardPumpCode::kIDLE:
+            case shard::ShardPumpCode::kAPPLIED:
+            case shard::ShardPumpCode::kEVENT_IGNORED:
+            case shard::ShardPumpCode::kMARKET_BARRIER_HANDLED:
+            case shard::ShardPumpCode::kSUBSCRIPTION_BARRIER_HANDLED:
+            case shard::ShardPumpCode::kDRAINED_FRAME:
+            case shard::ShardPumpCode::kDRAIN_COMPLETE:
+                break;
 
-                case shard::ShardPumpCode::kPARSE_REJECTED:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " parse failure: "
-                            << static_cast<std::uint32_t>(result.parse_result.reason)
-                            << '\n';
-                    break;
+            case shard::ShardPumpCode::kPARSE_REJECTED:
+                std::cerr << "Shard " << shard_instance.shard_index() << " parse failure: "
+                          << static_cast<std::uint32_t>(result.parse_result.reason) << '\n';
+                break;
 
-                case shard::ShardPumpCode::kEVENT_REJECTED:
-                case shard::ShardPumpCode::kEVENT_DESYNCED:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " event apply failure: "
-                            << static_cast<std::uint32_t>(result.event_result.reason)
-                            << '\n';
-                    break;
-                case shard::ShardPumpCode::kINTEGRITY_BARRIER_REJECTED:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " integrity barrier apply failure: "
-                            << static_cast<std::uint32_t>(result.event_result.reason)
-                            << '\n';
-                    break;
-                case shard::ShardPumpCode::kFRAME_ROUTE_REJECTED:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " frame routing identity rejected\n";
-                    break;
-                case shard::ShardPumpCode::kMISSING_FRAME:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " missing frame: "
-                            << static_cast<std::uint32_t>(result.event_result.reason)
-                            << '\n';
-                    break;
-                case shard::ShardPumpCode::kHANDLE_LEAK:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " handle leak: "
-                            << static_cast<std::uint32_t>(result.event_result.reason)
-                            << '\n';
-                    break;
-                default:
-                    std::cerr << "Shard " << shard_instance.shard_index()
-                            << " pump result: "
-                            << static_cast<std::uint32_t>(result.code)
-                            << '\n';
-                    break;
+            case shard::ShardPumpCode::kEVENT_REJECTED:
+            case shard::ShardPumpCode::kEVENT_DESYNCED:
+                std::cerr << "Shard " << shard_instance.shard_index() << " event apply failure: "
+                          << static_cast<std::uint32_t>(result.event_result.reason) << '\n';
+                break;
+            case shard::ShardPumpCode::kINTEGRITY_BARRIER_REJECTED:
+                std::cerr << "Shard " << shard_instance.shard_index()
+                          << " integrity barrier apply failure: "
+                          << static_cast<std::uint32_t>(result.event_result.reason) << '\n';
+                break;
+            case shard::ShardPumpCode::kFRAME_ROUTE_REJECTED:
+                std::cerr << "Shard " << shard_instance.shard_index()
+                          << " frame routing identity rejected\n";
+                break;
+            case shard::ShardPumpCode::kMISSING_FRAME:
+                std::cerr << "Shard " << shard_instance.shard_index() << " missing frame: "
+                          << static_cast<std::uint32_t>(result.event_result.reason) << '\n';
+                break;
+            case shard::ShardPumpCode::kHANDLE_LEAK:
+                std::cerr << "Shard " << shard_instance.shard_index() << " handle leak: "
+                          << static_cast<std::uint32_t>(result.event_result.reason) << '\n';
+                break;
+            default:
+                std::cerr << "Shard " << shard_instance.shard_index()
+                          << " pump result: " << static_cast<std::uint32_t>(result.code) << '\n';
+                break;
             }
 
-            if (result.code == shard::ShardPumpCode::kIDLE &&
-                commands_processed == 0) {
+            if (result.code == shard::ShardPumpCode::kIDLE && commands_processed == 0) {
                 idle_backoff.idle();
-            }else{
+            } else {
                 idle_backoff.reset();
             }
         }
@@ -617,15 +600,13 @@ std::jthread start_shard_thread(
 }
 
 std::jthread start_wire_session_thread(market_data::KalshiWireSession& wire_session) {
-    return std::jthread([&wire_session](const std::stop_token& stop_token) {
-        wire_session.run(stop_token);
-    });
+    return std::jthread(
+        [&wire_session](const std::stop_token& stop_token) { wire_session.run(stop_token); });
 }
 
 std::jthread start_private_order_feed_thread(order_data::KalshiOrderSession& order_session) {
-    return std::jthread([&order_session](const std::stop_token& stop_token) {
-        order_session.run(stop_token);
-    });
+    return std::jthread(
+        [&order_session](const std::stop_token& stop_token) { order_session.run(stop_token); });
 }
 
 std::jthread start_order_rest_thread(kalshi_exchange::OrderRestSession& order_rest_session) {
@@ -634,53 +615,48 @@ std::jthread start_order_rest_thread(kalshi_exchange::OrderRestSession& order_re
     });
 }
 
-std::jthread start_oms_thread(
-    oms::Oms& oms_instance,
-    utils::IdleBackoffConfig polling_config) {
+std::jthread start_oms_thread(oms::Oms& oms_instance, utils::IdleBackoffConfig polling_config) {
     return std::jthread([&oms_instance, polling_config](const std::stop_token& stop_token) {
         utils::IdleBackoff idle_backoff{polling_config};
         while (!stop_token.stop_requested()) {
             if (oms_instance.pump_once() == oms::OmsPumpResult::kNoWork) {
                 idle_backoff.idle();
-            }else{
+            } else {
                 idle_backoff.reset();
             }
         }
     });
 }
 
-std::jthread start_strategy_thread(
-    strategy::MonotonicArbStrategy& strategy_instance,
-    utils::IdleBackoffConfig polling_config) {
-    return std::jthread(
-        [&strategy_instance, polling_config](
-            const std::stop_token& stop_token) {
-            utils::IdleBackoff idle_backoff{polling_config};
-            while(!stop_token.stop_requested()) {
-                const auto result = strategy_instance.pump_once();
-                if(result.code == strategy::StrategyPumpCode::kNO_WORK) {
-                    idle_backoff.idle();
-                }else{
-                    idle_backoff.reset();
-                }
+std::jthread start_strategy_thread(strategy::MonotonicArbStrategy& strategy_instance,
+                                   utils::IdleBackoffConfig polling_config) {
+    return std::jthread([&strategy_instance, polling_config](const std::stop_token& stop_token) {
+        utils::IdleBackoff idle_backoff{polling_config};
+        while (!stop_token.stop_requested()) {
+            const auto result = strategy_instance.pump_once();
+            if (result.code == strategy::StrategyPumpCode::kNO_WORK) {
+                idle_backoff.idle();
+            } else {
+                idle_backoff.reset();
             }
-        });
+        }
+    });
 }
 
-std::jthread start_market_data_logger_thread(
-    logging::MarketDataLogger& market_data_logger,
-    utils::IdleBackoffConfig polling_config) {
+std::jthread start_market_data_logger_thread(logging::MarketDataLogger& market_data_logger,
+                                             utils::IdleBackoffConfig polling_config) {
     return std::jthread([&market_data_logger, polling_config](const std::stop_token& stop_token) {
         utils::IdleBackoff idle_backoff{polling_config};
         while (!stop_token.stop_requested()) {
             if (market_data_logger.pump(kLoggerPumpBatchSize) == 0) {
                 idle_backoff.idle();
-            }else{
+            } else {
                 idle_backoff.reset();
             }
         }
 
-        while (market_data_logger.pump(kLoggerPumpBatchSize) > 0) {}
+        while (market_data_logger.pump(kLoggerPumpBatchSize) > 0) {
+        }
     });
 }
 
@@ -694,22 +670,18 @@ bool pump_control_plane_once(control::ControlPlane& control_plane) {
     const bool processed_logger_messages = control_plane.process_logger_messages();
     const bool processed_oms_messages = control_plane.process_oms_status();
     const bool processed_order_rest_messages = control_plane.process_order_rest_status();
-    const bool processed_private_order_feed_messages = control_plane.process_private_order_feed_status();
+    const bool processed_private_order_feed_messages =
+        control_plane.process_private_order_feed_status();
 
-    return phase_changed ||
-           operator_result.commands_processed > 0 ||
-           io_result.statuses_processed > 0 ||
-           processed_router_messages ||
-           processed_shard_messages ||
-           recovery_result.commands_pushed_success > 0 ||
-           processed_logger_messages ||
-           processed_oms_messages ||
-           processed_order_rest_messages ||
+    return phase_changed || operator_result.commands_processed > 0 ||
+           io_result.statuses_processed > 0 || processed_router_messages ||
+           processed_shard_messages || recovery_result.commands_pushed_success > 0 ||
+           processed_logger_messages || processed_oms_messages || processed_order_rest_messages ||
            processed_private_order_feed_messages;
 }
 
-}  // namespace
-//NOLINTNEXTLINE
+} // namespace
+// NOLINTNEXTLINE
 int main(int argc, char** argv) {
     using namespace std::chrono_literals;
 
@@ -724,7 +696,7 @@ int main(int argc, char** argv) {
     install_signal_handlers();
 
     std::optional<CurlGlobalGuard> curl_global;
-    if(app_config.kalshi.order_rest.enable_order_rest){
+    if (app_config.kalshi.order_rest.enable_order_rest) {
         try {
             curl_global.emplace();
         } catch (const std::exception& e) {
@@ -771,7 +743,6 @@ int main(int argc, char** argv) {
     socket_config.socket_path = app_config.runtime.operator_socket_path;
     socket::UnixCommandServer server{std::move(socket_config), &command_handler};
 
-
     FramePool frame_pool{app_config.runtime.frame_pool_capacity};
     router::Router router_instance{router_queues};
 
@@ -779,11 +750,8 @@ int main(int argc, char** argv) {
     shards.reserve(app_config.runtime.shard_count);
     for (std::size_t i = 0; i < app_config.runtime.shard_count; ++i) {
         auto shard_queues = make_single_shard_queues(app_queues, i);
-        shards.push_back(std::make_unique<shard::Shard>(
-            static_cast<std::uint32_t>(i),
-            shard_queues,
-            frame_pool
-        ));
+        shards.push_back(std::make_unique<shard::Shard>(static_cast<std::uint32_t>(i), shard_queues,
+                                                        frame_pool));
     }
 
     try {
@@ -791,7 +759,8 @@ int main(int argc, char** argv) {
         (void)control_plane.install_universe(std::move(universe));
         const auto shard_install_result = control_plane.send_active_universe_to_shards();
         if (shard_install_result.commands_pushed_failure != 0) {
-            throw std::runtime_error("Failed to enqueue universe install command to one or more shards");
+            throw std::runtime_error(
+                "Failed to enqueue universe install command to one or more shards");
         }
     } catch (const std::exception& e) {
         std::cerr << "predex universe init error: " << e.what() << '\n';
@@ -801,10 +770,11 @@ int main(int argc, char** argv) {
 
     std::promise<ServerStartupResult> server_startup_promise;
     std::future<ServerStartupResult> server_startup_future = server_startup_promise.get_future();
-    
-    std::jthread server_thread = start_server_thread(server, server_state, std::move(server_startup_promise));
+
+    std::jthread server_thread =
+        start_server_thread(server, server_state, std::move(server_startup_promise));
     const ServerStartupResult server_startup_result = server_startup_future.get();
-    if(!server_startup_result.ready){
+    if (!server_startup_result.ready) {
         std::cerr << "predex server failed to start: " << server_startup_result.error << '\n';
         return 1;
     }
@@ -812,60 +782,43 @@ int main(int argc, char** argv) {
     std::vector<std::jthread> shard_threads;
     shard_threads.reserve(shards.size());
     for (const auto& shard_index : std::views::iota(std::size_t{0}, shards.size())) {
-        shard_threads.push_back(start_shard_thread(
-            *shards[shard_index],
-            app_config.runtime.thread_polling));
+        shard_threads.push_back(
+            start_shard_thread(*shards[shard_index], app_config.runtime.thread_polling));
     }
 
+    std::jthread router_thread = start_router_thread(router_instance, app_queues.wire_to_router,
+                                                     app_config.runtime.thread_polling);
+    logging::MarketDataLogger market_data_logger{logging::MarketDataLoggerDeps{
+        .input_queues = make_logger_input_queues(app_queues),
+        .frame_pool = frame_pool,
+        .recycle_queue = app_queues.logger_recycle,
+        .logger_to_control_status_queue = &app_queues.logger_to_control_status,
+        .output_file_path = app_config.runtime.market_data_tape_path,
+    }};
+    std::jthread market_data_logger_thread =
+        start_market_data_logger_thread(market_data_logger, app_config.runtime.thread_polling);
 
-    std::jthread router_thread = start_router_thread(
-        router_instance,
-        app_queues.wire_to_router,
-        app_config.runtime.thread_polling);
-    logging::MarketDataLogger market_data_logger{
-        logging::MarketDataLoggerDeps{
-            .input_queues = make_logger_input_queues(app_queues),
-            .frame_pool = frame_pool,
-            .recycle_queue = app_queues.logger_recycle,
-            .logger_to_control_status_queue = &app_queues.logger_to_control_status,
-            .output_file_path = app_config.runtime.market_data_tape_path,
-        }
-    };
-    std::jthread market_data_logger_thread = start_market_data_logger_thread(
-        market_data_logger,
-        app_config.runtime.thread_polling);
-
-    const bool order_graph_enabled =
-        app_config.kalshi.order_rest.enable_order_rest ||
-        app_config.kalshi.private_order_feed.enable_private_order_feed;
+    const bool order_graph_enabled = app_config.kalshi.order_rest.enable_order_rest ||
+                                     app_config.kalshi.private_order_feed.enable_private_order_feed;
 
     std::optional<oms::Oms> oms_instance;
     std::optional<std::jthread> oms_thread;
-    if(order_graph_enabled){
+    if (order_graph_enabled) {
         oms_instance.emplace(
             oms_queues,
             oms::OmsRiskConfig{
-                .strategy_allocation_limit_ticks =
-                    app_config.oms.strategy_allocation_limit_ticks,
-                .venue_safety_reserve_ticks =
-                    app_config.oms.venue_safety_reserve_ticks,
-                .maximum_group_reservation_ticks =
-                    app_config.oms.maximum_group_reservation_ticks,
-                .maximum_group_legs =
-                    app_config.oms.maximum_group_legs,
-                .maximum_group_repair_attempts =
-                    app_config.oms.maximum_group_repair_attempts,
-                .maximum_group_intent_age_ns =
-                    app_config.oms.maximum_group_intent_age_ns,
+                .strategy_allocation_limit_ticks = app_config.oms.strategy_allocation_limit_ticks,
+                .venue_safety_reserve_ticks = app_config.oms.venue_safety_reserve_ticks,
+                .maximum_group_reservation_ticks = app_config.oms.maximum_group_reservation_ticks,
+                .maximum_group_legs = app_config.oms.maximum_group_legs,
+                .maximum_group_repair_attempts = app_config.oms.maximum_group_repair_attempts,
+                .maximum_group_intent_age_ns = app_config.oms.maximum_group_intent_age_ns,
                 .portfolio_reconciliation_interval_ns =
                     app_config.oms.portfolio_reconciliation_interval_ns,
-                .require_portfolio_reconciliation =
-                    app_config.kalshi.order_rest.enable_order_rest,
+                .require_portfolio_reconciliation = app_config.kalshi.order_rest.enable_order_rest,
             });
-        oms_thread.emplace(start_oms_thread(
-            *oms_instance,
-            app_config.runtime.thread_polling));
-        if(!control_plane.send_active_order_universe_to_oms()){
+        oms_thread.emplace(start_oms_thread(*oms_instance, app_config.runtime.thread_polling));
+        if (!control_plane.send_active_order_universe_to_oms()) {
             std::cerr << "predex OMS init error: failed to enqueue active order universe to OMS\n";
             return 1;
         }
@@ -873,22 +826,19 @@ int main(int argc, char** argv) {
 
     std::optional<strategy::MonotonicArbStrategy> strategy_instance;
     std::optional<std::jthread> strategy_thread;
-    if(app_config.strategy.enable_monotonic_arb){
-        try{
+    if (app_config.strategy.enable_monotonic_arb) {
+        try {
             strategy_instance.emplace(
-                0,
-                control_plane.process_state().target_universe_version,
+                0, control_plane.process_state().target_universe_version,
                 strategy::MonotonicArbStrategyConfig{
                     .strategy_id = app_config.strategy.strategy_id,
                     .arb_config = app_config.strategy.monotonic_arb,
-                    .maximum_observation_age_ns =
-                        app_config.strategy.maximum_observation_age_ns,
+                    .maximum_observation_age_ns = app_config.strategy.maximum_observation_age_ns,
                 },
                 make_strategy_queues(app_queues));
-            strategy_thread.emplace(start_strategy_thread(
-                *strategy_instance,
-                app_config.runtime.thread_polling));
-        }catch(const std::exception& e){
+            strategy_thread.emplace(
+                start_strategy_thread(*strategy_instance, app_config.runtime.thread_polling));
+        } catch (const std::exception& e) {
             std::cerr << "predex strategy init error: " << e.what() << '\n';
             return 1;
         }
@@ -896,23 +846,25 @@ int main(int argc, char** argv) {
 
     std::optional<kalshi_exchange::OrderRestSession> order_rest_session;
     std::optional<std::jthread> order_rest_thread;
-    if(app_config.kalshi.order_rest.enable_order_rest){
-        try{
+    if (app_config.kalshi.order_rest.enable_order_rest) {
+        try {
             order_rest_session.emplace(kalshi_exchange::OrderRestSessionDeps{
-                .http_session = make_http_session(app_config.kalshi.auth, app_config.kalshi.order_rest),
+                .http_session =
+                    make_http_session(app_config.kalshi.auth, app_config.kalshi.order_rest),
                 .order_rest_adapter = kalshi_exchange::KalshiOrderRestAdapter{},
                 .control_queues = make_order_rest_control_queues(app_queues),
                 .oms_queues = make_order_rest_oms_queues(app_queues),
             });
             order_rest_thread.emplace(start_order_rest_thread(*order_rest_session));
 
-            if(!control_plane.send_active_order_universe_to_order_rest()){
+            if (!control_plane.send_active_order_universe_to_order_rest()) {
                 throw std::runtime_error("Failed to enqueue active order universe to order REST");
             }
-            if(!control_plane.push_order_rest_command(control::ControlToOrderRestCommand{control::EnableOrderRest{}})){
+            if (!control_plane.push_order_rest_command(
+                    control::ControlToOrderRestCommand{control::EnableOrderRest{}})) {
                 throw std::runtime_error("Failed to enqueue order REST enable command");
             }
-        } catch(const std::exception& e){
+        } catch (const std::exception& e) {
             std::cerr << "predex order REST init error: " << e.what() << '\n';
             return 1;
         }
@@ -920,23 +872,27 @@ int main(int argc, char** argv) {
 
     std::optional<order_data::KalshiOrderSession> private_order_feed_session;
     std::optional<std::jthread> private_order_feed_thread;
-    if(app_config.kalshi.private_order_feed.enable_private_order_feed){
-        try{
+    if (app_config.kalshi.private_order_feed.enable_private_order_feed) {
+        try {
             private_order_feed_session.emplace(order_data::OrderSessionDeps{
                 .order_data_handler = make_order_data_handler(app_config.kalshi.auth),
                 .desired_channels = app_config.kalshi.private_order_feed.channels,
                 .control_queues = make_order_session_control_queues(app_queues),
                 .oms_queues = make_order_session_oms_queues(app_queues),
             });
-            private_order_feed_thread.emplace(start_private_order_feed_thread(*private_order_feed_session));
+            private_order_feed_thread.emplace(
+                start_private_order_feed_thread(*private_order_feed_session));
 
-            if(!control_plane.send_active_order_universe_to_private_order_feed()){
-                throw std::runtime_error("Failed to enqueue active order universe to private order feed");
+            if (!control_plane.send_active_order_universe_to_private_order_feed()) {
+                throw std::runtime_error(
+                    "Failed to enqueue active order universe to private order feed");
             }
-            if(!control_plane.push_private_order_feed_command(control::ControlToPrivateOrderFeedCommand{control::ConnectPrivateOrderFeed{}})){
+            if (!control_plane.push_private_order_feed_command(
+                    control::ControlToPrivateOrderFeedCommand{
+                        control::ConnectPrivateOrderFeed{}})) {
                 throw std::runtime_error("Failed to enqueue private order feed connect command");
             }
-        } catch(const std::exception& e){
+        } catch (const std::exception& e) {
             std::cerr << "predex private order feed init error: " << e.what() << '\n';
             return 1;
         }
@@ -949,10 +905,11 @@ int main(int argc, char** argv) {
         try {
             wire_session.emplace(market_data::KalshiWireSessionDeps{
                 .frame_pool = frame_pool,
-                .control_queues = market_data::ControlQueues{
-                    .control_to_io_queue = app_queues.control_to_io,
-                    .io_to_control_status_queue = app_queues.io_to_control_status,
-                },
+                .control_queues =
+                    market_data::ControlQueues{
+                        .control_to_io_queue = app_queues.control_to_io,
+                        .io_to_control_status_queue = app_queues.io_to_control_status,
+                    },
                 .recycle_queues = make_wire_recycle_queues(app_queues),
                 .router_queue = app_queues.wire_to_router,
                 .logger_queue = app_queues.wire_to_logger,
@@ -991,53 +948,53 @@ int main(int argc, char** argv) {
     }
 
     if (wire_session_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         wire_session_thread->request_stop();
     }
     if (strategy_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         strategy_thread->request_stop();
     }
     if (private_order_feed_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         private_order_feed_thread->request_stop();
     }
     if (order_rest_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         order_rest_thread->request_stop();
     }
     if (oms_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         oms_thread->request_stop();
     }
     router_thread.request_stop();
-    for(auto& shard_thread : shard_threads){
+    for (auto& shard_thread : shard_threads) {
         shard_thread.request_stop();
     }
     server_thread.request_stop();
 
     if (wire_session_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         wire_session_thread->join();
     }
     if (private_order_feed_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         private_order_feed_thread->join();
     }
     if (order_rest_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         order_rest_thread->join();
     }
     if (strategy_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         strategy_thread->join();
     }
     if (oms_thread.has_value()) {
-        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
+        // NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is above
         oms_thread->join();
     }
     router_thread.join();
-    for(auto& shard_thread : shard_threads){
+    for (auto& shard_thread : shard_threads) {
         shard_thread.join();
     }
     market_data_logger_thread.request_stop();

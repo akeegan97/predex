@@ -26,6 +26,7 @@ namespace predex::ingest::kalshi::order_data{
         if(pending_oms_count_ == 0 && oms_queues_.private_ws_to_oms_queue.try_push(std::move(event))){
             return true;
         }
+        //NOLINTNEXTLINE bugprone-use-after-move -- try_push guarantees not to move on failure
         if(defer_oms_event(std::move(event))){
             return true;
         }
@@ -183,17 +184,37 @@ namespace predex::ingest::kalshi::order_data{
     }
 
     bool KalshiOrderSession::unsubscribe_channel(exchange::kalshi::KalshiOrderDataChannel channel){
+
         auto sub_it = active_subscriptions_.find(channel);
-        if(sub_it == active_subscriptions_.end() || !sub_it->second.sid.has_value()){
-            status_.last_error = "cannot unsubscribe from channel - not currently subscribed: " + std::to_string(static_cast<std::uint8_t>(channel));
+
+        if (sub_it == active_subscriptions_.end()) {
+            status_.last_error =
+                "cannot unsubscribe from channel - not currently subscribed: " +
+                std::to_string(static_cast<std::uint8_t>(channel));
+
             (void)push_control_status(core::control::PrivateOrderFeedFaulted{
-                .error_message = status_.last_error
+                .error_message = status_.last_error,
+            });
+            return false;
+        }
+
+        const auto& subscription = sub_it->second;
+
+        if (!subscription.sid.has_value()) {
+            status_.last_error =
+                "cannot unsubscribe from channel - not currently subscribed: " +
+                std::to_string(static_cast<std::uint8_t>(channel));
+
+            (void)push_control_status(core::control::PrivateOrderFeedFaulted{
+                .error_message = status_.last_error,
             });
             return false;
         }
 
         const auto ws_command_id = next_ws_command_id();
-        const std::span<const std::int64_t> session_ids{&sub_it->second.sid.value(), 1};
+
+        const std::int64_t sid = *subscription.sid;
+        const std::span<const std::int64_t> session_ids{&sid, 1};
 
         auto msg = order_data_handler_.build_unsubscribe_message(ws_command_id, sub_it->second.channel, session_ids);
         const auto send_status = ws_session_.send_text(std::move(msg));
@@ -415,7 +436,7 @@ namespace predex::ingest::kalshi::order_data{
         next_telemetry_send_ = now + kPRIVATE_ORDER_FEED_TELEMETRY_INTERVAL;
     }
 
-    void KalshiOrderSession::drain_control_commands() noexcept{
+    void KalshiOrderSession::drain_control_commands(){
         core::control::ControlToPrivateOrderFeedCommand cmd{};
         while(control_queues_.control_to_order_session_queue.try_pop(cmd)){
             handle_control_command(cmd);

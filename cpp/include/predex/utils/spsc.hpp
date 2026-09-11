@@ -43,6 +43,19 @@ inline constexpr std::size_t k_destructive_interference_size = 64;
                     throw std::invalid_argument("Capacity must be a power of 2 and greater than 0");
                 }
 
+                static_assert(
+                    std::is_nothrow_move_assignable_v<T>,
+                    "SPSCQueue requires T to be nothrow move assignable");
+
+                static_assert(
+                    std::is_nothrow_destructible_v<T>,
+                    "SPSCQueue requires T to be nothrow destructible");
+                
+                static_assert(
+                    std::is_nothrow_move_constructible_v<T>,
+                    "SPSCQueue requires T to be nothrow move constructible");
+                
+
                 buffer_ = 
                     static_cast<T*>(
                         ::operator new[](capacity * sizeof(T), std::align_val_t{k_buffer_alignment})
@@ -68,7 +81,7 @@ inline constexpr std::size_t k_destructive_interference_size = 64;
             SPSCQueue(SPSCQueue&&) = delete;
 
         template <typename... Args> 
-        bool try_emplace(Args&&... args) {
+        bool try_emplace(Args&&... args) noexcept {
             const std::uint64_t tail = producer_tail_;
 
             if (tail - producer_cached_head_ == capacity_) {
@@ -89,7 +102,7 @@ inline constexpr std::size_t k_destructive_interference_size = 64;
             return true;
         }
 
-        bool try_pop(T& item) {
+        bool try_pop(T& item) noexcept {
             const std::uint64_t head = consumer_head_;
 
             if (head == consumer_cached_tail_) {
@@ -111,10 +124,11 @@ inline constexpr std::size_t k_destructive_interference_size = 64;
             return true;
         }
 
-            bool try_push(const T& item){
-                return try_emplace(item);
-            }
-        bool try_push(T&& item){
+        bool try_push(const T& item) noexcept {
+            return try_emplace(item);
+        }
+
+        bool try_push(T&& item) noexcept {
             return try_emplace(std::move(item));
         }
 

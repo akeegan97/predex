@@ -1,6 +1,4 @@
 #pragma once
-
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -66,7 +64,7 @@ struct EndpointParts {
 class WebSocketSession {
   public:
     explicit WebSocketSession(const IWsAdapter& adapter);
-    ~WebSocketSession();
+    ~WebSocketSession() noexcept;
 
     WebSocketSession(WebSocketSession&&) = delete;
     WebSocketSession& operator=(WebSocketSession&&) = delete;

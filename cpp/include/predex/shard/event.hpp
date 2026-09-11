@@ -86,7 +86,7 @@ namespace predex::shard{
 
             [[nodiscard]] bool usable() const noexcept;
 
-            [[nodiscard]] EventApplyResult apply(std::uint32_t event_market_index, const KalshiParsedEvent& parsed_event) noexcept;
+            [[nodiscard]] EventApplyResult apply(std::uint32_t event_market_index, KalshiParsedEvent&& parsed_event) noexcept;
 
             [[nodiscard]] const KalshiMarket* get_market(std::uint32_t event_market_index) const noexcept;
 
@@ -103,12 +103,12 @@ namespace predex::shard{
             KalshiEvent state_;
             std::uint64_t revision_{};
 
-            [[nodiscard]] MarketApplyResult apply_to_market(KalshiMarket& market, const KalshiParsedEvent& parsed_event) noexcept;
+            [[nodiscard]] MarketApplyResult apply_to_market(KalshiMarket& market, KalshiParsedEvent&& parsed_event) noexcept;
 
-            [[nodiscard]] MarketApplyResult apply_snapshot(KalshiMarket& market, const KalshiSnapshotEvent& parsed_event) noexcept;
-            [[nodiscard]] MarketApplyResult apply_delta(KalshiMarket& market, const KalshiDeltaData& parsed_event) noexcept;
-            [[nodiscard]] MarketApplyResult apply_trade(KalshiMarket& market, const KalshiTradeData& parsed_event) noexcept;
-            [[nodiscard]] MarketApplyResult apply_lifecycle(KalshiMarket& market, const KalshiLifecycleData& parsed_event) noexcept;
+            [[nodiscard]] MarketApplyResult apply_snapshot(KalshiMarket& market,  KalshiSnapshotEvent&& parsed_event) noexcept;
+            [[nodiscard]] MarketApplyResult apply_delta(KalshiMarket& market,  KalshiDeltaData&& parsed_event) noexcept;
+            [[nodiscard]] MarketApplyResult apply_trade(KalshiMarket& market,  KalshiTradeData&& parsed_event) noexcept;
+            [[nodiscard]] MarketApplyResult apply_lifecycle(KalshiMarket& market,  KalshiLifecycleData&& parsed_event) noexcept;
 
             void update_derived_state_after_market_update(std::uint32_t event_market_index);
 

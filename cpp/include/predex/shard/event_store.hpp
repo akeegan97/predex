@@ -10,7 +10,7 @@ namespace predex::shard{
         public:
             [[nodiscard]] bool initialize(std::vector<KalshiEvent> events);
 
-            [[nodiscard]] EventApplyResult apply(const ingest::kalshi::FrameHandle& handle, const KalshiParsedEvent& parsed_event) noexcept;
+            [[nodiscard]] EventApplyResult apply(const ingest::kalshi::FrameHandle& handle, KalshiParsedEvent&& parsed_event) noexcept;
 
             [[nodiscard]] Event* get_event(std::uint32_t shard_event_index) noexcept;
             [[nodiscard]] const Event* get_event(std::uint32_t shard_event_index) const noexcept;

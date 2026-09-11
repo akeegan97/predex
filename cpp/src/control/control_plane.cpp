@@ -541,15 +541,15 @@ namespace predex::core::control{
         
         while(io_queues_.io_to_control_status_queue.try_pop(status_out)){
             result.statuses_processed++;
-            apply_io_status(status_out);
+            apply_io_status(std::move(status_out));
             recompute_process_state();
         }
         return result;
     }
 
-
-    void ControlPlane::apply_io_status(const IoToControlStatus& status) noexcept{
-        std::visit([&](auto&& stat){
+//NOLINTNEXTLINE - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+    void ControlPlane::apply_io_status(IoToControlStatus&& status) noexcept{
+        std::visit([&](auto&& stat) noexcept {
             using T = std::decay_t<decltype(stat)>;
             if constexpr(std::is_same_v<T, IoConnected>){
                 process_state_.io_component_state.status = ComponentStatus::kREADY;
@@ -558,7 +558,7 @@ namespace predex::core::control{
             }else if constexpr(std::is_same_v<T, IoDisconnected>){
                 process_state_.io_component_state.status = ComponentStatus::kSTOPPED;
                 process_state_.io_component_state.connected = false;
-                process_state_.io_component_state.last_error = stat.reason;
+                process_state_.io_component_state.last_error = std::move(stat.reason);
             }else if constexpr(std::is_same_v<T, IoUniverseSnapshotApplied>){
                 process_state_.io_component_state.installed_universe_version = stat.version;
                 process_state_.io_component_state.status = ComponentStatus::kREADY;
@@ -570,9 +570,9 @@ namespace predex::core::control{
             }else if constexpr(std::is_same_v<T, IoFaulted>){
                 process_state_.io_component_state.status = ComponentStatus::kFAULTED;
                 process_state_.io_component_state.connected = false;
-                process_state_.io_component_state.last_error = stat.error_message;
+                process_state_.io_component_state.last_error = std::move(stat.error_message);
             }else if constexpr(std::is_same_v<T, IoTelemetry>){
-                process_state_.io_component_state.telemetry = stat.telemetry;
+                process_state_.io_component_state.telemetry = std::move(stat.telemetry);
             }else if constexpr(std::is_same_v<T, IoRecoveryRequestAccepted>){
                 const auto result = recovery_coordinator_.handle(stat, std::chrono::steady_clock::now());
                 account_recovery_fact(process_state_.recovery_telemetry, result);
@@ -580,7 +580,7 @@ namespace predex::core::control{
                 const auto result = recovery_coordinator_.handle(stat, std::chrono::steady_clock::now());
                 account_recovery_fact(process_state_.recovery_telemetry, result);
             }
-        }, status);
+        }, std::move(status));
     }
 
     TradingSessionPhase ControlPlane::compute_trading_session_phase() const noexcept{
@@ -624,7 +624,7 @@ namespace predex::core::control{
         recompute_process_state();
     }
 
-    bool ControlPlane::update_trading_session_phase() noexcept{
+    bool ControlPlane::update_trading_session_phase(){
         const TradingSessionPhase previous = process_state_.trading_session_phase;
         apply_trading_session_phase(compute_trading_session_phase());
         return process_state_.trading_session_phase != previous;
@@ -973,7 +973,7 @@ namespace predex::core::control{
         return result;
     }
 
-    bool ControlPlane::process_one_router_message() noexcept{
+    bool ControlPlane::process_one_router_message(){
         router::RouterToControl msg{};
 
         if (router_queue_.router_to_control_queue.try_pop(msg)){
@@ -1037,7 +1037,7 @@ namespace predex::core::control{
         return false;
     }
 
-    bool ControlPlane::process_router_messages() noexcept{
+    bool ControlPlane::process_router_messages(){
         bool processed_any = false;
         while(process_one_router_message()){
             processed_any = true;
@@ -1045,7 +1045,7 @@ namespace predex::core::control{
         return processed_any;
     }
 
-    void ControlPlane::apply_shard_status(const shard::ShardToControlMessage& status) noexcept{
+    void ControlPlane::apply_shard_status(const shard::ShardToControlMessage& status){
         std::visit([&](auto&& stat){
             using T = std::decay_t<decltype(stat)>;
             const auto ensure_shard_state = [&](std::uint32_t shard_index) -> ShardComponentState* {
@@ -1113,7 +1113,7 @@ namespace predex::core::control{
         }, status);
     }
 
-    bool ControlPlane::process_one_shard_message() noexcept{
+    bool ControlPlane::process_one_shard_message(){
         for(auto* queue : shard_queues_.shard_to_control_queues){
             if(queue == nullptr){
                 continue;
@@ -1129,45 +1129,45 @@ namespace predex::core::control{
         return false;
     }
 
-    bool ControlPlane::process_shard_messages() noexcept{
+    bool ControlPlane::process_shard_messages(){
         bool processed_any = false;
         while(process_one_shard_message()){
             processed_any = true;
         }
         return processed_any;
     }
-
-    void ControlPlane::apply_logger_status(const LoggerToControlStatus& status) noexcept{
-        std::visit([&](auto&& stat){
+//NOLINTNEXTLINE - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+    void ControlPlane::apply_logger_status(LoggerToControlStatus&& status) noexcept{
+        std::visit([&](auto&& stat) noexcept {
             using T = std::decay_t<decltype(stat)>;
             if constexpr(std::is_same_v<T, LoggerStarted>){
                 process_state_.logger_component_state.status = ComponentStatus::kLIVE;
-                process_state_.logger_component_state.output_file_path = stat.output_file_path;
+                process_state_.logger_component_state.output_file_path = std::move(stat.output_file_path);
                 process_state_.logger_component_state.last_error.clear();
             }else if constexpr(std::is_same_v<T, LoggerFaulted>){
                 process_state_.logger_component_state.status = ComponentStatus::kFAULTED;
-                process_state_.logger_component_state.last_error = stat.error_message;
+                process_state_.logger_component_state.last_error = std::move(stat.error_message);
             }else if constexpr(std::is_same_v<T, LoggerTelemetry>){
-                process_state_.logger_component_state.telemetry = stat.telemetry;
+                process_state_.logger_component_state.telemetry = std::move(stat.telemetry);
             }
-        }, status);
+        }, std::move(status));
     }
 
-    bool ControlPlane::process_one_logger_message() noexcept{
+    bool ControlPlane::process_one_logger_message(){
         if(logger_queue_.logger_to_control_status_queue == nullptr){
             return false;
         }
 
         LoggerToControlStatus status{};
         if(logger_queue_.logger_to_control_status_queue->try_pop(status)){
-            apply_logger_status(status);
+            apply_logger_status(std::move(status));
             recompute_process_state();
             return true;
         }
         return false;
     }
 
-    bool ControlPlane::process_logger_messages() noexcept{
+    bool ControlPlane::process_logger_messages(){
         bool processed_any = false;
         while(process_one_logger_message()){
             processed_any = true;
@@ -1175,18 +1175,19 @@ namespace predex::core::control{
         return processed_any;
     }
 
-    void ControlPlane::apply_oms_status(const OmsToControlStatus& status) noexcept{
-        std::visit([&](auto&& stat){
+    //NOLINTNEXTLINE - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+    void ControlPlane::apply_oms_status(OmsToControlStatus&& status) noexcept{
+        std::visit([&](auto&& stat) noexcept {
             using T = std::decay_t<decltype(stat)>;
             if constexpr(std::is_same_v<T, OmsReady>){
                 process_state_.oms_component_state.status = ComponentStatus::kREADY;
                 process_state_.oms_component_state.last_error.clear();
             }else if constexpr(std::is_same_v<T, OmsFaulted>){
                 process_state_.oms_component_state.status = ComponentStatus::kFAULTED;
-                process_state_.oms_component_state.last_error = stat.error_message;
+                process_state_.oms_component_state.last_error = std::move(stat.error_message);
                 process_state_.oms_component_state.trading_enabled = false;
             }else if constexpr(std::is_same_v<T, OmsTelemetry>){
-                process_state_.oms_component_state.telemetry = stat.telemetry;
+                process_state_.oms_component_state.telemetry = std::move(stat.telemetry);
                 process_state_.oms_component_state.installed_universe_version = stat.telemetry.installed_universe_version;
             }else if constexpr(std::is_same_v<T, OmsTradingEnabledChanged>){
                 process_state_.oms_component_state.trading_enabled = stat.trading_enabled;
@@ -1200,21 +1201,21 @@ namespace predex::core::control{
         }, status);
     }
 
-    bool ControlPlane::process_one_oms_status() noexcept{
+    bool ControlPlane::process_one_oms_status(){
         if(oms_queues_.oms_to_control_status_queue == nullptr){
             return false;
         }
 
         OmsToControlStatus status{};
         if(oms_queues_.oms_to_control_status_queue->try_pop(status)){
-            apply_oms_status(status);
+            apply_oms_status(std::move(status));
             recompute_process_state();
             return true;
         }
         return false;
     }
 
-    bool ControlPlane::process_oms_status() noexcept{
+    bool ControlPlane::process_oms_status(){
         bool processed_any = false;
         while(process_one_oms_status()){
             processed_any = true;
@@ -1222,8 +1223,9 @@ namespace predex::core::control{
         return processed_any;
     }
 
-    void ControlPlane::apply_private_order_feed_status(const PrivateOrderFeedToControlStatus& status) noexcept{
-        std::visit([&](auto&& stat){
+    //NOLINTNEXTLINE - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+    void ControlPlane::apply_private_order_feed_status(PrivateOrderFeedToControlStatus&& status) noexcept{
+        std::visit([&](auto&& stat) noexcept {
             using T = std::decay_t<decltype(stat)>;
             if constexpr(std::is_same_v<T, PrivateOrderFeedConnected>){
                 process_state_.private_order_feed_component_state.status = ComponentStatus::kREADY;
@@ -1232,7 +1234,7 @@ namespace predex::core::control{
             }else if constexpr(std::is_same_v<T, PrivateOrderFeedDisconnected>){
                 process_state_.private_order_feed_component_state.status = ComponentStatus::kSTOPPED;
                 process_state_.private_order_feed_component_state.connected = false;
-                process_state_.private_order_feed_component_state.last_error = stat.reason;
+                process_state_.private_order_feed_component_state.last_error = std::move(stat.reason);
                 process_state_.private_order_feed_component_state.subscribed_universe_version = 0;
             }else if constexpr(std::is_same_v<T, PrivateOrderFeedUniverseApplied>){
                 process_state_.private_order_feed_component_state.status = ComponentStatus::kREADY;
@@ -1245,28 +1247,28 @@ namespace predex::core::control{
             }else if constexpr(std::is_same_v<T, PrivateOrderFeedFaulted>){
                 process_state_.private_order_feed_component_state.status = ComponentStatus::kFAULTED;
                 process_state_.private_order_feed_component_state.connected = false;
-                process_state_.private_order_feed_component_state.last_error = stat.error_message;
+                process_state_.private_order_feed_component_state.last_error = std::move(stat.error_message);
             }else if constexpr(std::is_same_v<T, PrivateOrderFeedTelemetry>){
-                process_state_.private_order_feed_component_state.telemetry = stat.telemetry;
+                process_state_.private_order_feed_component_state.telemetry = std::move(stat.telemetry);
             }
-        }, status);
+        }, std::move(status));
     }
 
-    bool ControlPlane::process_one_private_order_feed_status() noexcept{
+    bool ControlPlane::process_one_private_order_feed_status(){
         if(private_order_feed_queues_.private_order_feed_to_control_status_queue == nullptr){
             return false;
         }
 
         PrivateOrderFeedToControlStatus status{};
         if(private_order_feed_queues_.private_order_feed_to_control_status_queue->try_pop(status)){
-            apply_private_order_feed_status(status);
+            apply_private_order_feed_status(std::move(status));
             recompute_process_state();
             return true;
         }
         return false;
     }
 
-    bool ControlPlane::process_private_order_feed_status() noexcept{
+    bool ControlPlane::process_private_order_feed_status(){
         bool processed_any = false;
         while(process_one_private_order_feed_status()){
             processed_any = true;
@@ -1274,8 +1276,9 @@ namespace predex::core::control{
         return processed_any;
     }
 
-    void ControlPlane::apply_order_rest_status(const OrderRestToControlStatus& status) noexcept{
-        std::visit([&](auto&& stat){
+    //NOLINTNEXTLINE - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+    void ControlPlane::apply_order_rest_status(OrderRestToControlStatus&& status) noexcept{
+        std::visit([&](auto&& stat) noexcept {
             using T = std::decay_t<decltype(stat)>;
             if constexpr(std::is_same_v<T, OrderRestReady>){
                 process_state_.order_rest_component_state.status = ComponentStatus::kREADY;
@@ -1291,28 +1294,28 @@ namespace predex::core::control{
             }else if constexpr(std::is_same_v<T, OrderRestFaulted>){
                 process_state_.order_rest_component_state.status = ComponentStatus::kFAULTED;
                 process_state_.order_rest_component_state.enabled = false;
-                process_state_.order_rest_component_state.last_error = stat.error_message;
+                process_state_.order_rest_component_state.last_error = std::move(stat.error_message);
             }else if constexpr(std::is_same_v<T, OrderRestTelemetry>){
-                process_state_.order_rest_component_state.telemetry = stat.telemetry;
+                process_state_.order_rest_component_state.telemetry = std::move(stat.telemetry);
             }
         }, status);
     }
 
-    bool ControlPlane::process_one_order_rest_status() noexcept{
+    bool ControlPlane::process_one_order_rest_status(){
         if(order_rest_queues_.order_rest_to_control_status_queue == nullptr){
             return false;
         }
 
         OrderRestToControlStatus status{};
         if(order_rest_queues_.order_rest_to_control_status_queue->try_pop(status)){
-            apply_order_rest_status(status);
+            apply_order_rest_status(std::move(status));
             recompute_process_state();
             return true;
         }
         return false;
     }
 
-    bool ControlPlane::process_order_rest_status() noexcept{
+    bool ControlPlane::process_order_rest_status(){
         bool processed_any = false;
         while(process_one_order_rest_status()){
             processed_any = true;

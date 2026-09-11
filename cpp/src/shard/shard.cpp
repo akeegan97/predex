@@ -164,9 +164,12 @@ namespace predex::shard{
 
     }
 
-
+    //NOLINTNEXTLINE -- bugprone-exception-escape 
     ShardPumpResult Shard::dispatch_message(const ingest::kalshi::MarketDataPathMessage& message, MarketDataDispatchMode dispatch_mode) noexcept{
-        return std::visit([this, dispatch_mode](const auto& msg)->ShardPumpResult{
+        
+        assert(!message.valueless_by_exception());
+
+        return std::visit([this, dispatch_mode](const auto& msg) noexcept->ShardPumpResult{
             return handle_message(msg, dispatch_mode);
         }, message);
     }
@@ -313,7 +316,7 @@ namespace predex::shard{
             return result;
         }
 
-        EventApplyResult event_result = event_store_.apply(handle, parsed_event);
+        EventApplyResult event_result = event_store_.apply(handle, std::move(parsed_event));
 
         const std::uint64_t apply_complete_ts_ns = utils::monotonic_now_ns();
 
@@ -538,7 +541,7 @@ namespace predex::shard{
         return result;
     }
 
-    bool Shard::process_one_control_command() noexcept{
+    bool Shard::process_one_control_command(){
         ControlToShardCommand command{};
         if(!queues_.control_to_shard_queue.try_pop(command)){
             return false;
@@ -549,7 +552,7 @@ namespace predex::shard{
         return true;
     }
 
-    std::size_t Shard::drain_control_commands(std::size_t max_commands) noexcept{
+    std::size_t Shard::drain_control_commands(std::size_t max_commands){ 
         std::size_t commands_processed{0};
         while(commands_processed < max_commands && process_one_control_command()){
             ++commands_processed;
@@ -739,7 +742,7 @@ namespace predex::shard{
         return true;
     }
 
-    bool Shard::publish_strategy_message(const strategy::ShardToStrategyMessage& message) noexcept{
+    bool Shard::publish_strategy_message(const strategy::ShardToStrategyMessage& message) noexcept{ //NOLINT - bugprone-exception-escape --> std::visit will not encounter valueless
         if(strategy_publication_faulted_){
             ++stats_.strategy_messages_suppressed;
             return false;
@@ -749,7 +752,7 @@ namespace predex::shard{
             strategy_publication_faulted_ = true;
             return false;
         }
-        std::visit([this](const auto& msg){
+        std::visit([this](const auto& msg) noexcept {
             using T = std::decay_t<decltype(msg)>;
             if constexpr(std::is_same_v<T, strategy::MonotonicPairObservation>){
                 ++stats_.strategy_observations_published;

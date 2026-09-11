@@ -98,8 +98,7 @@ namespace predex::shard{
         }
 
 
-        [[nodiscard]] bool set_index_grid() {
-            index_by_tick.assign(kTICKSCALE + 1, invalid_index);
+        [[nodiscard]] bool set_index_grid() noexcept {
             std::uint64_t divisor = 0;
             std::size_t level_count = 0;
 
@@ -124,9 +123,19 @@ namespace predex::shard{
                     tick_by_index.clear(); 
                     return false;
             }
-
-            // Allocate space for the inverse map
-            tick_by_index.assign(level_count, static_cast<PriceTicks>(0));
+            //catch bad malloc by using try-catch block
+            try {
+                index_by_tick.assign(kTICKSCALE + 1, invalid_index);
+                tick_by_index.assign(level_count, static_cast<PriceTicks>(0));
+                bids.assign(level_count, QtyLots{});
+                asks.assign(level_count, QtyLots{});
+            } catch (const std::bad_alloc&) {
+                bids.clear();
+                asks.clear();
+                index_by_tick.clear();
+                tick_by_index.clear();
+                return false; 
+            }
 
             for (std::uint64_t tick = 0; tick <= kTICKSCALE; ++tick) {
                 if (tick % divisor == 0) {
@@ -139,8 +148,6 @@ namespace predex::shard{
                 }
             }
 
-            bids.assign(level_count, QtyLots{});
-            asks.assign(level_count, QtyLots{});
             return true;
         }
 

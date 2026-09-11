@@ -119,9 +119,14 @@ namespace predex::exchange::kalshi {
             }
         }
     
-    WebSocketSession::~WebSocketSession(){
-        close();
-    };
+    WebSocketSession::~WebSocketSession() noexcept {
+        try {
+            close();
+        } 
+        catch (...) {//NOLINT
+            /* Destructor cleanup is best-effort; exceptions must not escape. */
+        }
+    }
 
     bool WebSocketSession::connect(){
         close();
@@ -392,6 +397,7 @@ namespace predex::exchange::kalshi {
         if(io_context_.stopped()){
             io_context_.restart();
         }
+        //NOLINTNEXTLINE - [bugprone-unchecked-optional-access,-warnings-as-errors]
         ws_stream_->async_write(boost::asio::buffer(*active_write_),
             [this](boost::beast::error_code error_code, std::size_t bytes_transferred){
                 assert(active_write_);

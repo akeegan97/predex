@@ -18,7 +18,7 @@ namespace predex::ingest::kalshi::order_data{
             if(value_result.error() != simdjson::SUCCESS){
                 return false;
             }
-            out_value = value_result.value();
+            out_value = value_result.value_unsafe();
             return true;
         }
 
@@ -31,7 +31,7 @@ namespace predex::ingest::kalshi::order_data{
             if(value_result.error() != simdjson::SUCCESS){
                 return false;
             }
-            out_value = value_result.value();
+            out_value = value_result.value_unsafe();
             return true;
         }
 
@@ -44,7 +44,7 @@ namespace predex::ingest::kalshi::order_data{
             if(value_result.error() != simdjson::SUCCESS){
                 return false;
             }
-            out_value = value_result.value();
+            out_value = value_result.value_unsafe();
             return true;
         }
 
@@ -57,7 +57,7 @@ namespace predex::ingest::kalshi::order_data{
             if(value_result.error() != simdjson::SUCCESS){
                 return false;
             }
-            out_value = value_result.value();
+            out_value = value_result.value_unsafe();
             return true;
         }
 
@@ -70,7 +70,7 @@ namespace predex::ingest::kalshi::order_data{
             if(value_result.error() != simdjson::SUCCESS){
                 return false;
             }
-            out_value = value_result.value();
+            out_value = value_result.value_unsafe();
             return true;
         }
 

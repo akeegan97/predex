@@ -79,8 +79,8 @@ namespace predex::exchange::kalshi {
                 std::vector<oms::VenueMarketPositionSnapshot> positions;
             };
 
-            void drain_control_commands() noexcept;
-            void drain_oms_commands() noexcept;
+            void drain_control_commands();
+            void drain_oms_commands();
             void handle_control_command(const core::control::ControlToOrderRestCommand& command);
             void handle_oms_command(const oms::OmsToKalshiCommand& command);
             void handle_portfolio_reconciliation(
@@ -104,7 +104,7 @@ namespace predex::exchange::kalshi {
             [[nodiscard]] bool try_push_control_status(core::control::OrderRestToControlStatus status) noexcept;
             void try_send_pending_control_notifications() noexcept;
             [[nodiscard]] bool send_or_defer_oms_event(oms::KalshiToOmsEvent event) noexcept;
-            [[nodiscard]] bool emit_local_reject(const PreparedOrderRestRequest& prepared, std::string reason) noexcept;
+            [[nodiscard]] bool emit_local_reject(const PreparedOrderRestRequest& prepared, std::string reason);
 
             [[nodiscard]] bool defer_oms_event(oms::KalshiToOmsEvent event) noexcept;
 

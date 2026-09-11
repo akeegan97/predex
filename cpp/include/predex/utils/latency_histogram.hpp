@@ -51,7 +51,7 @@ namespace predex::utils{
             sum_ns = saturating_add(sum_ns, latency_ns);
             max_ns = std::max(max_ns, latency_ns);
 
-            const auto iterator = std::lower_bound(
+            const auto *const iterator = std::lower_bound(
                 kLatencyBucketUpperBoundsNs.begin(),
                 kLatencyBucketUpperBoundsNs.end(),
                 latency_ns);

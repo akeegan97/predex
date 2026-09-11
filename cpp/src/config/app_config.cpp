@@ -272,7 +272,7 @@ namespace predex::config{
                 oms_config.portfolio_reconciliation_interval_ns =
                     oms_json.value(
                         "portfolio_reconciliation_interval_ns",
-                        std::uint64_t{5'000'000'000});
+                        std::uint64_t{5'000'000'000});//NOLINT -> magic number 
                 config.oms = oms_config;
             }
             if(json_config.contains("strategy")){
@@ -289,7 +289,7 @@ namespace predex::config{
                 strategy_config.maximum_observation_age_ns =
                     strategy_json.value(
                         "maximum_observation_age_ns",
-                        std::uint64_t{50'000'000});
+                        std::uint64_t{50'000'000}); //NOLINT -> magic number 
 
                 if(strategy_json.contains("monotonic_arb")){
                     const auto& arb_json = strategy_json["monotonic_arb"];
@@ -431,7 +431,7 @@ namespace predex::config{
                 "Invalid configuration: venue_safety_reserve_ticks must be non-negative");
         }
         if(config.oms.maximum_group_legs == 0 ||
-        config.oms.maximum_group_legs > 10){
+        config.oms.maximum_group_legs > 10){ //NOLINT -> magic number 10
             throw std::runtime_error(
                 "Invalid configuration: maximum_group_legs must be between 1 and 10");
         }

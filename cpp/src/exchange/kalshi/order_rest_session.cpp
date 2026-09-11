@@ -34,13 +34,13 @@ namespace predex::exchange::kalshi{
         }
     }
 
-    void OrderRestSession::drain_control_commands() noexcept{
+    void OrderRestSession::drain_control_commands(){
         control::ControlToOrderRestCommand command;
         while(control_queues_.control_to_order_rest_queue.try_pop(command)){
             handle_control_command(command);
         }
     }
-    void OrderRestSession::drain_oms_commands() noexcept{
+    void OrderRestSession::drain_oms_commands(){
         oms::OmsToKalshiCommand command;
         while(!egress_closed_ && inflight_requests_.size() < kMAX_INFLIGHT_REQUESTS  && oms_queues_.oms_to_order_rest_queue.try_pop(command)){
             handle_oms_command(command);
@@ -149,7 +149,7 @@ namespace predex::exchange::kalshi{
 
     bool OrderRestSession::emit_local_reject(
         const PreparedOrderRestRequest& prepared,
-        std::string reason) noexcept {
+        std::string reason) {
 
         const std::uint64_t reject_ts_ns = now_ns();
 

@@ -174,7 +174,7 @@ namespace predex::core::control{
         };
     }
 
-    RecoveryObservationResult RecoveryCoordinator::observe(
+    RecoveryObservationResult RecoveryCoordinator::observe( // NOLINT
         const router::OrderBookSubscriptionBarrierDelivered& fact,
         const UniverseSnapshot& active_universe,
         TimePoint now){
@@ -610,7 +610,6 @@ namespace predex::core::control{
 
         if(market.phase != MarketRecoveryPhase::kREQUEST_ENQUEUED &&
            market.phase != MarketRecoveryPhase::kREQUEST_ACCEPTED){
-            // Especially important: duplicate failures must not extend backoff.
             result.disposition = RecoveryFactDisposition::kIGNORED;
             return result;
         }
@@ -619,8 +618,6 @@ namespace predex::core::control{
 
         if(market.attempts_sent >= config_.max_attempts){
             market.phase = MarketRecoveryPhase::kFAILED;
-
-            // Keep active_recovery_by_market_ latched: book remains unusable.
             result.disposition = RecoveryFactDisposition::kAPPLIED;
             result.effect = RecoveryFactEffect::kMARKET_FAILED;
             return result;
@@ -791,8 +788,11 @@ namespace predex::core::control{
                 [this, recovery_id](const MarketRecoveryState& market){
                     const auto iterator =
                         active_recovery_by_market_.find(market.market_id);
-                    return iterator != active_recovery_by_market_.end() &&
-                           iterator->second == recovery_id;
+                        if(iterator == active_recovery_by_market_.end()){
+                            return false;
+                        }
+                        // NOLINTNEXTLINE(clang-analyzer-core.NullDereference)
+                        return iterator->second == recovery_id;
                 });
             if(active){
                 ++count;

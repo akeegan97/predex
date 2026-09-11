@@ -991,18 +991,23 @@ int main(int argc, char** argv) {
     }
 
     if (wire_session_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         wire_session_thread->request_stop();
     }
     if (strategy_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         strategy_thread->request_stop();
     }
     if (private_order_feed_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         private_order_feed_thread->request_stop();
     }
     if (order_rest_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         order_rest_thread->request_stop();
     }
     if (oms_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         oms_thread->request_stop();
     }
     router_thread.request_stop();
@@ -1012,18 +1017,23 @@ int main(int argc, char** argv) {
     server_thread.request_stop();
 
     if (wire_session_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         wire_session_thread->join();
     }
     if (private_order_feed_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         private_order_feed_thread->join();
     }
     if (order_rest_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         order_rest_thread->join();
     }
     if (strategy_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         strategy_thread->join();
     }
     if (oms_thread.has_value()) {
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access -> check is directly above with has_value()
         oms_thread->join();
     }
     router_thread.join();

@@ -408,7 +408,7 @@ namespace {
     [[nodiscard]] bool parse_execution_summary(
         const nlohmann::json& order_json,
         oms::RestOrderResponse& response,
-        std::string& error_out) noexcept {
+        std::string& error_out){
 
         if(!order_json.contains("fill_count") ||
         !order_json.contains("remaining_count")) {
@@ -484,7 +484,7 @@ namespace {
     [[nodiscard]] bool parse_created_order(
         const nlohmann::json& order_json,
         oms::RestOrderResponse& response,
-        std::string& error_out) noexcept {
+        std::string& error_out){
 
         if(!order_json.is_object()) {
             error_out = "order response entry is not an object";
@@ -1281,7 +1281,7 @@ namespace {
 
                 auto& leg_response =
                     result.response.order_responses[
-                        *matched_index];
+                        *matched_index];//NOLINT -- bugprone-unchecked-optional-access check is above
 
                 if(!parse_created_order(
                     order_json,
@@ -1294,7 +1294,7 @@ namespace {
                     return result;
                 }
 
-                response_seen[*matched_index] = true;
+                response_seen[*matched_index] = true; //NOLINT -- bugprone-unchecked-optional-access check is above
                 ++result.response.response_order_count;
             }
 

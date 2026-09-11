@@ -151,8 +151,18 @@ constexpr std::size_t kMAX_DRAIN = 100;
         
     }
 
-    std::size_t Oms::drain_strategy_intents(std::size_t max) noexcept{
+    std::size_t Oms::drain_strategy_intents(std::size_t max) noexcept{ //NOLINT - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+        static_assert(
+            std::is_nothrow_move_constructible_v<intent::StrategyIntent>);
+
+        static_assert(
+            std::is_nothrow_move_assignable_v<intent::StrategyIntent>);
+
+        static_assert(
+            std::is_nothrow_destructible_v<intent::StrategyIntent>);
+
         std::size_t processed{0};
+        
         while(processed < max){
             bool did_work{false};
             for(auto* queue : queues_.strategy_intent_queues){
@@ -164,10 +174,10 @@ constexpr std::size_t kMAX_DRAIN = 100;
                     continue;
                 }
                 std::visit(Overloaded{
-                    [this](const intent::NewOrderIntent& intent){ handle_strategy_intent(intent); },
-                    [this](const intent::CancelOrderIntent& intent){ handle_strategy_intent(intent); },
-                    [this](const intent::ModifyOrderIntent& intent){ handle_strategy_intent(intent); },
-                    [this](const intent::GroupOrderIntent& intent){ handle_strategy_intent(intent); }
+                    [this](const intent::NewOrderIntent& intent) noexcept{ handle_strategy_intent(intent); },
+                    [this](const intent::CancelOrderIntent& intent) noexcept{ handle_strategy_intent(intent); },
+                    [this](const intent::ModifyOrderIntent& intent) noexcept{ handle_strategy_intent(intent); },
+                    [this](const intent::GroupOrderIntent& intent) noexcept{ handle_strategy_intent(intent); }
                 }, strategy_intent);
                 ++telemetry_.strategy_intents_received;
                 ++processed;
@@ -180,7 +190,15 @@ constexpr std::size_t kMAX_DRAIN = 100;
         return processed;
     }
 
-    std::size_t Oms::drain_venue_events(std::size_t max) noexcept{
+    std::size_t Oms::drain_venue_events(std::size_t max) noexcept{ //NOLINT --bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+
+        static_assert(
+            std::is_nothrow_move_constructible_v<KalshiToOmsEvent>);
+        static_assert(
+            std::is_nothrow_move_assignable_v<KalshiToOmsEvent>);
+        static_assert(
+            std::is_nothrow_destructible_v<KalshiToOmsEvent>);
+        
         std::size_t processed{0};
         while(processed < max){
             bool did_work{false};
@@ -193,22 +211,22 @@ constexpr std::size_t kMAX_DRAIN = 100;
                     continue;
                 }
             std::visit(Overloaded{
-                [this](const RestOrderResponse& response) {
+                [this](const RestOrderResponse& response) noexcept {
                     handle_venue_event(response);
                 },
-                [this](const RestOrderBatchResponse& response) {
+                [this](const RestOrderBatchResponse& response) noexcept {
                     handle_venue_event(response);
                 },
-                [this](const PrivateWsOrderEvent& event) {
+                [this](const PrivateWsOrderEvent& event) noexcept {
                     handle_venue_event(event);
                 },
-                [this](const ReconciledOrderSnapshot& snapshot) {
+                [this](const ReconciledOrderSnapshot& snapshot) noexcept {
                     handle_venue_event(snapshot);
                 },
-                [this](const VenuePortfolioSnapshot& snapshot) {
+                [this](const VenuePortfolioSnapshot& snapshot) noexcept {
                     handle_venue_event(snapshot);
                 },
-                [this](const OrderRestEgressDrained& drained) {
+                [this](const OrderRestEgressDrained& drained) noexcept {
                     handle_venue_event(drained);
                 }
             }, event);
@@ -222,7 +240,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
         return processed;
     }
 
-    std::size_t Oms::drain_control_commands(std::size_t max) noexcept{
+    std::size_t Oms::drain_control_commands(std::size_t max) noexcept{ //NOLINT - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here    
         std::size_t processed{0};
         while(processed < max){
             core::control::ControlToOmsCommand command{};
@@ -1037,7 +1055,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
         strategy_position.market_exposure_ticks =
             position.market_exposure_present
                 ? position.market_exposure_ticks
-                : fallback_exposure.has_value() &&
+                : fallback_exposure.has_value() && //NOLINT - concise conditional chain 
                     *fallback_exposure <=
                         static_cast<std::uint64_t>(
                             std::numeric_limits<std::int64_t>::max())
@@ -1369,7 +1387,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
         continue_group_repair(group, update_ts_ns);
     }
 
-    void Oms::continue_group_repair(
+    void Oms::continue_group_repair( //NOLINT -- suppress warning for cognitively complex function
         GroupRecord& group,
         std::uint64_t update_ts_ns) noexcept{
         if(group.capital_released ||
@@ -1727,7 +1745,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
         return progressed;
     }
 
-    void Oms::update_group_after_order_state_change(
+    void Oms::update_group_after_order_state_change( //NOLINT -- suppress warning for cognitively complex function
         const OrderRecord& order,
         std::uint64_t update_ts_ns) noexcept{
         if(order.oms_group_id == 0){
@@ -2211,6 +2229,9 @@ constexpr std::size_t kMAX_DRAIN = 100;
                 .submission_ts_ns = submission_ts_ns,
             };
 
+            auto reserved_capital_ticks = full_notional_reservation(
+                leg.quantity_lots).value_or(0);
+
             order_records[i] = OrderRecord{
                 .context = make_context(
                     leg_request_id,
@@ -2240,8 +2261,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
                 .repair_order = false,
                 .reserved_capital_ticks =
                     static_cast<std::int64_t>(
-                        *full_notional_reservation(
-                            leg.quantity_lots)),
+                        reserved_capital_ticks),
             };
         }
 
@@ -2647,7 +2667,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
                 const auto resolved_position_cost =
                     venue_position.position_cost_present
                         ? venue_position.position_cost_ticks
-                        : previous_it == previous_positions.end()
+                        : previous_it == previous_positions.end() //NOLINT - readability-avoid-nested-conditional-operator concise expression
                             ? 0
                             : previous_it->second.position_cost_ticks;
                 const auto resolved_realized =
@@ -2977,3 +2997,7 @@ constexpr std::size_t kMAX_DRAIN = 100;
         return count;
     }
 }
+
+/*
+Lots of potential here to clean-up and refactor Oms class implementation. AK - 9/9/2026
+*/

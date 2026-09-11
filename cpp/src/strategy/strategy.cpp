@@ -33,11 +33,11 @@ namespace {
 
 namespace predex::strategy {
 
-MonotonicArbStrategy::MonotonicArbStrategy(std::uint16_t strategy_index,
+MonotonicArbStrategy::MonotonicArbStrategy(std::uint16_t strategy_index, //NOLINT -- suppress warning for easily swapped params
                                            std::uint64_t active_universe_version,
                                            MonotonicArbStrategyConfig config, StrategyQueues queues)
     : strategy_index_(strategy_index), active_universe_version_(active_universe_version),
-      config_(std::move(config)), queues_(std::move(queues)) {
+      config_(config), queues_(std::move(queues)) {
     if (active_universe_version_ == 0 || config_.strategy_id == 0 ||
         config_.maximum_observation_age_ns == 0 ||
         !valid_monotonic_arb_config(config_.arb_config) ||
@@ -87,21 +87,24 @@ MonotonicArbStrategy::shard_input_stats() const noexcept {
     return shard_input_stats_;
 }
 
-StrategyPumpResult
+StrategyPumpResult //NOLINTNEXTLINE - bugprone-exception-escape guaranteed to not throw regardless of std::visits throw-ness
 MonotonicArbStrategy::dispatch_message(std::size_t input_index,
                                        const ShardToStrategyMessage& message,
                                        std::uint64_t dequeue_timestamp_ns) noexcept {
     ++stats_.messages_seen;
     ++shard_input_stats_[input_index].messages_seen;
+    
+    assert(!message.valueless_by_exception());
+
     return std::visit(
-        [this, input_index, dequeue_timestamp_ns](const auto& item) {
+        [this, input_index, dequeue_timestamp_ns](const auto& item) noexcept {
             return handle_message(input_index, item, dequeue_timestamp_ns);
         },
         message);
 }
 
 bool MonotonicArbStrategy::message_matches_input(std::size_t input_index,
-                                                 std::uint32_t message_shard_index,
+                                                 std::uint32_t message_shard_index, //NOLINT -- suppress warning for easily swapped params
                                                  std::uint64_t message_universe_version,
                                                  StrategyPumpResult& result) noexcept {
     result.source_shard_index = message_shard_index;
@@ -215,8 +218,11 @@ MonotonicArbStrategy::handle_message(std::size_t input_index,
     }
 
     result.candidate = evaluation.candidate;
+    
     ++stats_.candidates_found;
-    const auto& candidate = *evaluation.candidate;
+    
+    const auto& candidate = *evaluation.candidate; //NOLINT - bugprone-unchecked-optional-access checked above with .accepted() 211
+
     const auto required_capital = required_capital_ticks(candidate);
     if (!required_capital.has_value()) {
         result.code = StrategyPumpCode::kCANDIDATE_SUPPRESSED;
@@ -272,7 +278,7 @@ MonotonicArbStrategy::handle_message(std::size_t input_index,
     pending_capital_ticks_ += *required_capital;
     ++stats_.intents_published;
     result.code = StrategyPumpCode::kINTENT_PUBLISHED;
-    result.published_intent = std::move(intent);
+    result.published_intent = intent;
     return result;
 }
 
@@ -309,12 +315,12 @@ MonotonicArbStrategy::handle_message(std::size_t input_index,
 }
 
 StrategyPumpResult
-MonotonicArbStrategy::handle_oms_message(const oms::OmsToStrategyMessage& message) noexcept {
+MonotonicArbStrategy::handle_oms_message(const oms::OmsToStrategyMessage& message) noexcept { //NOLINT -- suppress warning for cognitively complex function due to the lambda call inside
     StrategyPumpResult result{.code = StrategyPumpCode::kOMS_MESSAGE_HANDLED};
     ++stats_.oms_messages_seen;
 
     std::visit(
-        [this, &result](const auto& item) {
+        [this, &result](const auto& item) { //NOLINT -- suppress warning for cognitively complex lambda
             using T = std::decay_t<decltype(item)>;
             if constexpr (std::is_same_v<T, oms::StrategyPortfolioUpdate>) {
                 if (item.strategy_index != strategy_index_) {
@@ -473,8 +479,10 @@ MonotonicArbStrategy::make_group_intent(const MonotonicArbCandidate& candidate,
         .intent_publish_timestamp_ns = intent_publish_timestamp_ns,
     };
 
-    auto make_leg = [&](const MonotonicArbLeg& candidate_leg, std::uint8_t leg_index,
-                        std::uint32_t strategy_intent_id) {
+    auto make_leg = [&](const MonotonicArbLeg& candidate_leg, 
+        std::uint8_t leg_index,//NOLINT -- suppress warning for easily swapped params 
+        std::uint32_t strategy_intent_id
+    ) {
         auto context = group_context;
         context.market_id = candidate_leg.market_id;
         context.strategy_intent_id = strategy_intent_id;

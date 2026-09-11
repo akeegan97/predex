@@ -257,7 +257,6 @@ namespace predex::socket{
                     if(inner_ret < 0){
                         if(errno == EINTR){
                             if(stop_token.stop_requested()){
-                                abandon_client = true;
                                 return;
                             }
                             continue; 
@@ -353,11 +352,10 @@ namespace predex::socket{
 
                 std::size_t bytes_written_total = 0;
 
-                while(bytes_written_total < response.body.size() && !abandon_client){
+                while(bytes_written_total < response.body.size()){
                     const auto now = std::chrono::steady_clock::now();
 
                     if(now >= write_deadline){
-                        abandon_client = true;
                         break;
                     }
                     const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(write_deadline - now);
@@ -369,7 +367,6 @@ namespace predex::socket{
                     const int write_ret = ::poll(write_fds.data(), static_cast<nfds_t>(write_fds.size()), write_timeout_ms);
 
                     if(write_ret == 0){
-                        abandon_client = true;
                         break;
                     }
 
@@ -390,7 +387,6 @@ namespace predex::socket{
                         return;
                     }
                     if((write_fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) !=0){
-                        abandon_client = true;
                         break;
                     }
                     if((write_fds[0].revents & POLLOUT) == 0){
@@ -408,7 +404,6 @@ namespace predex::socket{
                     if(bytes_written <0 && (errno == EAGAIN || errno == EWOULDBLOCK)){
                         continue;
                     }
-                    abandon_client = true;
                     break;
                 }
                 

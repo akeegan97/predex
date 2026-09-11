@@ -154,25 +154,25 @@ namespace predex::core::control{
 
             [[nodiscard]] RecoveryPumpResult process_recovery(RecoveryCoordinator::TimePoint now) noexcept;
 
-            [[nodiscard]] bool process_one_router_message() noexcept;
+            [[nodiscard]] bool process_one_router_message();
 
-            [[nodiscard]] bool process_router_messages() noexcept;
+            [[nodiscard]] bool process_router_messages();
 
-            [[nodiscard]] bool process_one_shard_message() noexcept;
-            [[nodiscard]] bool process_shard_messages() noexcept;
+            [[nodiscard]] bool process_one_shard_message();
+            [[nodiscard]] bool process_shard_messages();
 
-            [[nodiscard]] bool process_one_logger_message() noexcept;
-            [[nodiscard]] bool process_logger_messages() noexcept;
+            [[nodiscard]] bool process_one_logger_message();
+            [[nodiscard]] bool process_logger_messages();
 
-            [[nodiscard]] bool process_one_oms_status() noexcept;
-            [[nodiscard]] bool process_oms_status() noexcept;
+            [[nodiscard]] bool process_one_oms_status();
+            [[nodiscard]] bool process_oms_status();
 
-            [[nodiscard]] bool process_one_private_order_feed_status() noexcept;
-            [[nodiscard]] bool process_private_order_feed_status() noexcept;
+            [[nodiscard]] bool process_one_private_order_feed_status();
+            [[nodiscard]] bool process_private_order_feed_status();
 
-            [[nodiscard]] bool process_one_order_rest_status() noexcept;
-            [[nodiscard]] bool process_order_rest_status() noexcept;
-            [[nodiscard]] bool update_trading_session_phase() noexcept;
+            [[nodiscard]] bool process_one_order_rest_status();
+            [[nodiscard]] bool process_order_rest_status();
+            [[nodiscard]] bool update_trading_session_phase();
 
 
         private:
@@ -181,12 +181,12 @@ namespace predex::core::control{
             ProcessState process_state_{LifecyclePhase::kBOOTING};
 
             void recompute_process_state() noexcept;
-            void apply_io_status(const IoToControlStatus& status) noexcept;
-            void apply_shard_status(const shard::ShardToControlMessage& status) noexcept;
-            void apply_logger_status(const LoggerToControlStatus& status) noexcept;
-            void apply_oms_status(const OmsToControlStatus& status) noexcept;
-            void apply_private_order_feed_status(const PrivateOrderFeedToControlStatus& status) noexcept;
-            void apply_order_rest_status(const OrderRestToControlStatus& status) noexcept;
+            void apply_io_status(IoToControlStatus&& status) noexcept;
+            void apply_shard_status(const shard::ShardToControlMessage& status);
+            void apply_logger_status(LoggerToControlStatus&& status) noexcept;
+            void apply_oms_status(OmsToControlStatus&& status) noexcept;
+            void apply_private_order_feed_status(PrivateOrderFeedToControlStatus&& status) noexcept;
+            void apply_order_rest_status(OrderRestToControlStatus&& status) noexcept;
             [[nodiscard]] bool push_shard_command(std::uint32_t shard_index, shard::ControlToShardCommand command);
 
             [[nodiscard]] bool required_components_faulted() const;

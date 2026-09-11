@@ -118,7 +118,7 @@ namespace predex::ingest::kalshi::order_data{
             }
         private:
 
-            void drain_control_commands() noexcept;
+            void drain_control_commands();
             void handle_control_command(const core::control::ControlToPrivateOrderFeedCommand& cmd);
 
             void apply_universe_snapshot(const std::shared_ptr<const core::control::OrderRouteUniverse>& snapshot);

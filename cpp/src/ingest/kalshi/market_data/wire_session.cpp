@@ -16,46 +16,48 @@
 
 namespace {
 
-    bool read_uint64(simdjson::ondemand::object& object, std::string_view key,
-                    std::uint64_t& out) noexcept {
+    bool read_uint64(
+        simdjson::ondemand::object& object,
+        std::string_view key,
+        std::uint64_t& out) noexcept {
+
         auto field = object.find_field_unordered(key);
         if (field.error() != simdjson::SUCCESS) {
             return false;
         }
+
         auto value = field.get_uint64();
-        if (value.error() != simdjson::SUCCESS) {
-            return false;
-        }
-        out = value.value();
-        return true;
+        return std::move(value).get(out) == simdjson::SUCCESS;
     }
 
-    bool read_int64(simdjson::ondemand::object& object, std::string_view key,
-                    std::int64_t& out) noexcept {
+    bool read_int64(simdjson::ondemand::object& object, 
+        std::string_view key,
+        std::int64_t& out) noexcept {
+
         auto field = object.find_field_unordered(key);
+
         if (field.error() != simdjson::SUCCESS) {
             return false;
         }
+        
         auto value = field.get_int64();
-        if (value.error() != simdjson::SUCCESS) {
-            return false;
-        }
-        out = value.value();
-        return true;
+
+        return std::move(value).get(out) == simdjson::SUCCESS;
     }
 
-    bool read_string(simdjson::ondemand::object& object, std::string_view key,
-                    std::string_view& out) noexcept {
+    bool read_string(simdjson::ondemand::object& object, 
+        std::string_view key,
+        std::string_view& out) noexcept {
+        
         auto field = object.find_field_unordered(key);
+        
         if (field.error() != simdjson::SUCCESS) {
             return false;
         }
+
         auto value = field.get_string();
-        if (value.error() != simdjson::SUCCESS) {
-            return false;
-        }
-        out = value.value();
-        return true;
+
+        return std::move(value).get(out) == simdjson::SUCCESS;
     }
 
     bool read_object(simdjson::ondemand::object& object, std::string_view key,
@@ -240,15 +242,18 @@ namespace predex::ingest::kalshi::market_data{
         if(std::holds_alternative<core::control::IoRecoveryRequestAccepted>(
                status)){
             ++telemetry_.snapshot_requests_accepted;
-        }else if(std::holds_alternative<core::control::IoRecoveryRequestFailed>(
+        }
+        else if(std::holds_alternative<core::control::IoRecoveryRequestFailed>(
                       status)){
             ++telemetry_.snapshot_requests_failed;
         }
+
         if(pending_recovery_statuses_.empty() &&
            control_queues_.io_to_control_status_queue.try_push(
                std::move(status))){
             return;
         }
+        // NOLINTNEXTLINE(bugprone-use-after-move) -- try_push consumes its argument only on success; false guarantees status is unchanged.
         pending_recovery_statuses_.emplace_back(std::move(status));
     }
 
@@ -369,16 +374,22 @@ namespace predex::ingest::kalshi::market_data{
         const auto channel = exchange::kalshi::KalshiMarketDataChannel::kORDERBOOK_DELTA;
         const auto subscription_iterator = active_subscriptions_.find(channel);
 
-        if(
-            subscription_iterator == active_subscriptions_.end() ||
-            subscription_iterator->second.phase != SubscriptionPhase::kSUBSCRIBED ||
-            !subscription_iterator->second.sid.has_value()
-        ){
+        if(subscription_iterator == active_subscriptions_.end()){
+            fail_request("Order-book subscription is not active");
+            return;
+        }
+        const auto& subscription = subscription_iterator->second;
+        if(subscription.phase != SubscriptionPhase::kSUBSCRIBED){
+            fail_request("Order-book subscription is not active");
+            return;
+        }
+        if(!subscription.sid.has_value()){
             fail_request("Order-book subscription is not active");
             return;
         }
 
         const auto existing_tag = pending_recovery_by_market_.find(command.market_id);
+
         if(existing_tag != pending_recovery_by_market_.end()){
             const auto& tag = existing_tag->second;
             const bool same_request =
@@ -442,7 +453,8 @@ namespace predex::ingest::kalshi::market_data{
 
         const auto& ticker = route_iterator->second.kalshi_ticker;
         const std::span<const std::string> tickers{&ticker, 1U};
-        const auto sid = subscription_iterator->second.sid.value();
+
+        const auto sid = *subscription.sid;
 
         const auto send_status = ws_session_.send_text(
             market_data_handler_.build_update_message(
@@ -596,10 +608,17 @@ namespace predex::ingest::kalshi::market_data{
 
     bool KalshiWireSession::add_markets(exchange::kalshi::KalshiMarketDataChannel channel, std::span<const std::string> tickers){
         auto sub_it = active_subscriptions_.find(channel);
-        if(sub_it == active_subscriptions_.end() || !sub_it->second.sid.has_value()){
-            report_fault("Cannot add markets to channel - not currently subscribed: " + std::to_string(static_cast<std::uint8_t>(channel)));
+
+        if(sub_it == active_subscriptions_.end()){
+            report_fault("Cannot add markets to channel - subscription not found: " + std::to_string(static_cast<std::uint8_t>(channel)));
             return false;
         }
+        if(!sub_it->second.sid.has_value()){
+            report_fault("Cannot add markets to channel - subscription not active: " + std::to_string(static_cast<std::uint8_t>(channel)));
+            return false;
+        }
+
+        auto *subscription = &sub_it->second;
 
         std::vector<core::control::MarketId> market_ids;
         for(const auto& ticker : tickers){
@@ -619,16 +638,16 @@ namespace predex::ingest::kalshi::market_data{
             .channel = channel,
             .market_ids = market_ids,
         });
-        const auto sid = sub_it->second.sid.value();
-        sub_it->second.phase = SubscriptionPhase::kUPDATE_PENDING;
+        const auto sid = *subscription->sid; //NOLINT -bugprone-unchecked-optional-access checked above
+        subscription->phase = SubscriptionPhase::kUPDATE_PENDING;
 
         const auto send_status = ws_session_.send_text(
             market_data_handler_.build_update_message(ws_command_id, sid, tickers, "add_markets")
         );
         if(send_status != exchange::kalshi::SendStatus::kACCEPTED){
             pending_ws_commands_.erase(ws_command_id);
-            sub_it->second.phase = SubscriptionPhase::kSUBSCRIBED;
-            sub_it->second.last_error = std::string{ws_session_.last_error()};
+            subscription->phase = SubscriptionPhase::kSUBSCRIBED;
+            subscription->last_error = std::string{ws_session_.last_error()};
             return false;
         }
 
@@ -637,10 +656,17 @@ namespace predex::ingest::kalshi::market_data{
 
     bool KalshiWireSession::delete_markets(exchange::kalshi::KalshiMarketDataChannel channel, std::span<const std::string> tickers){
         auto sub_it = active_subscriptions_.find(channel);
-        if(sub_it == active_subscriptions_.end() || !sub_it->second.sid.has_value()){
-            report_fault("Cannot delete markets from channel - not currently subscribed: " + std::to_string(static_cast<std::uint8_t>(channel)));
+
+        if(sub_it == active_subscriptions_.end()){
+            report_fault("Cannot delete markets from channel - subscription not found: " + std::to_string(static_cast<std::uint8_t>(channel)));
             return false;
         }
+
+        if(!sub_it->second.sid.has_value()){
+            report_fault("Cannot delete markets from channel - subscription not active: " + std::to_string(static_cast<std::uint8_t>(channel)));
+            return false;
+        }
+        auto *subscription = &sub_it->second;
 
         std::vector<core::control::MarketId> market_ids;
         for(const auto& ticker : tickers){
@@ -660,19 +686,19 @@ namespace predex::ingest::kalshi::market_data{
             .channel = channel,
             .market_ids = market_ids,
         });
-        const auto sid = sub_it->second.sid.value();
-        sub_it->second.phase = SubscriptionPhase::kUPDATE_PENDING;
+        const auto sid = *subscription->sid; //NOLINT was checked above
+        subscription->phase = SubscriptionPhase::kUPDATE_PENDING;
 
         const auto send_status = ws_session_.send_text(
             market_data_handler_.build_update_message(ws_command_id, sid, tickers, "delete_markets")
         );
         if(send_status != exchange::kalshi::SendStatus::kACCEPTED){
             pending_ws_commands_.erase(ws_command_id);
-            sub_it->second.phase = SubscriptionPhase::kSUBSCRIBED;
-            sub_it->second.last_error = std::string{ws_session_.last_error()};
+            subscription->phase = SubscriptionPhase::kSUBSCRIBED;
+            subscription->last_error = std::string{ws_session_.last_error()};
             return false;
         }
-
+        
         return true;
     }
 //NOLINTNEXTLINE
@@ -1426,28 +1452,44 @@ namespace predex::ingest::kalshi::market_data{
 
     bool KalshiWireSession::unsubscribe_channel(exchange::kalshi::KalshiMarketDataChannel channel){
         auto sub_it = active_subscriptions_.find(channel);
-        if(sub_it == active_subscriptions_.end() || !sub_it->second.sid.has_value()){
+
+        if(sub_it == active_subscriptions_.end()){
             report_fault("Cannot unsubscribe from channel - not currently subscribed: " + std::to_string(static_cast<std::uint8_t>(channel)));
             return false;
         }
+        if(!sub_it->second.sid.has_value()){
+            report_fault("Cannot unsubscribe from channel - subscription has no SID: " + std::to_string(static_cast<std::uint8_t>(channel)));
+            return false;
+        }
+        //NOLINTNEXTLINE - bugprone-unchecked-optional-access
+        auto& subscription = sub_it->second;
 
-        const std::int64_t sid = sub_it->second.sid.value();
+        if(subscription.phase != SubscriptionPhase::kSUBSCRIBED){
+            report_fault("Cannot unsubscribe from channel - subscription is not active: " + std::to_string(static_cast<std::uint8_t>(channel)));
+            return false;
+        }
+
+        const std::int64_t sid = *subscription.sid;//NOLINT bugprone-unchecked-optional-access -> it is checked above
+
         const auto ws_command_id = next_ws_command_id();
+        
         pending_ws_commands_.emplace(ws_command_id, PendingWsCommand{
             .ws_command_id = ws_command_id,
             .kind = WsCommandKind::kUNSUBSCRIBE,
             .channel = channel,
             .market_ids = {},
         });
-        sub_it->second.phase = SubscriptionPhase::kUNSUBSCRIBE_PENDING;
+
+        subscription.phase = SubscriptionPhase::kUNSUBSCRIBE_PENDING;
         //NOTE: might change build_unsubscribe_message to just take a single sid instead of a span since it's only ever called one channel at a time here.
         const auto send_status = ws_session_.send_text(
             market_data_handler_.build_unsubscribe_message(ws_command_id, {{sid}})
         );
+        
         if(send_status != exchange::kalshi::SendStatus::kACCEPTED){
             pending_ws_commands_.erase(ws_command_id);
-            sub_it->second.phase = SubscriptionPhase::kSUBSCRIBED;
-            sub_it->second.last_error = std::string{ws_session_.last_error()};
+            subscription.phase = SubscriptionPhase::kSUBSCRIBED;
+            subscription.last_error = std::string{ws_session_.last_error()};
             return false;
         }
 

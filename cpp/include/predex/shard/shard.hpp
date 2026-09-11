@@ -74,8 +74,8 @@ namespace predex::shard{
             [[nodiscard]] std::uint32_t shard_index() const noexcept;
             [[nodiscard]] const ShardStats& stats() const noexcept;
 
-            [[nodiscard]] bool process_one_control_command() noexcept;
-            [[nodiscard]] std::size_t drain_control_commands(std::size_t max_commands) noexcept;
+            [[nodiscard]] bool process_one_control_command();
+            [[nodiscard]] std::size_t drain_control_commands(std::size_t max_commands);
             void maybe_send_telemetry() noexcept;
 
         private:

@@ -28,7 +28,7 @@ namespace predex::shard{
 
     EventApplyResult Event::apply(
         std::uint32_t event_market_index,
-        const KalshiParsedEvent& parsed_event) noexcept {
+        KalshiParsedEvent&& parsed_event) noexcept {
 
         if (event_market_index >= state_.markets.size()) {
             return EventApplyResult{
@@ -54,7 +54,7 @@ namespace predex::shard{
         auto& market = state_.markets[event_market_index];
 
         const MarketApplyResult market_result =
-            apply_to_market(market, parsed_event);
+            apply_to_market(market, std::move(parsed_event));
 
         const bool book_changed =
             is_book_message &&
@@ -102,28 +102,38 @@ namespace predex::shard{
         return &state_.markets[event_market_index];
     }
 
-    MarketApplyResult Event::apply_to_market(KalshiMarket& market, const KalshiParsedEvent& parsed_event) noexcept{
-        return std::visit([&](const auto& event)->MarketApplyResult{
-            using T = std::decay_t<decltype(event)>;
-            if constexpr(std::is_same_v<T, KalshiSnapshotEvent>){
-                return apply_snapshot(market, event);
-            }else if constexpr(std::is_same_v<T, KalshiDeltaData>){
-                return apply_delta(market, event);
-            }else if constexpr(std::is_same_v<T, KalshiTradeData>){
-                return apply_trade(market, event);
-            }else if constexpr(std::is_same_v<T, KalshiLifecycleData>){
-                return apply_lifecycle(market, event);
-            }else{
-                return MarketApplyResult{
-                    .disposition = ApplyDisposition::kREJECTED,
-                    .book_sync_transition = BookSyncTransition::kNONE,
-                    .reason = MarketApplyReason::kUNKNOWN_EVENT_TYPE
-                };
-            }
-        }, parsed_event);
+    MarketApplyResult Event::apply_to_market(//NOLINT - bugprone-exception-escape std::visit will not hit it's valueless_by_exception here
+        KalshiMarket& market,
+        KalshiParsedEvent&& parsed_event) noexcept{ 
+
+        return std::visit(
+            [&](auto&& event) noexcept -> MarketApplyResult {
+                using T = std::decay_t<decltype(event)>;
+
+                if constexpr (std::is_same_v<T, KalshiSnapshotEvent>) {
+                    return apply_snapshot(market, std::forward<decltype(event)>(event));
+
+                } else if constexpr (std::is_same_v<T, KalshiDeltaData>) {
+                    return apply_delta(market, std::forward<decltype(event)>(event));
+
+                } else if constexpr (std::is_same_v<T, KalshiTradeData>) {
+                    return apply_trade(market, std::forward<decltype(event)>(event));
+
+                } else if constexpr (std::is_same_v<T, KalshiLifecycleData>) {
+                    return apply_lifecycle(market, std::forward<decltype(event)>(event));
+
+                } else {
+                    return MarketApplyResult{
+                        .disposition = ApplyDisposition::kREJECTED,
+                        .book_sync_transition = BookSyncTransition::kNONE,
+                        .reason = MarketApplyReason::kUNKNOWN_EVENT_TYPE
+                    };
+                }
+            },
+            std::move(parsed_event));
     }
-    //TODO: make this actually "noexcept" since set_index_grid() could theoretically throw with the vector allocation.
-    MarketApplyResult Event::apply_snapshot(KalshiMarket& market, const KalshiSnapshotEvent& parsed_event) noexcept{
+
+    MarketApplyResult Event::apply_snapshot(KalshiMarket& market, KalshiSnapshotEvent&& parsed_event) noexcept{
         KalshiBook candidate{};
         candidate.scale = market.book.scale;
         if(!candidate.set_index_grid()){
@@ -146,12 +156,13 @@ namespace predex::shard{
         return MarketApplyResult{
             .disposition = ApplyDisposition::kAPPLIED,
             .book_sync_transition = became_usable ? 
+            //NOLINTNEXTLINE - readability-avoid-nested-conditional-operator think the below is actually concise to check the transition state
             (prev_sync_state == BookSyncState::kAWAITING_INITIAL_SNAPSHOT ? BookSyncTransition::kINITIAL_SNAPSHOT_INSTALLED : BookSyncTransition::kRECOVERED) : BookSyncTransition::kNONE,
             .reason = MarketApplyReason::kNONE
         };
     }
 
-    MarketApplyResult Event::apply_delta(KalshiMarket& market, const KalshiDeltaData& parsed_event) noexcept{
+    MarketApplyResult Event::apply_delta(KalshiMarket& market, KalshiDeltaData&& parsed_event) noexcept{
         if(market.book.sync_state == BookSyncState::kAWAITING_INITIAL_SNAPSHOT){
             return{
                 .disposition = ApplyDisposition::kIGNORED,
@@ -212,7 +223,7 @@ namespace predex::shard{
 
     }
 
-    MarketApplyResult Event::apply_trade(KalshiMarket& market, const KalshiTradeData& parsed_event) noexcept{
+    MarketApplyResult Event::apply_trade(KalshiMarket& market, KalshiTradeData&& parsed_event) noexcept{
         // Trades do not mutate book depth. Keep this stubbed until the event metrics bundle
         // owns trade-derived features such as OBI/VPIN/flow stats.
         return MarketApplyResult{
@@ -222,7 +233,7 @@ namespace predex::shard{
         };
     }
 
-    MarketApplyResult Event::apply_lifecycle(KalshiMarket& market, const KalshiLifecycleData& parsed_event) noexcept{
+    MarketApplyResult Event::apply_lifecycle(KalshiMarket& market, KalshiLifecycleData&& parsed_event) noexcept{
         //stub: only lifecycle event I want to handle is the updated market close, etc
         return MarketApplyResult{
             .disposition = ApplyDisposition::kAPPLIED,

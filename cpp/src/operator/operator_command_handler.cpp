@@ -136,10 +136,10 @@ namespace {
         return {
             {"count", histogram.count},
             {"mean_ns", histogram.mean_ns()},
-            {"p50_ns", histogram.percentile_upper_bound(5'000)},
-            {"p95_ns", histogram.percentile_upper_bound(9'500)},
-            {"p99_ns", histogram.percentile_upper_bound(9'900)},
-            {"p99_9_ns", histogram.percentile_upper_bound(9'990)},
+            {"p50_ns", histogram.percentile_upper_bound(5'000)},//NOLINT -- magic number
+            {"p95_ns", histogram.percentile_upper_bound(9'500)},//NOLINT -- magic number
+            {"p99_ns", histogram.percentile_upper_bound(9'900)},//NOLINT -- magic number
+            {"p99_9_ns", histogram.percentile_upper_bound(9'990)},//NOLINT -- magic number
             {"max_ns", histogram.max_ns},
         };
     }

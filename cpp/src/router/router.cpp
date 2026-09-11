@@ -258,7 +258,7 @@ namespace predex::router{
         return BarrierDeliveryResult::kDELIVERED;
     }
 
-    RouterRouteResult Router::flush_pending_barrier() noexcept{
+    RouterRouteResult Router::flush_pending_barrier() noexcept{ //NOLINT
         if(pending_subscription_recovery_fact_.has_value()){
             if(!send_telemetry(*pending_subscription_recovery_fact_)){
                 return RouterRouteResult::kBLOCKED;
@@ -271,7 +271,7 @@ namespace predex::router{
         }
 
         const auto delivery_result = std::visit(
-            [this](auto& pending) -> BarrierDeliveryResult {
+            [this](auto& pending) noexcept -> BarrierDeliveryResult {
                 using Pending = std::decay_t<decltype(pending)>;
                 if constexpr(std::is_same_v<Pending, PendingMarketBarrier>){
                     return route_barrier(pending.barrier);

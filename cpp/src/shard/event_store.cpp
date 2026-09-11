@@ -14,7 +14,7 @@ namespace predex::shard{
         return true;
     }
 
-    EventApplyResult EventStore::apply(const ingest::kalshi::FrameHandle& handle, const KalshiParsedEvent& parsed_event) noexcept{
+    EventApplyResult EventStore::apply(const ingest::kalshi::FrameHandle& handle, KalshiParsedEvent&& parsed_event) noexcept{
         if(handle.shard_event_index >= events_.size()){
             return EventApplyResult{
                 .disposition = ApplyDisposition::kREJECTED,
@@ -23,7 +23,7 @@ namespace predex::shard{
             };
         }
         Event& event = events_[handle.shard_event_index];
-        EventApplyResult result = event.apply(handle.event_market_index, parsed_event);
+        EventApplyResult result = event.apply(handle.event_market_index, std::move(parsed_event));
         return result;
     }
 

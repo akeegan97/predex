@@ -13,11 +13,11 @@ from .models import ClassifiedEvent, EventRecord, TopologyKind
 @dataclass(slots=True)
 class PipelineSettings:
     shard_count: int = 4
-    frame_pool_capacity: int = 8192
-    io_to_router_capacity: int = 8192
-    router_to_logger_capacity: int = 8192
-    shard_input_capacity: int = 8192
-    shard_to_logger_capacity: int = 8192
+    frame_pool_capacity: int = 65536
+    io_to_router_capacity: int = 32768
+    router_to_logger_capacity: int = 32768
+    shard_input_capacity: int = 32768
+    shard_to_logger_capacity: int = 32768
 
     def to_dict(self) -> dict[str, int]:
         return {

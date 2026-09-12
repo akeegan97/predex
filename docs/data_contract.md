@@ -1,213 +1,248 @@
-# Data Contract
+# Runtime Data Contract
 
-This document describes the data that moves through the current runtime.
+This document lists the value messages crossing PredEx thread boundaries. The
+C++ types are canonical; this file explains their purpose, identity, and
+failure semantics.
 
-## 1. Inbound Websocket Payload
+## Contract rules
 
-Source:
-- `predex::websocket::WsSession`
+All cross-thread messages follow these rules:
 
-Shape:
-- Raw websocket text payload from Kalshi public feed
+1. They are bounded values suitable for an SPSC queue.
+2. Mutable ownership never crosses the queue.
+3. Universe-sensitive work carries a universe version.
+4. Market work carries stable numeric event/market/shard identity after the
+   wire session resolves the ticker.
+5. A successful enqueue transfers responsibility for the message or frame
+   handle to the consumer.
+6. A failed enqueue must have an explicit terminal path; order-book loss also
+   produces an integrity fact.
+7. Timestamps used for latency are steady-clock nanoseconds from the same
+   process.
 
-At this boundary the data is still exchange-native JSON text. No routing metadata has been attached yet.
+## Universe contracts
 
-## 2. Frame Pool Representation
+`ControlPlane` builds and distributes immutable universe views.
 
-Types:
-- [`predex::core::ingest::kalshi::KalshiFrame`](../cpp/include/predex/ingest/frame_pool.hpp)
-- [`predex::core::ingest::kalshi::FrameHandle`](../cpp/include/predex/ingest/frame_pool.hpp)
+### `UniverseSnapshot`
 
-`IOWriter` copies the inbound payload into `KalshiFrame` and pushes a `FrameHandle` downstream.
+Used by public market data and recovery. It contains:
 
-`KalshiFrame` contains:
-- `recv_ts_ns_`
-- `len_`
-- `flags_`
-- `payload[...]`
+- universe version;
+- ticker-to-numeric route metadata;
+- event/market/shard indices and affinity;
+- the configured market-data subscription set.
 
-`FrameHandle` contains:
-- Sequencing and session metadata
-- Slot index and generation
-- Routing metadata:
-  - `market_id_`
-  - `affinity_key_`
-- Coarse message type:
-  - `event_type_`
+### Shard universe commands
 
-Contract:
-- Payload bytes live in the frame pool
-- Downstream stages pass handles, not copied payloads
+Each shard receives only the events assigned to it. Install, quiesce, resume,
+and related lifecycle commands include the target shard and universe version.
 
-## 3. Router Contract
+### `OrderRouteUniverse`
 
-Type in flight:
-- `FrameHandle`
+Used by OMS, order REST, and private order feed. It maps numeric market/event
+identity to Kalshi tickers and tradeability. The snapshot is immutable and
+shared by value through `shared_ptr<const ...>`.
 
-Router responsibilities:
-- Inspect the referenced `KalshiFrame`
-- Classify the message (shard-bound, logger-only, drop)
-- Look up `market_id` and `affinity_key` from `MarketRegistry`
-- Enforce session sequence checks
-- Forward the handle to either:
-  - A shard input queue (`shard_input_queue[i]`)
-  - The logger queue (`router_to_logger_queue`)
+## Public market-data contract
 
-Control-plane messages (e.g., `subscribed` acknowledgements) go directly to the logger. Shard-bound messages are market data events that require book application.
+### `FrameHandle`
 
-## 4. Parser Contract
+The handle identifies one immutable payload in `FramePool`. Important fields
+include:
 
-Type:
-- [`predex::parsers::ParseResult<predex::internal::NormalizedEvent>`](../cpp/include/predex/parsers/parse_result.hpp)
+- pool index and generation;
+- universe version;
+- frame kind;
+- SID and sequence;
+- market, event, affinity, and shard identity;
+- event and market indices inside the shard;
+- optional recovery incident identity;
+- ingress, wire-publish, router-publish, and shard timing fields.
 
-Parser inputs:
-- `FrameHandle`
-- `KalshiFrame`
+The payload bytes remain in the pool. Copying a handle does not copy the JSON
+frame or duplicate ownership of the slot.
 
-Parser output:
-- `NormalizedEvent`
+### `MarketDataPathMessage`
 
-Current normalized event fields:
-- `type`
-- `meta`
-  - `exchange`
-  - `affinity_key`
-  - `market_id`
-  - `sequence_id`
-  - `recv_ns`
-  - `exchange_ts_ns`
-- `raw_sequence_id`
-- `data`
-  - `SnapshotData`
-  - `DeltaData`
-  - `TradeData`
+The wire-to-router and router-to-shard queues carry:
 
-This is the first stage where exchange-native JSON is converted into a stable internal event model.
-
-**Kalshi ask derivation**: Kalshi's wire format has no explicit ask book. The ask side is derived from the No-bid: a No-bid at tick `p` implies an Ask at `1000 - p`. The parser handles this at both snapshot and delta level. Everything downstream sees a standard two-sided book.
-
-## 5. Book Application Contract
-
-Type owner:
-- [`predex::core::shards::kalshi::EventStore`](../cpp/include/predex/shards/event_store.hpp)
-
-Each shard owns an `EventStore` that holds one `Event` per Kalshi event group.
-
-Per-event state:
-- `BookStore` — per-market bid/ask levels, sequence state, pending-delta buffer, trade state, apply/desync counters
-- `EventDerivedState` — topology-specific mirror of the books:
-  - `MonotonicChainState` — markets ordered by strike key (monotonic arb)
-  - `MutuallyExclusiveState` — unordered markets summing to 1
-  - `UnorderedGroupState` — unordered independent markets
-  - `SingleMarketState` — single-market event
-
-Application rules:
-- Snapshots establish a baseline book (`has_snapshot = true`)
-- Deltas update one side/price level
-- Out-of-sequence deltas are buffered and replayed when possible
-- Invalid or stale sequence events are counted; a persistent desync increments `desynced_events`
-- On WS reconnect, `EventStore::reset_all_books()` clears `has_snapshot` so the next snapshot from the new session is accepted cleanly
-
-## 6. Strategy Pipeline Contract
-
-After each book application, the shard runs `ShardPipeline::on_event(NormalizedEvent, EventStore)`:
-
-1. `LocalRiskManager::evaluate(intent)` — pre-strategy gate. Checks:
-   - `trading_enabled`
-   - `min_seconds_to_close` — reject if `close_time_s - now_s < limit`
-   - `max_net_position_lots_per_market` — reject if net filled position exceeds limit
-   - Open intent count limit per event
-   - Event and market exposure limits
-
-2. All active strategies fan out and emit signals into a shared buffer (up to `kMaxSignalsPerEvent = 16` single-leg signals plus a group-signal buffer):
-   - `MonotonicArbStrategy` — detects probability-monotonicity violations across a chain event; emits IOC leg pairs as `GroupSignal`
-   - `CdfViolationStrategy` — stub
-   - `MarketMakingStrategy` — stub
-   - `MeanReversionStrategy` — stub
-
-3. The pipeline iterates every collected signal and runs `LocalRiskManager::evaluate` independently per signal. Each risk-approved signal generates an `OmsSubmission`; rejected signals are skipped. Multiple submissions may be pushed per event.
-
-4. Accepted `OmsSubmission`s are pushed to `shard_to_oms_intent_queue[i]`.
-
-## 7. OMS Intent Contract
-
-Types pushed to `shard_to_oms_intent_queue[i]`:
-- `ShardOmsRequest` = `std::variant<NewOrderIntent, GroupOrderIntent, CancelOrderIntent, ModifyOrderIntent>`
-
-The OMS coordinator drains these round-robin across shards. Each submission is passed through `GlobalRisk` (capital-reservation pre-trade check) before being accepted or rejected.
-
-## 8. OMS Decision Contract
-
-`OmsToShardDecision` is pushed to `oms_to_shard_decision_queue[i]`:
-
-- `kAccepted` + accepted-intent data (`oms_request_id`, `client_order_id`, originating intent)
-- `kRejected` + reject reason
-- `kModified` + modification metadata
-
-See `cpp/include/predex/oms/oms_types.hpp` for the canonical field layout. The originating shard uses decisions to update `LocalRiskState` (open intent counts).
-
-## 9. Order Lifecycle Contract
-
-`KalshiToOmsEvent` records are pushed to two SPSC queues, one per producer:
-- `oms_rest_event_queue` — written by the OMS Gateway thread (REST API responses from `AsyncRestConnection`)
-- `ws_event_queue` — reserved for the future private-WS worker; pointer is `nullptr` today and `ExecutionTransport::try_pop_event()` skips it
-
-The OMS coordinator drains both via `ExecutionTransport::try_pop_event()`, applies each event to `OrderStore`, releases the `GlobalRisk` capital reservation on terminal events (converting it to realised exposure on fills), and fans the event to `oms_to_shard_lifecycle_queue[i]` for the originating shard.
-
-The shard uses lifecycle events to update `LocalRiskState` (net filled position).
-
-Lifecycle event kinds cover: submit ack/reject, partial fill, fill, cancel ack/reject, replace ack/reject, and a transport-level `Uncertain` state used when a write reached the wire but the response was lost. See `cpp/include/predex/oms/oms_types.hpp` for the canonical variant.
-
-## 10. Transport Command Contract
-
-Commands pushed by the OMS coordinator to the Gateway thread via a single unified queue:
-
-| Queue | Type (variant) | Key Fields |
-|---|---|---|
-| `oms_command_queue` | `SubmitOrderCmd` | `oms_request_id`, `intent`, `client_order_id` |
-| `oms_command_queue` | `CancelOrderCmd` | `oms_request_id`, `origin`, `client_order_id`, `exchange_order_id`, `cmd_ts_ns` |
-| `oms_command_queue` | `ModifyOrderCmd` | `oms_request_id`, `replacement_intent`, `client_order_id`, `exchange_order_id` |
-
-`oms_command_queue` carries `OmsToKalshiCommand = std::variant<SubmitOrderCmd, CancelOrderCmd, ModifyOrderCmd>`. The Gateway's `CommandIngress` stage pops from this queue and routes commands through the 5-stage pipeline (`CommandIngress → OrderSequencer → BatchPlanner → RateLimiter → SessionPool`) before dispatching to `AsyncRestConnection`.
-
-## 11. Audit Contract
-
-`AuditEvent` records are pushed to `shard_audit_queue[i]` (by shards) and `oms_audit_queue` (by the OMS coordinator). The audit thread drains both and writes JSONL records to the configured audit output path (for example `logs/live/predex_audit.jsonl`).
-
-Audit events capture: OMS decisions, fills, latency spans, halt transitions.
-
-## 12. Tape Contract
-
-Terminal sink:
-- [`predex::core::tape::kalshi::Logger`](../cpp/include/predex/tape/logger.hpp)
-
-Tape record format (PDT2):
-
-```text
-File header:
-  magic[4]    = 'P','D','T','2'
-  version     = 2  (uint16_t, little-endian)
-  flags       = 0  (uint16_t, little-endian)
-
-Per record (repeated):
-  recv_ts_ns  (uint64_t, little-endian)
-  len         (uint32_t, little-endian)
-  payload     (len bytes — raw websocket text)
+```cpp
+std::variant<
+    FrameHandle,
+    MarketInvalidationBarrier,
+    OrderBookSubscriptionInvalidationBarrier
+>
 ```
 
-The payload written to tape is the raw inbound websocket text, not the normalized event.
+Using one ordered variant prevents a barrier from overtaking the data loss it
+describes.
 
-## 13. Ownership Contract
+### `MarketInvalidationBarrier`
 
-Stage ownership over the market data message lifecycle:
+Describes market-local order-book loss. It carries the exact universe, incident
+origin/ID, SID/sequence, event/market, target shard, target indices, and
+`BookInvalidationReason`.
 
-1. Websocket session receives raw text
-2. `IOWriter` copies it into the frame pool and pushes a handle
-3. Router classifies and forwards the handle (or recycles directly on router-side drops via `recycle_from_router`)
-4. Shard (or logger directly) consumes the handle (shard-side drops recycle via `recycle_from_shards[i]`)
-5. Shard applies the event and forwards the handle to the logger
-6. Logger persists the raw payload
-7. Logger pushes the handle to `recycle_from_logger`
-8. `IOWriter` drains all recycle SPSCs round-robin and returns the slot to `FramePool`
+Current causes include wire pool exhaustion, wire-to-router loss, and
+router-to-shard loss.
 
-Frame recycling uses **per-producer SPSC + consumer fan-in** rather than a single shared recycle queue — every producer thread owns its own recycle SPSC. This ownership flow is the main runtime data contract. If it changes, the surrounding docs should change with it.
+### `OrderBookSubscriptionInvalidationBarrier`
+
+Describes a subscription-wide order-book SID sequence gap. It carries universe,
+incident, SID, expected sequence, observed sequence, and reason. The router
+fans it to every shard.
+
+## Shard/control recovery contract
+
+After applying a barrier, the shard reports the resulting book transition. A
+newly invalidated market generates `ShardMarketRecoveryRequired`; repeated
+facts for a market already awaiting recovery remain distinguishable and are
+deduplicated by the coordinator.
+
+`RecoveryCoordinator` correlates:
+
+- shard invalidation observation;
+- `RecoverMarketIo` command and request attempt;
+- `IoRecoveryRequestAccepted` or `IoRecoveryRequestFailed`;
+- `ShardRecoverySnapshotApplied`;
+- acknowledgement and snapshot timeouts.
+
+Recovery is complete only at the final shard-applied event. A websocket command
+acknowledgement means the request was accepted, not that book state is usable.
+
+## Shard/strategy contract
+
+`ShardToStrategyMessage` is a variant of:
+
+- `MonotonicPairObservation`
+- `StrategyEventUnavailable`
+- `StrategyShardUnavailable`
+
+An observation is an immutable projection of the event state required by the
+strategy. It includes source shard, universe, event revision, event/market
+identity, ordered pair metadata, bounded book views, availability, and timing.
+
+Unavailable messages revoke eligibility. Strategy must not keep evaluating a
+cached observation after receiving the corresponding invalidation.
+
+## Strategy/OMS contract
+
+`StrategyIntent` is a variant of new, cancel, modify, and group intents.
+
+### `IntentContext`
+
+Context follows every intent and carries:
+
+- strategy index and strategy-defined IDs;
+- event, market, signal, group, and leg identity;
+- universe version, event revision, and source shard;
+- ingress, book-apply, observation, dequeue, evaluation, and intent-publish
+  timestamps.
+
+This lets OMS validate provenance and attribute latency without reading shard
+or strategy state.
+
+### `GroupOrderIntent`
+
+A group contains a fixed-capacity array plus an explicit `leg_count`. It also
+carries admission policy and expected gross edge, estimated fee, and expected
+net edge. Unused array elements are not orders.
+
+`kALL_OR_NONE` means all legs must pass local OMS admission together. It does
+not imply atomic venue fills.
+
+## OMS/order-REST contract
+
+`OmsToKalshiCommand` includes single-order submit/cancel/modify commands,
+batched submission, and portfolio reconciliation requests. Each command has an
+OMS identity and the ticker-resolvable order context needed by the adapter.
+
+`KalshiToOmsEvent` includes:
+
+- REST order and batch responses;
+- private-websocket order/fill facts;
+- reconciled open-order facts;
+- venue portfolio/position snapshots;
+- an order-REST egress-drained marker.
+
+The REST adapter owns HTTP serialization and venue-field conversion. OMS owns
+the meaning of the resulting lifecycle transition.
+
+## OMS/strategy contract
+
+`OmsToStrategyMessage` includes:
+
+- admission or rejection;
+- per-order lifecycle state;
+- group admission and execution state;
+- sequenced strategy portfolio state;
+- sequenced per-market position state.
+
+Portfolio messages are authoritative snapshots from OMS. Strategy-local
+estimates may be used for decision timing but cannot replace a newer OMS
+sequence.
+
+## Operator contract
+
+The operator protocol is one newline-delimited JSON request and one
+newline-delimited JSON response per Unix-domain connection.
+
+Requests identify one command and request ID. Responses contain:
+
+- `ok`;
+- the echoed request ID;
+- a response `type`;
+- an acknowledgement, error, status, or counter snapshot payload.
+
+`status` is the compact lifecycle view. `counterstats` is the complete raw
+snapshot and may be large. `stats` is currently an alias for `counterstats`.
+
+The client preserves the JSON body rather than interpreting server acceptance.
+Automation must inspect `ok`, not only the `predexctl` exit code.
+
+## Tape contract
+
+`MarketDataLogger` writes the versioned `PDT2` binary format. The file begins
+with magic, format version, and flags. Each little-endian record contains a
+fixed header followed by the raw websocket payload:
+
+```text
+[universe_version, recv_ts_ns, sequence, affinity_key]
+[sid, market_id, event_id, shard/event/market indices]
+[payload_length, frame_kind, topology, flags]
+[payload bytes]
+```
+
+The tape preserves received JSON together with the numeric routing and ingress
+metadata needed for deterministic downstream materialization. The Python
+reader rejects unknown magic/version values and truncated record headers or
+payloads.
+
+## Numeric units
+
+- Money and price use `$0.0001` ticks (`10,000` ticks per dollar).
+- Quantities use fixed-point lots defined by the strategy/OMS contract.
+- Internal durations use nanoseconds.
+- Wire portfolio values with more precision are conservatively rounded at the
+  Kalshi adapter boundary.
+
+Unit names should remain explicit in field names. A change to scale is a data
+contract migration, not a local formatting edit.
+
+## Telemetry contract
+
+The full counter snapshot separates:
+
+- exchange sequence gaps, duplicates, and stale frames;
+- intentional filtering and logger-only frames;
+- downstream delivery losses;
+- book invalidation and recovery;
+- queue/pool high-water marks;
+- logger write/recycle failures;
+- OMS admission, reconciliation, execution, and repair;
+- stage latency histograms.
+
+The snapshot is assembled asynchronously. Differences between adjacent stage
+counts can represent in-flight queue contents and should be interpreted with
+the high-water and failure counters, not assumed to be loss by subtraction.

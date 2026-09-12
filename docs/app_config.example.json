@@ -1,0 +1,109 @@
+{
+  "runtime": {
+    "shard_count": 4,
+    "shard_queue_capacity": 32768,
+    "router_queue_capacity": 32768,
+    "frame_pool_capacity": 65536,
+    "operator_queue_capacity": 64,
+    "operator_socket_path": "/tmp/predex-operator-example.sock",
+    "market_data_tape_path": "logs/live/predex_tape.bin",
+    "thread_polling": {
+      "profile": "harvest",
+      "spin_iterations": 64,
+      "yield_iterations": 64,
+      "min_sleep_us": 50,
+      "max_sleep_us": 1000
+    },
+    "synthetic_trading_session_enabled": false,
+    "reduce_only_after_seconds": 0,
+    "flatten_to_zero_after_seconds": 0,
+    "stopped_after_seconds": 0
+  },
+  "kalshi": {
+    "auth": {
+      "key_id_env": "KALSHI_KEY_ID",
+      "private_key_pem_env": "KALSHI_PRIVATE_KEY_PEM"
+    },
+    "market_data": {
+      "enable_market_data": false,
+      "channels": [
+        "trade",
+        "orderbook_delta",
+        "market_lifecycle_v2"
+      ]
+    },
+    "order_rest": {
+      "enable_order_rest": false,
+      "endpoint": "https://external-api.kalshi.com",
+      "max_concurrent_streams": 8
+    },
+    "private_order_feed": {
+      "enable_private_order_feed": false,
+      "channels": [
+        "user_orders",
+        "fill",
+        "market_positions"
+      ]
+    }
+  },
+  "oms": {
+    "strategy_allocation_limit_ticks": 50000,
+    "venue_safety_reserve_ticks": 0,
+    "maximum_group_reservation_ticks": 20000,
+    "maximum_group_legs": 10,
+    "maximum_group_repair_attempts": 2,
+    "maximum_group_intent_age_ns": 100000000,
+    "portfolio_reconciliation_interval_ns": 5000000000
+  },
+  "strategy": {
+    "enable_monotonic_arb": false,
+    "strategy_id": 1,
+    "maximum_observation_age_ns": 50000000,
+    "monotonic_arb": {
+      "order_quantity_lots": 100,
+      "minimum_net_edge_ticks": 200,
+      "edge_cushion_ticks": 0,
+      "require_top_gap_continuity": true,
+      "maximum_top_gap_ticks": 200,
+      "require_near_top_multilevel_support": true,
+      "near_top_depth_window_ticks": 200,
+      "minimum_near_top_levels": 2,
+      "bounded_easier_aggression_enabled": true,
+      "bounded_harder_aggression_enabled": true,
+      "maximum_easier_aggression_ticks": 300,
+      "maximum_harder_aggression_ticks": 300,
+      "maximum_easier_book_levels": 3,
+      "maximum_harder_book_levels": 3,
+      "require_full_easier_depth_for_quantity": true,
+      "require_full_harder_depth_for_quantity": true,
+      "taker_fee_rate_numerator": 7,
+      "taker_fee_rate_denominator": 100,
+      "execution_rounding_reserve_ticks_per_leg": 0
+    }
+  },
+  "universe": {
+    "events": [
+      {
+        "event_id": "88422102",
+        "affinity_key": "17041",
+        "topology": "monotonic_chain",
+        "markets": [
+          {
+            "market_id": "124830991",
+            "kalshi_ticker": "EXAMPLE-EASIER",
+            "tradeable": true,
+            "price_level_structure": "linear_cent",
+            "strike_key": 1000000
+          },
+          {
+            "market_id": "287230110",
+            "kalshi_ticker": "EXAMPLE-HARDER",
+            "tradeable": true,
+            "price_level_structure": "linear_cent",
+            "strike_key": 2000000
+          }
+        ]
+      }
+    ]
+  }
+}

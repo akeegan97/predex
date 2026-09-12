@@ -1,30 +1,108 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from http.client import (
+    HTTPConnection,
+    HTTPException,
+    HTTPResponse,
+    HTTPSConnection,
+)
+from io import BytesIO
 import json
+from threading import local
 import time
-from dataclasses import dataclass
 from typing import Callable
 from typing import Any
 from urllib.error import HTTPError
 from urllib.error import URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request
 
 from .models import EventRecord
 
 
+DEFAULT_KALSHI_API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+
+
 @dataclass(slots=True)
 class KalshiPublicClient:
-    base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    base_url: str = DEFAULT_KALSHI_API_BASE_URL
     user_agent: str = "predex-discovery/0.1"
     timeout_seconds: float = 10.0
     max_retries: int = 4
     initial_backoff_seconds: float = 1.0
     max_backoff_seconds: float = 8.0
+    event_fetch_workers: int = 8
     progress_callback: Callable[[str], None] | None = None
+    _thread_local: local = field(default_factory=local, init=False, repr=False)
 
-    def _urlopen(self, request: Request):
-        return urlopen(request, timeout=self.timeout_seconds)
+    def _new_connection(
+        self,
+        scheme: str,
+        hostname: str,
+        port: int,
+    ) -> HTTPConnection:
+        if scheme == "https":
+            return HTTPSConnection(hostname, port, timeout=self.timeout_seconds)
+        if scheme == "http":
+            return HTTPConnection(hostname, port, timeout=self.timeout_seconds)
+        raise ValueError(f"unsupported Kalshi API URL scheme: {scheme}")
+
+    def _connections(self) -> dict[tuple[str, str, int], HTTPConnection]:
+        connections = getattr(self._thread_local, "connections", None)
+        if connections is None:
+            connections = {}
+            self._thread_local.connections = connections
+        return connections
+
+    def _discard_connection(self, key: tuple[str, str, int]) -> None:
+        connection = self._connections().pop(key, None)
+        if connection is not None:
+            connection.close()
+
+    def _urlopen(self, request: Request) -> HTTPResponse:
+        parsed = urlsplit(request.full_url)
+        if parsed.hostname is None:
+            raise ValueError(f"Kalshi API URL has no hostname: {request.full_url}")
+
+        scheme = parsed.scheme.lower()
+        port = parsed.port or (443 if scheme == "https" else 80)
+        key = (scheme, parsed.hostname, port)
+        connections = self._connections()
+        connection = connections.get(key)
+        if connection is None:
+            connection = self._new_connection(scheme, parsed.hostname, port)
+            connections[key] = connection
+
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+
+        try:
+            connection.request(
+                request.get_method(),
+                target,
+                body=request.data,
+                headers=dict(request.header_items()),
+            )
+            response = connection.getresponse()
+        except (HTTPException, OSError) as error:
+            self._discard_connection(key)
+            raise URLError(error) from error
+
+        if 200 <= response.status < 300:
+            return response
+
+        body = response.read()
+        response.close()
+        raise HTTPError(
+            request.full_url,
+            response.status,
+            response.reason,
+            response.headers,
+            BytesIO(body),
+        )
 
     def _sleep(self, seconds: float) -> None:
         time.sleep(seconds)
@@ -166,12 +244,36 @@ class KalshiPublicClient:
         ordered_unique_tickers = list(dict.fromkeys(tickers))
         events: list[EventRecord] = []
         total = len(ordered_unique_tickers)
-        for index, event_ticker in enumerate(ordered_unique_tickers, start=1):
+
+        def fetch_one(index: int, event_ticker: str) -> tuple[int, EventRecord | None]:
             self._report_progress(f"fetching event {index}/{total}: {event_ticker}")
             try:
-                events.append(self.get_event(event_ticker))
+                return index, self.get_event(event_ticker)
             except (HTTPError, URLError, TimeoutError, ValueError) as error:
                 self._report_progress(
                     f"skipping event {event_ticker} after repeated fetch failure: {error}"
                 )
-        return events
+                return index, None
+
+        max_workers = max(1, self.event_fetch_workers)
+        if max_workers == 1 or total <= 1:
+            for index, event_ticker in enumerate(ordered_unique_tickers, start=1):
+                _, event = fetch_one(index, event_ticker)
+                if event is not None:
+                    events.append(event)
+            return events
+
+        events_by_index: list[EventRecord | None] = [None] * total
+        with ThreadPoolExecutor(
+            max_workers=min(max_workers, total),
+            thread_name_prefix="kalshi-event-fetch",
+        ) as executor:
+            futures = [
+                executor.submit(fetch_one, index, event_ticker)
+                for index, event_ticker in enumerate(ordered_unique_tickers, start=1)
+            ]
+            for future in as_completed(futures):
+                index, event = future.result()
+                events_by_index[index - 1] = event
+
+        return [event for event in events_by_index if event is not None]

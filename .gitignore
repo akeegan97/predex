@@ -60,12 +60,35 @@ predex_tape_5_7_2026.bin
 predex_audit_5_8_2026.jsonl
 predex_tape_5_8_2026.bin
 /*.txt
-python/eda/*.py
+# Local research workspace. The supported public Python surface lives under
+# python/src/predex/{discovery,replay}, python/tests/tooling, and scripts/ops.
+python/eda/
+python/tests/*
+!python/tests/__init__.py
+!python/tests/tooling/
+!python/tests/tooling/**
+python/tests/tooling/**/__pycache__/
+python/tests/tooling/**/*.pyc
+python/src/predex/ingest/
+python/src/predex/research/
+cpp/apps/research/
+cpp/include/predex/research/
+cpp/apps/testing/
+research_summary/
+docs/fair_pricing_research_framework.md
+STRATEGY_RESEARCH_STATUS.md
+ORACLE_HARNESS_CURRENT.md
 
-python/tests/*.py
-python/src/predex/replay/*.py
-python/src/predex/ingest/*.py
+# Local research launchers remain usable in scripts/, while supported public
+# operator/replay entry points are isolated under scripts/ops/.
+scripts/*
+!scripts/ops/
+!scripts/ops/**
+
+# Generated Python packaging metadata.
+*.egg-info/
 
 docs/generated_config2.report.json
 docs/generated_config2.json
 /*.png
+runs/*

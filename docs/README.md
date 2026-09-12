@@ -30,13 +30,14 @@ If you are new to the repo, start with the first group and ignore the rest until
 - [data_contract.md](data_contract.md)
 - [predex-python.md](predex-python.md)
 - [results.md](results.md)
-- [trader_config.example.json](trader_config.example.json) — example runtime config
+- [app_config.example.json](app_config.example.json) — safe example of the current C++ runtime schema
 
 ## Planning And Backlog
 
 These are useful working notes, but they are not the best entry point for a new reader.
 
 - [planning/platform_evolution.md](planning/platform_evolution.md) — phased plan for evolving from discrete-session runner to always-on service
+- [planning/main_takeover.md](planning/main_takeover.md) — merge gates and review order for replacing the current main runtime
 - [planning/open_backlog.md](planning/open_backlog.md)
 - [planning/replay_matrix.md](planning/replay_matrix.md)
 
@@ -48,6 +49,9 @@ These are example outputs from the discovery/config toolchain, kept under `docs/
 - `generated_discovery_report.json` — example report companion to the above
 
 The Python CLI writes its working `generated_config.json` / `generated_config.report.json` wherever `--output` / `--report-output` point — by convention to the repo root or `docs/`, but those files are runtime-produced and not committed.
+
+`trader_config.example.json` belongs to the legacy `--config-format trader`
+surface and is not consumed by the current `predex` binary.
 
 ## Replay Outputs
 

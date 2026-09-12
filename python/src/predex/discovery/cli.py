@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from datetime import UTC, datetime
+import hashlib
 import json
+from pathlib import Path
+import re
+import secrets
 import sys
 
 from predex.env import load_repo_dotenv
 
+from .app_config import (
+    KalshiMarketDataSettings,
+    KalshiOrderRestSettings,
+    KalshiPrivateOrderFeedSettings,
+    KalshiSettings,
+    MonotonicArbSettings,
+    OmsSettings,
+    RuntimeSettings,
+    ThreadPollingSettings,
+    StrategySettings,
+    build_app_config_result,
+)
 from .config import (
     CredentialSettings,
     DiscoverySettings,
@@ -14,12 +32,110 @@ from .config import (
     PipelineSettings,
     build_trader_config_result,
 )
-from .kalshi import KalshiPublicClient
+from .kalshi import DEFAULT_KALSHI_API_BASE_URL, KalshiPublicClient
 from .models import TopologyKind
+
+DEFAULT_TAPE_OUTPUT = "logs/live/predex_tape.bin"
+DEFAULT_AUDIT_OUTPUT = "logs/live/predex_audit.jsonl"
+DEFAULT_RUN_DIR_ROOT = "runs"
+DEFAULT_OPERATOR_SOCKET_PREFIX = "/tmp/predex-operator-"
+
+
+@dataclass(frozen=True, slots=True)
+class RunArtifacts:
+    run_dir: Path | None
+    output: str | None
+    report_output: str | None
+    tape_output: str
+    audit_output: str
 
 
 def _topology_choice(value: str) -> str:
     return TopologyKind(value).value
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "run"
+
+
+def _default_run_label(args: argparse.Namespace) -> str:
+    parts: list[str] = []
+    if args.all_events:
+        parts.append("all-events")
+    elif args.event_ticker:
+        parts.append("selected-events")
+    elif args.series_ticker:
+        parts.append(args.series_ticker)
+    else:
+        parts.append(f"{args.status}-events")
+
+    if args.include_topology:
+        parts.extend(sorted(args.include_topology))
+    elif args.exclude_topology:
+        parts.append("filtered")
+
+    return _slugify("-".join(parts))
+
+
+def _resolve_run_artifacts(
+    args: argparse.Namespace,
+    *,
+    now: datetime | None = None,
+) -> RunArtifacts:
+    run_dir_root = args.run_dir_root
+    if not run_dir_root and args.run_label:
+        run_dir_root = DEFAULT_RUN_DIR_ROOT
+
+    if not run_dir_root:
+        return RunArtifacts(
+            run_dir=None,
+            output=args.output,
+            report_output=args.report_output,
+            tape_output=args.tape_output or DEFAULT_TAPE_OUTPUT,
+            audit_output=args.audit_output or DEFAULT_AUDIT_OUTPUT,
+        )
+
+    timestamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d-%H%M%S")
+    label = _slugify(args.run_label) if args.run_label else _default_run_label(args)
+    run_dir = Path(run_dir_root) / f"predex-{timestamp}-market-data-{label}"
+
+    if run_dir.exists() and not args.overwrite_run_dir:
+        raise FileExistsError(f"run directory already exists: {run_dir}")
+
+    return RunArtifacts(
+        run_dir=run_dir,
+        output=args.output or str(run_dir / "config.json"),
+        report_output=args.report_output or str(run_dir / "report.json"),
+        tape_output=args.tape_output or str(run_dir / "tape.bin"),
+        audit_output=args.audit_output or str(run_dir / "audit.jsonl"),
+    )
+
+
+def _resolve_operator_socket_path(
+    explicit_path: str | None,
+    config_output: str | None,
+) -> str:
+    if explicit_path is not None:
+        return explicit_path
+
+    if config_output is not None:
+        config_identity = str(Path(config_output).expanduser().resolve())
+        socket_id = hashlib.blake2s(
+            config_identity.encode("utf-8"),
+            digest_size=10,
+        ).hexdigest()
+    else:
+        socket_id = secrets.token_hex(10)
+
+    return f"{DEFAULT_OPERATOR_SOCKET_PREFIX}{socket_id}.sock"
+
+
+def _write_text_file(path: str, payload: str) -> None:
+    output_path = Path(path)
+    if output_path.parent != Path("."):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(payload, encoding="utf-8")
 
 
 def _summary_line(build_report: dict[str, object]) -> str:
@@ -48,6 +164,48 @@ def build_parser() -> argparse.ArgumentParser:
         description="Discover Kalshi events and emit an event-centric Predex trader config.",
     )
     parser.add_argument(
+        "--materialize",
+        action="store_true",
+        help="Materialize an existing run directory's config/report/tape artifacts into parquet tables.",
+    )
+    parser.add_argument(
+        "--path",
+        help="Run directory path used with --materialize.",
+    )
+    parser.add_argument(
+        "--tables-output",
+        help="Optional tables output directory used with --materialize. Default: <path>/tables.",
+    )
+    parser.add_argument(
+        "--compress-if-verified",
+        "--compress_if_verified",
+        dest="compress_if_verified",
+        action="store_true",
+        help="With --materialize, write .gz copies of config/report/tape only after verification passes.",
+    )
+    parser.add_argument(
+        "--remove-if-verified",
+        "--remove_if_verified",
+        dest="remove_if_verified",
+        action="store_true",
+        help=(
+            "With --materialize, remove raw tape.bin only after verification passes, tape.bin.gz exists, "
+            "and all expected parquet tables exist."
+        ),
+    )
+    parser.add_argument(
+        "--materialize-batch-size",
+        type=int,
+        default=100_000,
+        help="Parquet writer batch size used with --materialize. Default: 100000.",
+    )
+    parser.add_argument(
+        "--config-format",
+        choices=("trader", "app"),
+        default="trader",
+        help="Config schema to emit. 'trader' is the legacy generator; 'app' targets the C++ AppConfig. Default: trader.",
+    )
+    parser.add_argument(
         "--event-ticker",
         action="append",
         default=[],
@@ -69,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="Maximum number of events to discover from the API. Default: 50.",
+    )
+    parser.add_argument(
+        "--event-fetch-workers",
+        type=int,
+        default=8,
+        help="Concurrent event detail fetch workers used during discovery. Use 1 for serial fetching. Default: 8.",
     )
     parser.add_argument(
         "--all-events",
@@ -101,32 +265,104 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frame-pool-capacity",
         type=int,
-        default=8192,
-        help="Pipeline frame pool capacity written into the generated config. Default: 8192.",
+        default=65536,
+        help="Pipeline frame pool capacity written into the generated config. Default: 65536.",
     )
     parser.add_argument(
         "--io-to-router-capacity",
         type=int,
-        default=8192,
-        help="IO-to-router queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="IO-to-router queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--router-to-logger-capacity",
         type=int,
-        default=8192,
-        help="Router-to-logger queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="Router-to-logger queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--shard-input-capacity",
         type=int,
-        default=8192,
-        help="Per-shard input queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="Per-shard input queue capacity written into the generated config. Default: 32768.",
     )
     parser.add_argument(
         "--shard-to-logger-capacity",
         type=int,
-        default=8192,
-        help="Per-shard logger queue capacity written into the generated config. Default: 8192.",
+        default=32768,
+        help="Per-shard logger queue capacity written into the generated config. Default: 32768.",
+    )
+    parser.add_argument(
+        "--router-queue-capacity",
+        type=int,
+        help="Router queue capacity written into the C++ app config. Defaults to --io-to-router-capacity.",
+    )
+    parser.add_argument(
+        "--operator-queue-capacity",
+        type=int,
+        default=64,
+        help="Operator command queue capacity written into the C++ app config. Default: 64.",
+    )
+    parser.add_argument(
+        "--operator-socket-path",
+        help=(
+            "Operator Unix socket path written into the C++ app config. "
+            "By default, file-backed configs receive a stable path derived from the config filename; "
+            "stdout-only configs receive a unique path."
+        ),
+    )
+    parser.add_argument(
+        "--thread-polling-profile",
+        choices=("low_latency", "harvest"),
+        default="harvest",
+        help="Idle polling policy written into the C++ app config. Default: harvest.",
+    )
+    parser.add_argument(
+        "--thread-spin-iterations",
+        type=int,
+        default=64,
+        help="Empty polls before yielding in harvest mode. Default: 64.",
+    )
+    parser.add_argument(
+        "--thread-yield-iterations",
+        type=int,
+        default=64,
+        help="Yielding empty polls before sleeping in harvest mode. Default: 64.",
+    )
+    parser.add_argument(
+        "--thread-min-sleep-us",
+        type=int,
+        default=50,
+        help="Initial idle sleep in harvest mode, in microseconds. Default: 50.",
+    )
+    parser.add_argument(
+        "--thread-max-sleep-us",
+        type=int,
+        default=1000,
+        help="Maximum idle sleep in harvest mode, in microseconds. Default: 1000.",
+    )
+    parser.add_argument(
+        "--synthetic-trading-session",
+        action="store_true",
+        help="Enable synthetic trading-session phase cutoffs in the generated C++ app config.",
+    )
+    parser.add_argument(
+        "--reduce-only-after-seconds",
+        type=int,
+        default=0,
+        help="Seconds after process start when the session enters reduce-only mode. Default: 0.",
+    )
+    parser.add_argument(
+        "--flatten-to-zero-after-seconds",
+        type=int,
+        default=0,
+        help="Seconds after process start when the session enters flatten-to-zero mode. Default: 0.",
+    )
+    parser.add_argument(
+        "--stopped-after-seconds",
+        type=int,
+        default=0,
+        help="Seconds after process start when the session enters stopped mode. Default: 0.",
     )
     parser.add_argument(
         "--include-topology",
@@ -151,9 +387,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path for a build report describing included/skipped events and topology counts.",
     )
     parser.add_argument(
+        "--run-dir-root",
+        help=(
+            "Create a stable run artifact directory under this root and default config/report/tape/audit "
+            "paths into it. Explicit --output/--report-output/--tape-output/--audit-output values still win."
+        ),
+    )
+    parser.add_argument(
+        "--run-label",
+        help=(
+            "Optional label used in the generated run directory name. "
+            f"If --run-dir-root is omitted, this implies --run-dir-root {DEFAULT_RUN_DIR_ROOT}."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite-run-dir",
+        action="store_true",
+        help="Allow writing into an existing generated run directory. Default: fail if the directory already exists.",
+    )
+    parser.add_argument(
         "--api-base-url",
-        default="https://api.elections.kalshi.com/trade-api/v2",
-        help="Kalshi REST API base URL used for discovery.",
+        default=DEFAULT_KALSHI_API_BASE_URL,
+        help=f"Kalshi REST API base URL used for discovery. Default: {DEFAULT_KALSHI_API_BASE_URL}.",
     )
     parser.add_argument(
         "--ws-endpoint",
@@ -172,13 +427,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tape-output",
-        default="logs/live/predex_tape.bin",
-        help="Tape output path written into the config.",
+        help=f"Tape output path written into the config. Default: {DEFAULT_TAPE_OUTPUT}, or <run-dir>/tape.bin with --run-dir-root.",
     )
     parser.add_argument(
         "--audit-output",
-        default="logs/live/predex_audit.jsonl",
-        help="Audit output path written into the config.",
+        help=f"Audit output path written into the config. Default: {DEFAULT_AUDIT_OUTPUT}, or <run-dir>/audit.jsonl with --run-dir-root.",
     )
     parser.add_argument(
         "--oms-enabled",
@@ -220,6 +473,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of hot REST worker sessions in the generated config. Default: 8.",
     )
     parser.add_argument(
+        "--oms-venue-safety-reserve-ticks",
+        type=int,
+        default=0,
+        help="Venue balance held outside strategy allocations. Default: 0.",
+    )
+    parser.add_argument(
+        "--oms-maximum-group-reservation-ticks",
+        type=int,
+        help="Maximum capital for one group. Defaults to --oms-available-capital-ticks.",
+    )
+    parser.add_argument(
+        "--oms-maximum-group-intent-age-ns",
+        type=int,
+        default=100_000_000,
+        help="Maximum accepted group-intent age in nanoseconds. Default: 100000000.",
+    )
+    parser.add_argument(
+        "--oms-portfolio-reconciliation-interval-ns",
+        type=int,
+        default=5_000_000_000,
+        help="Periodic live account reconciliation interval in nanoseconds. Default: 5000000000.",
+    )
+    parser.add_argument(
+        "--enable-monotonic-arb-strategy",
+        action="store_true",
+        help="Enable the live monotonic arbitrage strategy (default: disabled).",
+    )
+    parser.add_argument(
+        "--monotonic-arb-order-quantity-lots",
+        type=int,
+        default=100,
+        help="Quantity for each monotonic arbitrage leg in fixed-point lots. Default: 100.",
+    )
+    parser.add_argument(
+        "--monotonic-arb-minimum-net-edge-ticks",
+        type=int,
+        default=200,
+        help="Minimum modeled net edge after fees in price ticks. Default: 200.",
+    )
+    parser.add_argument(
+        "--monotonic-arb-edge-cushion-ticks",
+        type=int,
+        default=0,
+        help="Additional edge required beyond the minimum threshold. Default: 0.",
+    )
+    parser.add_argument(
+        "--monotonic-arb-maximum-observation-age-ns",
+        type=int,
+        default=50_000_000,
+        help="Maximum shard observation age accepted by strategy. Default: 50000000.",
+    )
+    parser.add_argument(
         "--local-risk-max-net-position-lots-per-market",
         type=int,
         default=200,
@@ -236,6 +541,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable local risk trading in the generated config (default: disabled).",
     )
+    parser.add_argument(
+        "--enable-market-data",
+        action="store_true",
+        help=(
+            "Enable market data in the generated C++ app config. "
+            "Run-directory captures enable this by default."
+        ),
+    )
     return parser
 
 
@@ -243,6 +556,68 @@ def main(argv: list[str] | None = None) -> int:
     load_repo_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.enable_monotonic_arb_strategy and not args.oms_enabled:
+        parser.error("--enable-monotonic-arb-strategy requires --oms-enabled")
+    if args.enable_monotonic_arb_strategy and args.config_format != "app":
+        parser.error("--enable-monotonic-arb-strategy requires --config-format app")
+    if args.enable_monotonic_arb_strategy:
+        leg_reservation = (
+            args.monotonic_arb_order_quantity_lots * 10_000 + 99
+        ) // 100
+        group_reservation = leg_reservation * 2
+        configured_group_limit = (
+            args.oms_maximum_group_reservation_ticks
+            if args.oms_maximum_group_reservation_ticks is not None
+            else args.oms_available_capital_ticks
+        )
+        if (
+            args.oms_available_capital_ticks < group_reservation
+            or configured_group_limit < group_reservation
+        ):
+            parser.error(
+                "monotonic arbitrage order quantity requires at least "
+                f"{group_reservation} ticks of OMS allocation and group reservation"
+            )
+
+    if args.materialize:
+        if not args.path:
+            parser.error("--materialize requires --path")
+        from predex.replay.materialize import materialize_run
+
+        result = materialize_run(
+            args.path,
+            tables_dir=args.tables_output,
+            batch_size=args.materialize_batch_size,
+            compress_if_verified=args.compress_if_verified,
+            remove_if_verified=args.remove_if_verified,
+        )
+        manifest = result.manifest
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": bool(manifest.get("verified")),
+                    "run_dir": str(result.run_dir),
+                    "tables_dir": str(result.tables_dir),
+                    "manifest": str(result.manifest_path),
+                    "checks": manifest.get("checks", {}),
+                    "tables": manifest.get("tables", {}),
+                    "compressed_artifacts": manifest.get("compressed_artifacts", {}),
+                    "remove_raw_checks": manifest.get("remove_raw_checks", {}),
+                    "missing_expected_tables": manifest.get("missing_expected_tables", []),
+                    "removed_artifacts": manifest.get("removed_artifacts", {}),
+                },
+                indent=2,
+                sort_keys=False,
+            )
+        )
+        sys.stdout.write("\n")
+        return 0 if manifest.get("verified") else 1
+
+    try:
+        run_artifacts = _resolve_run_artifacts(args)
+    except FileExistsError as exc:
+        parser.error(str(exc))
 
     channels = tuple(args.channel) if args.channel else ("trade", "orderbook_delta")
     lifecycle_channels = tuple(args.lifecycle_channel) if args.lifecycle_channel else ("market_lifecycle_v2",)
@@ -284,6 +659,7 @@ def main(argv: list[str] | None = None) -> int:
 
     client = KalshiPublicClient(
         base_url=args.api_base_url,
+        event_fetch_workers=args.event_fetch_workers,
         progress_callback=_progress_line,
     )
     events = client.discover_events(
@@ -292,41 +668,129 @@ def main(argv: list[str] | None = None) -> int:
         status=args.status,
         limit=event_limit,
     )
-    build_result = build_trader_config_result(
-        events,
-        discovery=discovery,
-        pipeline=pipeline,
-        oms_transport=oms_transport,
-        local_risk=local_risk,
-        tape_output_path=args.tape_output,
-        audit_output_path=args.audit_output,
-        include_topologies=args.include_topology or None,
-        exclude_topologies=args.exclude_topology or None,
-        market_limit=args.market_limit,
-    )
+    operator_socket_path: str | None = None
+    if args.config_format == "app":
+        app_channels = tuple(dict.fromkeys(channels + lifecycle_channels))
+        enable_market_data = args.enable_market_data or run_artifacts.run_dir is not None
+        operator_socket_path = _resolve_operator_socket_path(
+            args.operator_socket_path,
+            run_artifacts.output,
+        )
+        build_result = build_app_config_result(
+            events,
+            runtime=RuntimeSettings(
+                shard_count=args.shard_count,
+                shard_queue_capacity=args.shard_input_capacity,
+                router_queue_capacity=args.router_queue_capacity or args.io_to_router_capacity,
+                frame_pool_capacity=args.frame_pool_capacity,
+                operator_queue_capacity=args.operator_queue_capacity,
+                operator_socket_path=operator_socket_path,
+                market_data_tape_path=run_artifacts.tape_output,
+                thread_polling=ThreadPollingSettings(
+                    profile=args.thread_polling_profile,
+                    spin_iterations=args.thread_spin_iterations,
+                    yield_iterations=args.thread_yield_iterations,
+                    min_sleep_us=args.thread_min_sleep_us,
+                    max_sleep_us=args.thread_max_sleep_us,
+                ),
+                synthetic_trading_session_enabled=args.synthetic_trading_session,
+                reduce_only_after_seconds=args.reduce_only_after_seconds,
+                flatten_to_zero_after_seconds=args.flatten_to_zero_after_seconds,
+                stopped_after_seconds=args.stopped_after_seconds,
+            ),
+            kalshi=KalshiSettings(
+                credentials=CredentialSettings(
+                    key_id_env=args.key_id_env,
+                    private_key_pem_env=args.private_key_env,
+                ),
+                market_data=KalshiMarketDataSettings(
+                    enable_market_data=enable_market_data,
+                    channels=app_channels,
+                ),
+                order_rest=KalshiOrderRestSettings(
+                    enable_order_rest=args.oms_enabled,
+                    endpoint=args.oms_rest_endpoint,
+                    max_concurrent_streams=args.oms_rest_worker_count,
+                ),
+                private_order_feed=KalshiPrivateOrderFeedSettings(
+                    enable_private_order_feed=args.oms_enabled,
+                    channels=tuple(args.oms_private_ws_channel)
+                    if args.oms_private_ws_channel
+                    else ("user_orders", "fill", "market_positions"),
+                ),
+            ),
+            oms=OmsSettings(
+                strategy_allocation_limit_ticks=
+                    args.oms_available_capital_ticks,
+                venue_safety_reserve_ticks=
+                    args.oms_venue_safety_reserve_ticks,
+                maximum_group_reservation_ticks=(
+                    args.oms_maximum_group_reservation_ticks
+                    if args.oms_maximum_group_reservation_ticks is not None
+                    else args.oms_available_capital_ticks
+                ),
+                maximum_group_intent_age_ns=
+                    args.oms_maximum_group_intent_age_ns,
+                portfolio_reconciliation_interval_ns=
+                    args.oms_portfolio_reconciliation_interval_ns,
+            ),
+            strategy=StrategySettings(
+                enable_monotonic_arb=args.enable_monotonic_arb_strategy,
+                maximum_observation_age_ns=
+                    args.monotonic_arb_maximum_observation_age_ns,
+                monotonic_arb=MonotonicArbSettings(
+                    order_quantity_lots=
+                        args.monotonic_arb_order_quantity_lots,
+                    minimum_net_edge_ticks=
+                        args.monotonic_arb_minimum_net_edge_ticks,
+                    edge_cushion_ticks=
+                        args.monotonic_arb_edge_cushion_ticks,
+                ),
+            ),
+            include_topologies=args.include_topology or None,
+            exclude_topologies=args.exclude_topology or None,
+            market_limit=args.market_limit,
+        )
+    else:
+        build_result = build_trader_config_result(
+            events,
+            discovery=discovery,
+            pipeline=pipeline,
+            oms_transport=oms_transport,
+            local_risk=local_risk,
+            tape_output_path=run_artifacts.tape_output,
+            audit_output_path=run_artifacts.audit_output,
+            include_topologies=args.include_topology or None,
+            exclude_topologies=args.exclude_topology or None,
+            market_limit=args.market_limit,
+        )
     config = build_result.config
     report = build_result.report()
 
     payload = json.dumps(config, indent=2, sort_keys=False)
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as output_file:
-            output_file.write(payload)
-            output_file.write("\n")
+    if run_artifacts.run_dir is not None:
+        run_artifacts.run_dir.mkdir(parents=True, exist_ok=args.overwrite_run_dir)
+
+    if run_artifacts.output:
+        _write_text_file(run_artifacts.output, payload + "\n")
     else:
         sys.stdout.write(payload)
         sys.stdout.write("\n")
 
-    if args.report_output:
-        with open(args.report_output, "w", encoding="utf-8") as report_file:
-            report_file.write(json.dumps(report, indent=2, sort_keys=False))
-            report_file.write("\n")
-    elif args.output:
+    if run_artifacts.report_output:
+        _write_text_file(run_artifacts.report_output, json.dumps(report, indent=2, sort_keys=False) + "\n")
+    elif run_artifacts.output:
         sys.stderr.write(json.dumps(report, indent=2, sort_keys=False))
         sys.stderr.write("\n")
     sys.stderr.write(_summary_line(report))
-    if args.output:
-        sys.stderr.write(f" | config={args.output}")
-    if args.report_output:
-        sys.stderr.write(f" | report={args.report_output}")
+    if run_artifacts.run_dir is not None:
+        sys.stderr.write(f" | run_dir={run_artifacts.run_dir}")
+    if run_artifacts.output:
+        sys.stderr.write(f" | config={run_artifacts.output}")
+    if run_artifacts.report_output:
+        sys.stderr.write(f" | report={run_artifacts.report_output}")
+    sys.stderr.write(f" | tape={run_artifacts.tape_output}")
+    if operator_socket_path is not None:
+        sys.stderr.write(f" | operator_socket={operator_socket_path}")
     sys.stderr.write("\n")
     return 0

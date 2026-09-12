@@ -1,86 +1,169 @@
 # Design Decisions
 
-This document records deliberate architectural choices and the reasoning behind them. The intent is to answer "why this way and not that way" for decisions that are not self-evident from reading the code.
+This file records the reasons behind the runtime's non-obvious structural
+choices. Current topology and ownership are documented separately in
+[Architecture](architecture.md) and
+[Ownership and Invariants](ownership_invariants.md).
 
-## SPSC Queues Between Every Stage
+## Bounded SPSC queues between owners
 
-Each stage boundary uses a single-producer single-consumer lock-free queue rather than a mutex-protected shared queue or a general-purpose MPSC queue.
+Each steady-state queue has exactly one producer and one consumer. This keeps
+hot-path synchronization to the acquire/release publication boundary and makes
+ownership visible in the composition root.
 
-The SPSC constraint is strict: exactly one thread writes and one thread reads each queue during steady-state operation. Given that invariant, SPSC queues require no compare-and-swap, no contention, and no memory barriers beyond the acquire/release pair at head and tail. A mutex adds at minimum a kernel syscall on contention and a cache-line ownership transfer on every acquire. A general-purpose concurrent queue adds overhead even when there is provably only one producer and one consumer.
+When several producers need to reach one consumer, PredEx uses one SPSC per
+producer and consumer-side fan-in. Examples are shard-to-strategy, shard-to-
+control, shard-to-logger, and the independent REST/private-feed event queues
+consumed by OMS.
 
-The queue topology in `ownership_invariants.md` is designed so the SPSC invariant is always satisfied everywhere. The OMS transport path is designed to support two producers (the OMS Gateway thread and a future private-WS worker thread) feeding `KalshiToOmsEvent` back to the OMS coordinator. Rather than share one queue and break the SPSC invariant — which would introduce a data race on `tail_` — these are split into two distinct queues: `oms_rest_event_queue` (written only by the Gateway thread) and `ws_event_queue` (reserved for the private-WS worker). `ExecutionTransport::try_pop_event()` checks `ws_event_queue` first then round-robins across REST event queues, so neither starves the other when both are live. Today `ws_event_queue` is `nullptr` and only the REST path is wired, but the topology is already correct for the eventual second producer — adding it doesn't require a queue redesign.
+The trade-off is more explicit wiring. That is intentional: adding a second
+producer to an existing queue should be a topology change that cannot hide
+inside a convenience API.
 
-The same principle drives the recycle topology: rather than have logger, router, and each shard share one recycle queue (which would make it MPSC and require CAS or locks), each producer owns its own SPSC and the IO thread fans them in via round-robin. See [[feedback_spsc_producers]] for the rule: never add a second producer to an existing SPSC.
+## A separate router thread
 
-## Router as a Separate Thread
+The wire session already must parse envelope metadata for sequence integrity
+and market attribution. The router still owns downstream fan-out, barrier
+ordering, and shard backpressure so the wire session does not know every shard
+queue or their delivery state.
 
-`IOWriter` could own SPSC queues to each shard directly and dispatch frames without a Router thread in the middle. That would remove one thread hop and one queue.
+Routing after the wire boundary is numeric. Ticker lookup is performed once,
+then the handle carries shard/event/market indices. This keeps the single
+router's work bounded and leaves full payload parsing parallelized across
+shards.
 
-The Router stage exists to keep the IO thread as lean as possible. The IO thread's only job is to drain the websocket as fast as the network delivers frames. Putting registry lookup, minimal JSON classification, and sequence checking on the IO thread adds variable-cost work to the most latency-sensitive stage in the pipeline. Any stall on the IO thread directly delays frame receipt.
+## Observe sequence before filtering
 
-The Router absorbs that classification work without touching the receive path. It can stall on a registry miss or a JSON parse without affecting when the next frame comes off the wire.
+Kalshi sequence numbers belong to a websocket subscription SID, not to an
+individual configured market. Filtering an unknown lifecycle market before
+sequence observation would create an artificial hole in the locally observed
+subscription.
 
-A secondary reason: without a Router, `IOWriter` would need direct access to `MarketRegistry`, all shard input queues, and the logger queue simultaneously. The Router contains that coupling. `IOWriter` knows only about the frame pool and one outbound queue.
+The wire session therefore parses SID/sequence/type/market envelope metadata,
+updates sequence state, and only then filters markets outside the active
+universe. Telemetry distinguishes intentional filtering from delivery loss.
 
-## simdjson On-Demand at the Router, Full Parse at the Shard
+## Recovery scope follows the known loss scope
 
-The primary reason for deferring full parsing to shards is parallelism. The Router is a single thread. If it did full deserialization, it would parse one frame at a time regardless of how many shards exist downstream. By doing only the minimum classification work at the Router and deferring full parse to shards, N shard threads parse N frames in parallel. In the wall-clock time the Router would spend fully parsing one frame, N shards can each be fully parsing their own frame simultaneously.
+A SID order-book sequence gap cannot identify which market was omitted, so it
+invalidates every book on that subscription. A queue or pool loss after route
+resolution identifies one affected market and uses a market-local barrier.
 
-The Router therefore does the minimum work needed to make a routing decision: extract the market ticker, session and sequence identifiers, and a coarse event type. simdjson's on-demand API stops parsing as soon as the query is satisfied, which keeps the Router's per-frame cost as low as possible so it can hand off to shards quickly and move to the next frame.
+Collapsing these into one generic “desync” either leaves suspect books usable or
+causes unnecessary global resets. Separate barrier types preserve the evidence
+available at the detection point.
 
-A secondary benefit: keeping full parse out of the Router avoids coupling the routing stage to the complete Kalshi event schema. The Router only needs to know enough to classify and dispatch. Schema changes in the full event payload don't touch the Router.
+## Snapshot replacement, not delta patching
 
-## Zero-Copy Frame Pool
+Once a book becomes unusable, further deltas are not safe inputs. The shard
+ignores them until a correlated fresh snapshot arrives. Snapshot application
+constructs and validates replacement state before committing it to the live
+market.
 
-Inbound websocket payloads are copied exactly once: from the websocket receive buffer into a pre-allocated slot in the frame pool. No downstream stage copies the payload again. Router, shard, and logger all read from the same pool slot through a `FrameHandle`.
+Recovery uses Kalshi's `get_snapshot` subscription action because it obtains a
+fresh book without changing the existing delta subscription or its SID.
 
-The alternative is heap-allocating a buffer per message and passing ownership downstream. That model allocates and frees on every message, which adds allocator pressure and latency spikes proportional to message rate.
+## Fixed-capacity frame pool
 
-The frame pool pre-allocates all slots at startup. A generation counter on each slot prevents use-after-recycle without requiring locks. Pool capacity is a configured bound on how many frames can be in-flight simultaneously. If the logger falls behind, the pool exhausts and `IOWriter` drops incoming frames rather than growing unbounded — a deliberate backpressure decision that keeps memory bounded at the cost of data loss under sustained overload.
+Inbound payloads are copied once into a preallocated frame slot. Router, shard,
+and logger pass a generation-stamped handle instead of allocating/copying the
+JSON at every boundary.
 
-## Shard Affinity Key
+The pool bounds memory and allocator jitter, but exhaustion means a frame was
+lost. Capacity is therefore accompanied by an integrity protocol: loss of a
+book-affecting frame invalidates that book and triggers snapshot recovery.
+Increasing capacity handles expected bursts; it does not weaken the loss
+contract.
 
-The `affinity_key` in each `MarketRouteConfig` controls which shard a market's frames land on. It is an explicit config field rather than a value derived automatically from the market ticker hash.
+## Event affinity and shard-local books
 
-The separation exists to allow co-location of related markets on the same shard. Kalshi event groups — where multiple sub-markets represent different strike levels of the same underlying outcome — should land on the same shard so a strategy can observe the full probability space of the event without cross-shard coordination. If affinity were derived per market ticker, related sub-markets could scatter across shards with no mechanism to group them.
+All markets belonging to one event share a stable affinity key and land on the
+same shard. Event-level topology and monotonic comparisons can then be computed
+against one coherent owner without locks or cross-shard reads.
 
-The intended invariant: all sub-markets of the same Kalshi event share an affinity key derived from the event ticker. The Python discovery tooling (`stable_affinity_key`) derives this from the event ticker so all markets in an event hash to the same key. Shard assignment is `affinity_key % shard_count`.
+The Python discovery layer derives stable event, market, and affinity identity.
+The runtime still validates every stamped handle against the installed
+universe before mutation.
 
-## Soft vs. Hard Halt
+## Publish strategy observations by value
 
-The halt mechanism uses two distinct levels (`HaltMode::kSoft` and `HaltMode::kHard`) rather than a single boolean kill switch.
+Strategy runs on a separate thread and never reads a shard's mutable event
+store. Shards publish bounded immutable observations carrying event revision
+and timestamps. Explicit event/shard-unavailable messages revoke cached state.
 
-A single kill switch that immediately cancels all open orders would be harmful for strategies that hold complementary positions to settlement. For example, `MonotonicArbStrategy` may hold two opposite-side legs that are individually loss-making but net profitable at settlement. Canceling both legs on a drawdown threshold would crystallize the loss rather than letting the arb settle.
+This adds one value-copy boundary, but avoids locks and prevents strategy from
+observing a half-applied event revision.
 
-`kSoft` halt is designed for the drawdown circuit breaker: block new submissions but leave existing orders alive to fill or settle. The breaker condition (`session_net_ticks_ < -max_session_loss_ticks_`) and the per-fill P&L accumulation aren't yet implemented; today `request_soft_halt()` exists but has no caller. The mechanism is in place for the long-range strategy landing.
+## One OMS writer
 
-`kHard` halt is designed for controlled shutdown via `App::stop()`: block new submissions and cancel all live orders before the process terminates. The mode flag is wired (and prevents new submissions during the shutdown drain) but the cancel-all sweep on the OMS thread is **not yet implemented** — `hard_halt_cancel_triggered_` reserves the trigger but no code path in `pump()` enqueues `CancelOrderCmd` for live orders on hard halt. Today's monotonic-arb runs leave no resting orders, so the gap is silent; it must close before any long-range strategy ships.
+REST acknowledgements, private websocket fills, reconciliation snapshots, and
+strategy intents can race in wall-clock time. They enter OMS through separate
+SPSC queues, but only the OMS thread mutates order/group/portfolio state.
 
-`halt_mode_` is an `std::atomic<uint8_t>` so `is_halted()` is safe to query from the health-dump path without acquiring a lock.
+This centralizes identifier correlation, fill deduplication, capital
+reservation, and group repair without placing locks on every order record.
 
-## Startup Reconciliation Policy
+## Local all-or-none groups plus repair
 
-Strategy lifetimes drive how the system should treat venue state across session boundaries:
+Kalshi batch submission does not make multi-order fills atomic. PredEx uses
+`kALL_OR_NONE` to mean all legs pass OMS admission and are submitted as one
+batch. Venue outcomes can still be partial.
 
-- **Session-contained strategies** (today's monotonic arb, future hard CDF arb): trades resolve within the session, IOC-only, no resting orders by design. Config can be regenerated freely.
-- **Long-range strategies** (future MM, soft-monotonic): orders are expected to rest across sessions. Config stays static for long-range markets; only the session-contained universe regenerates.
+OMS therefore models the group independently from its orders, tracks residual
+exposure, cancels remaining legs, and issues bounded reduce-only repair orders
+when necessary. An incomplete group is an execution incident, never silently
+reported as a completed arbitrage.
 
-Rather than picking a single startup behavior that suits both, the OMS exposes `oms_transport.startup_open_orders_policy` with four named modes (`ignore`, `refuse_if_present`, `cancel_all`, `adopt`). The operator selects what to do with prior-session orders based on which mode they're running this session — see [[project_operational_modes]] for the framing.
+## Reconciled venue capital and strategy allocation are distinct
 
-The default is **`refuse_if_present`**, which is consistent with the rest of the safe-by-default surface (`oms_transport.enabled=false`, `local_risk.trading_enabled=false`): if any open order is found at the venue at startup, abort and surface every order to the operator. Three reasons this is the right default:
+Venue available balance is account-wide external truth. Strategy allocation is
+an internal risk budget. OMS requires both constraints to pass and retains a
+configurable venue safety reserve.
 
-1. **Preserves the kill-switch invariant.** Every order that exists at the venue must be in `OrderStore` or not exist at all when the live loop begins. Refusing to start is the cheapest way to enforce that without trying to infer per-order intent from a REST snapshot.
-2. **Surfaces config drift.** A venue order whose market isn't in the current config means either the config is wrong for this session or there's a config-generation bug. Both deserve an abort, not a silent reconciliation.
-3. **Operational reality today.** Monotonic arb is IOC-only, so the abort branch never fires in practice. The strictness costs nothing while the system is session-loop-only, and the gate is already in place when long-range strategies start needing it.
+Mixing them into one number would let local accounting overwrite a newer venue
+snapshot or let unrelated account activity escape the strategy limit.
 
-The `adopt` mode (seed prior-session orders into `OrderStore` via `Oms::seed_reconciled_order`) is scaffolded — the enum value is selectable, but selecting it aborts with a deferral message. The reason it's deferred rather than implemented: the `OpenOrderSnapshot → OrderState` mapping requires per-order `IntentContext` (strategy id, shard id, event id) that **cannot be recovered from a Kalshi REST snapshot alone**. Closing the gap requires either persisting `OrderStore` across sessions or encoding a strategy hint into `client_order_id`, both of which are bigger plumbing changes that should land alongside the first long-range strategy that actually needs them. Until then, attempting to adopt would mean populating context with placeholders and pretending we know the strategy provenance — which is exactly the kind of "shadow state" the project avoids.
+## Monotonic time for latency
 
-The escape hatch from "the operator can't restart cleanly because of the strict policy" is intended to be an out-of-band reconcile CLI (`predex-reconcile` or `trader_app --reconcile-only`), not a more permissive runtime mode. Strictness in the live loop plus tooling for operator recovery, rather than lenience in the live loop.
+Latency spans use `std::chrono::steady_clock`. A realtime/wall clock can jump
+because of NTP or manual correction and is therefore unsuitable for duration
+measurement.
 
-## OMS Coordinator as a Single Writer
+Steady timestamps are process-local. Correlation across machines or with
+exchange timestamps requires a separate wall-clock field and clock-quality
+model; it must not reuse these duration stamps.
 
-All order state mutations — insert, apply lifecycle, erase — go through the OMS coordinator thread. `OrderStore` and `GlobalRisk` have no internal synchronization because they are single-writer by design.
+## Tunable idle polling
 
-The alternative (locking `OrderStore` so multiple threads can update it) would add contention on every fill event and every new order, which are already the latency-critical events the OMS is designed to process efficiently.
+Always spinning minimizes wake-up latency but consumed entire cores and drove
+development hardware to its thermal limit during long harvest sessions.
 
-The consequence is that shard threads cannot read order state directly. They receive decisions and lifecycle events through queue messages. This is acceptable because shards only need to know: was my intent accepted, and what is my current filled position? Both arrive via `oms_to_shard_decision_queue` and `oms_to_shard_lifecycle_queue`.
+The runtime therefore supports two policies:
+
+- `low_latency` keeps critical loops aggressive for short live sessions;
+- `harvest` transitions from spin to yield to bounded sleep when idle.
+
+The message-processing code is the same in both modes. Polling policy changes
+latency/power behavior, not correctness or queue semantics.
+
+## Per-config operator sockets
+
+A process-global default socket cannot distinguish concurrent PredEx instances.
+Generated file-backed configs receive a deterministic socket path and the
+server takes a sibling lock before binding. Starting a second process with the
+same config fails instead of stealing the operator endpoint.
+
+`scripts/ops/predex-use` makes repeated terminal commands convenient by exporting
+the config's socket path. `--socket` remains the explicit override for scripts
+that require maximum targeting clarity.
+
+## Keep local research outside the distributed runtime
+
+The production target does not link the historical replay/controller stack.
+The public repository provides tape materialization as an input boundary, while
+experimental simulation, counterfactual branching, models, and frozen cohorts
+remain in a local research workspace. CMake can opt into that tree explicitly
+when it is present, but the distributed build never requires it.
+
+This preserves a hard promotion boundary: deterministic or predictive research
+success does not silently add a model to the live dependency graph.

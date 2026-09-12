@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.24)
-
 project(predex_cpp LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -8,130 +7,130 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 
+option(
+  PREDEX_BUILD_LOCAL_RESEARCH
+  "Build the local research tree, which is intentionally not distributed"
+  OFF
+)
+
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 find_package(OpenSSL REQUIRED)
-find_package(Threads REQUIRED)
+find_package(GTest CONFIG REQUIRED)
+find_package(CURL REQUIRED)
 
-add_library(
-  predex_websocket
-  src/websocket/client.cpp
-  src/websocket/session.cpp
-  src/websocket/kalshi/auth_signer.cpp
-  src/websocket/kalshi/ws_adapter.cpp
-  src/oms/gateway/async_rest_connection.cpp
-  src/oms/transport/persistent_http_session.cpp
-  src/oms/transport/kalshi_rest_adapter.cpp
-  src/oms/transport/kalshi_private_ws_adapter.cpp
+add_executable(predexctl 
+  apps/predexctl/main.cpp
 )
 
-add_library(predex::websocket ALIAS predex_websocket)
-
-target_include_directories(predex_websocket PUBLIC include)
-
-target_link_libraries(
-  predex_websocket
-  PUBLIC nlohmann_json::nlohmann_json
-         Boost::system
-         OpenSSL::SSL
-         OpenSSL::Crypto
-)
-
-add_library(
-  predex_core_pipeline
-  src/audit/audit_logger.cpp
-  src/ingest/frame_pool.cpp
-  src/ingest/io_writer.cpp
-  src/oms/order_store.cpp
-  src/oms/oms.cpp
-  src/router/market_registry.cpp
-  src/router/shard_dispatch.cpp
+add_executable(predex
+  apps/predex/main.cpp
+  src/control/control_plane.cpp
+  src/operator/operator_command_handler.cpp
+  src/socket/unix_command_server.cpp
+  src/exchange/kalshi/adapters/auth_signer.cpp
+  src/exchange/kalshi/adapters/market_data_handler.cpp
+  src/exchange/kalshi/adapters/order_rest_adapter.cpp
+  src/exchange/kalshi/websocket_session.cpp
+  include/predex/ingest/kalshi/market_data/frame_pool.hpp
+  src/ingest/kalshi/market_data/wire_session.cpp
+  include/predex/router/router_types.hpp
   src/router/router.cpp
-  src/shards/book_store.cpp
-  src/shards/event_store.cpp
-  src/parsers/kalshi/parser.cpp
-  src/tape/logger.cpp
+  include/predex/shard/event.hpp
+  include/predex/shard/event_store.hpp
+  include/predex/shard/market_parser.hpp
+  include/predex/shard/shard.hpp
+  src/shard/event_store.cpp
+  src/shard/event.cpp
+  src/shard/shard.cpp
+  src/shard/market_parser.cpp
+  include/predex/shard/shard_types.hpp
+  src/config/app_config.cpp
+  src/config/universe_builder.cpp
+  include/predex/logging/market_data_logger.hpp
+  include/predex/strategy/strategy.hpp
+  include/predex/oms/oms_types.hpp
+  include/predex/oms/order_intents.hpp
+  include/predex/oms/oms.hpp
+  src/oms/oms.cpp
+  include/predex/ingest/kalshi/order_data/order_session.hpp
+  include/predex/ingest/kalshi/order_data/order_parser.hpp
+  src/ingest/kalshi/order_data/order_parser.cpp
+  src/exchange/kalshi/order_rest_session.cpp
+  src/exchange/kalshi/http2_session.cpp
+  src/ingest/kalshi/order_data/order_session.cpp
+  src/exchange/kalshi/adapters/order_data_handler.cpp
+  src/control/recovery_coordinator.cpp
+  include/predex/socket/unique_fd.hpp
+  include/predex/socket/socket_path_guard.hpp
+  include/predex/strategy/strategy_types.hpp
+  include/predex/strategy/monotonic_arb.hpp
+  src/strategy/monotonic_arb.cpp
+  src/strategy/strategy.cpp
 )
 
-add_library(predex::core_pipeline ALIAS predex_core_pipeline)
-
-target_include_directories(predex_core_pipeline PUBLIC include)
-
-target_link_libraries(
-  predex_core_pipeline
-  PUBLIC simdjson::simdjson
-         nlohmann_json::nlohmann_json
+add_executable(predex_tests
+  tests/app_config_tests.cpp
+  tests/control_plane_recovery_tests.cpp
+  tests/event_tests.cpp
+  tests/frame_pool_tests.cpp
+  tests/http2_session_tests.cpp
+  tests/idle_backoff_tests.cpp
+  tests/latency_histogram_tests.cpp
+  tests/oms_tests.cpp
+  tests/order_parser_tests.cpp
+  tests/order_rest_adapter_tests.cpp
+  tests/strategy_tests.cpp
+  tests/recovery_coordinator_tests.cpp
+  tests/router_tests.cpp
+  tests/shard_tests.cpp
+  tests/wire_sequence_tests.cpp
+  tests/wire_session_tests.cpp
+  src/control/recovery_coordinator.cpp
+  src/config/app_config.cpp
+  src/control/control_plane.cpp
+  src/router/router.cpp
+  src/ingest/kalshi/market_data/wire_session.cpp
+  src/exchange/kalshi/adapters/market_data_handler.cpp
+  src/exchange/kalshi/websocket_session.cpp
+  src/shard/event.cpp
+  src/shard/event_store.cpp
+  src/shard/market_parser.cpp
+  src/shard/shard.cpp
+  src/exchange/kalshi/adapters/auth_signer.cpp
+  src/exchange/kalshi/http2_session.cpp
+  src/oms/oms.cpp
+  src/ingest/kalshi/order_data/order_parser.cpp
+  src/exchange/kalshi/adapters/order_rest_adapter.cpp
+  src/strategy/monotonic_arb.cpp
+  src/strategy/strategy.cpp
+  tests/websocket_session_tests.cpp
 )
 
-add_library(
-  predex_app
-  src/app.cpp
-)
-
-add_library(predex::app ALIAS predex_app)
-
-target_include_directories(predex_app PUBLIC include)
-
-target_link_libraries(
-  predex_app
-  PUBLIC predex::websocket
-         predex::core_pipeline
-         Threads::Threads
-)
-
-add_executable(
-  trader_app
-  apps/common/config.cpp
-  apps/trader/main.cpp
-)
-
-target_link_libraries(
-  trader_app
-  PRIVATE predex::app
-          nlohmann_json::nlohmann_json
-)
-
-add_executable(
-  replay_app
-  apps/common/config.cpp
-  apps/replay/main.cpp
-)
-
-target_link_libraries(
-  replay_app
-  PRIVATE predex::core_pipeline
-          nlohmann_json::nlohmann_json
-)
-
-if(BUILD_TESTING)
-  add_executable(
-    parser_regression_test
-    tests/parser_regression.cpp
-  )
-
-  target_link_libraries(
-    parser_regression_test
-    PRIVATE predex::core_pipeline
-  )
-
-  add_test(
-    NAME KalshiParserRegressionTest.ReciprocatesExplicitNoDeltaPrice
-    COMMAND parser_regression_test
-  )
-
-  add_executable(
-    kalshi_rest_adapter_boundary_test
-    tests/kalshi_rest_adapter_boundary.cpp
-  )
-
-  target_link_libraries(
-    kalshi_rest_adapter_boundary_test
-    PRIVATE predex::websocket
-  )
-
-  add_test(
-    NAME KalshiRestAdapterBoundaryTest.RejectsNonCentInternalTicks
-    COMMAND kalshi_rest_adapter_boundary_test
-  )
+if(PREDEX_BUILD_LOCAL_RESEARCH)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/apps/research/CMakeLists.txt")
+    message(FATAL_ERROR "PREDEX_BUILD_LOCAL_RESEARCH requires the local cpp/apps/research tree")
+  endif()
+  add_subdirectory(apps/research)
 endif()
+
+target_include_directories(predex_tests PRIVATE include)
+target_include_directories(predexctl PRIVATE include)
+target_include_directories(predex PRIVATE include)
+target_link_libraries(predexctl PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(predex PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(predex PRIVATE simdjson::simdjson)
+target_link_libraries(predex PRIVATE Boost::system OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(predex PRIVATE CURL::libcurl)
+target_link_libraries(predex_tests PRIVATE
+  GTest::gtest
+  GTest::gtest_main
+  simdjson::simdjson
+  OpenSSL::SSL
+  OpenSSL::Crypto
+  CURL::libcurl
+  Boost::system
+  nlohmann_json::nlohmann_json
+)
+add_test(NAME predex_tests COMMAND predex_tests)

@@ -30,6 +30,7 @@ class MarketRecord:
     expected_expiration_time: str = ""
     expiration_time: str = ""
     status: str = ""
+    price_level_structure: str = "linear_cent"
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "MarketRecord":
@@ -48,6 +49,7 @@ class MarketRecord:
             expected_expiration_time=str(payload.get("expected_expiration_time", "")),
             expiration_time=str(payload.get("expiration_time", "")),
             status=str(payload.get("status", "")),
+            price_level_structure=str(payload.get("price_level_structure", "linear_cent") or "linear_cent"),
         )
 
     def primary_time_reference(self) -> str:

@@ -1,106 +1,209 @@
-#pragma once
+#pragma once 
+
 #include <cstddef>
 #include <cstdint>
-#include <simdjson.h>
-#include <string_view>
-#include <unordered_map>
-#include <atomic>
+#include <optional>
+#include <utility>
+#include <variant>
+#include <vector>
 
-#include "predex/audit/audit_types.hpp"
-#include "predex/ingest/frame_pool.hpp"
-#include "predex/router/market_registry.hpp"
-#include "predex/router/shard_dispatch.hpp"
-#include "predex/utils/spsc_queue.hpp"
+#include "predex/ingest/kalshi/market_data/frame_pool.hpp"
+#include "predex/utils/spsc.hpp"
+#include "predex/utils/latency_histogram.hpp"
+#include "predex/utils/monotonic_clock.hpp"
+#include "predex/router/router_types.hpp"
+
+namespace predex::router{
+
+    inline constexpr std::size_t kFRAMETHRESHOLD = 1000;
+
+    struct RouterQueues{
+        std::vector<utils::SPSCQueue<predex::ingest::kalshi::MarketDataPathMessage>*> router_to_shard_queues;
+        utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>* router_to_logger_queue;
+        utils::SPSCQueue<RouterToControl>* router_to_control_queue;
+        utils::SPSCQueue<predex::ingest::kalshi::FrameHandle>* last_resort_recycle_queue;
+    };
+
+    enum class RouterRouteResult : std::uint8_t{
+        kCOMPLETED,
+        kBLOCKED,
+        kFAULTED
+    };
+
+    enum class ShardEnqueueResult : std::uint8_t{
+        kENQUEUED,
+        kFULL,
+        kINVALID_TARGET
+    };
+
+    enum class BarrierDeliveryResult : std::uint8_t{
+        kDELIVERED,
+        kBLOCKED,
+        kINVALID_TARGET
+    };
 
 
-namespace predex::core::routing::kalshi {
-struct RouterTelemetry {
-    std::atomic<std::size_t> processed_frames_{0};
-    // Downstream shard AND logger queues both full — operator alert.
-    std::atomic<std::size_t> dropped_backpressure_{0};
-    // Shard queue filled, but frame was preserved by forwarding it to logger.
-    std::atomic<std::size_t> shard_backpressure_to_logger_{0};
-    // Lifecycle messages for tickers not in our registry — expected at startup (shotgun blast).
-    std::atomic<std::size_t> dropped_unknown_ticker_lifecycle_{0};
-    // Frame pool returned nullptr (corrupt handle, gen mismatch). Should be ~0.
-    std::atomic<std::size_t> dropped_invalid_{0};
-    // Frames rejected because sequence did not advance by exactly one on the shared sid.
-    std::atomic<std::size_t> sequence_rejects_{0};
-};
-struct RouterTelemetrySnapshot {
-    std::size_t processed_frames_{0};
-    std::size_t dropped_backpressure_{0};
-    std::size_t shard_backpressure_to_logger_{0};
-    std::size_t dropped_unknown_ticker_lifecycle_{0};
-    std::size_t dropped_invalid_{0};
-    std::size_t sequence_rejects_{0};
-};
+    struct PendingMarketBarrier{
+        ingest::kalshi::MarketInvalidationBarrier barrier;
+    };
 
-enum class RouteDecision : std::uint8_t { kToShard = 1, kToLogger = 2, kDrop = 3 };
-class Router {
-  public:
-    explicit Router(
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& ingress_queue,
-        predex::core::ingest::kalshi::FramePool& frame_pool,
-        const predex::core::routing::kalshi::MarketRegistry& market_registry,
-        predex::core::routing::kalshi::ShardDispatch& shard_dispatch,
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& logger_queue,
-        predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue,
-        predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>& recycle_queue,
-        bool enforce_sequence = true) noexcept;
+    struct PendingSubscriptionBarrier{
+        ingest::kalshi::OrderBookSubscriptionInvalidationBarrier barrier;
+        std::size_t next_shard_idx{};
+    };
 
-    [[nodiscard]] std::size_t pump(std::size_t max_batch_size) noexcept;
+    using PendingBarrier = std::variant<PendingMarketBarrier, PendingSubscriptionBarrier>;
 
-    [[nodiscard]] RouterTelemetrySnapshot telemetry() const noexcept { 
-        return RouterTelemetrySnapshot {
-            .processed_frames_ = telemetry_.processed_frames_.load(std::memory_order_relaxed),
-            .dropped_backpressure_ = telemetry_.dropped_backpressure_.load(std::memory_order_relaxed),
-            .shard_backpressure_to_logger_ = telemetry_.shard_backpressure_to_logger_.load(std::memory_order_relaxed),
-            .dropped_unknown_ticker_lifecycle_ = telemetry_.dropped_unknown_ticker_lifecycle_.load(std::memory_order_relaxed),
-            .dropped_invalid_ = telemetry_.dropped_invalid_.load(std::memory_order_relaxed),
-            .sequence_rejects_ = telemetry_.sequence_rejects_.load(std::memory_order_relaxed),
-        }; 
-    }
-    void reset_sequence_state() noexcept;
+    class Router{
+        public:
+            Router(RouterQueues queues): queues_(std::move(queues)){};
 
-  private:
-    predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>&
-        ingress_queue_; // IOWriter producer, Router consumer
-    predex::core::ingest::kalshi::FramePool& frame_pool_;
-    RouterTelemetry telemetry_;
-    const predex::core::routing::kalshi::MarketRegistry& market_registry_;
-    predex::core::routing::kalshi::ShardDispatch& shard_dispatch_;
-    predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>&
-        logger_queue_; // Router producer, logger consumer
-    predex::utils::SPSCQueue<predex::core::audit::AuditEvent>* audit_queue_{nullptr};
-    predex::utils::SPSCQueue<predex::core::ingest::kalshi::FrameHandle>&
-        recycle_queue_; // Router producer on drop paths
-    bool enforce_sequence_{true};
+            [[nodiscard]] RouterRouteResult route_message(const predex::ingest::kalshi::MarketDataPathMessage& message);
+            [[nodiscard]] RouterRouteResult flush_pending_barrier() noexcept;
 
-    std::unordered_map<std::uint32_t, std::uint64_t> last_seq_by_sid_; // global checker for
-                                                                       // messages
+        private:
+            [[nodiscard]] bool send_telemetry(const RouterToControl& telemetry) const noexcept{
+                if(queues_.router_to_control_queue == nullptr){
+                    return false;
+                }
+                return queues_.router_to_control_queue->try_push(RouterToControl{telemetry});
+            }
 
-    simdjson::ondemand::parser
-        parser_; // parser instance for reuse to avoid simdjson parser construction overhead
+            [[nodiscard]] bool send_subscription_recovery_fact(
+                const ingest::kalshi::OrderBookSubscriptionInvalidationBarrier& barrier) const noexcept;
 
-    [[nodiscard]] bool process_one() noexcept;
-    [[nodiscard]] RouteDecision
-    classify(predex::core::ingest::kalshi::FrameHandle& handle,
-             const predex::core::ingest::kalshi::KalshiFrame&
-                 frame) noexcept; // need to know where to send after classified or failed
-    [[nodiscard]] bool lookup_route(predex::core::ingest::kalshi::FrameHandle& handle,
-                                    std::string_view market_ticker) const noexcept;
-    [[nodiscard]] bool check_sequence(
-        const predex::core::ingest::kalshi::FrameHandle& handle,
-        std::string_view market_ticker) noexcept; // check and uses last_seq_by_sid_ to determine if
-                                                  // the message is in order, duplicate, or out of
-                                                  // order. Updates last_seq_by_sid_ if in order.
-    [[nodiscard]] bool
-    forward_to_logger(const predex::core::ingest::kalshi::FrameHandle& handle) noexcept;
-    void emit_shard_backpressure_audit(const predex::core::ingest::kalshi::FrameHandle& handle,
-                                       std::size_t shard_id) noexcept;
-    [[nodiscard]] static std::size_t compute_shard_id(std::uint16_t affinity_key,
-                                                      std::size_t shard_count) noexcept;
-    [[nodiscard]] static std::uint64_t monotonic_now_ns() noexcept;
-};
-} // namespace predex::core::routing::kalshi
+            [[nodiscard]] RouterRouteResult finish_subscription_barrier(
+                const ingest::kalshi::OrderBookSubscriptionInvalidationBarrier& barrier) noexcept;
+
+            void update_shard_queue_high_water(
+                const utils::SPSCQueue<ingest::kalshi::MarketDataPathMessage>& queue) noexcept;
+
+            [[nodiscard]] core::control::MarketDataChannelTelemetrySnapshot*
+            channel_stats(ingest::kalshi::FrameKind kind) noexcept;
+            
+            [[nodiscard]] ShardEnqueueResult try_route_to_shard(const predex::ingest::kalshi::FrameHandle& handle) noexcept{
+                if(queues_.router_to_shard_queues.empty()){
+                    return ShardEnqueueResult::kINVALID_TARGET;
+                }
+                const auto shard_id = static_cast<std::size_t>(handle.shard_index);
+                if(shard_id >= queues_.router_to_shard_queues.size() || queues_.router_to_shard_queues[shard_id] == nullptr){
+                    return ShardEnqueueResult::kINVALID_TARGET;
+                }
+                const ingest::kalshi::MarketDataPathMessage message{handle};
+                auto& queue = *queues_.router_to_shard_queues[shard_id];
+                if(!queue.try_push(message)){
+                    return ShardEnqueueResult::kFULL;
+                }
+                update_shard_queue_high_water(queue);
+                return ShardEnqueueResult::kENQUEUED;
+            }
+            
+            [[nodiscard]] bool try_route_to_logger(const predex::ingest::kalshi::FrameHandle& handle) const noexcept{
+                if(queues_.router_to_logger_queue == nullptr){
+                    return false;
+                }
+                return queues_.router_to_logger_queue->try_push(handle);
+            }
+
+            [[nodiscard]] bool try_recycle(const predex::ingest::kalshi::FrameHandle& handle) const noexcept{
+                if(queues_.last_resort_recycle_queue == nullptr){
+                    return false;
+                }
+                return queues_.last_resort_recycle_queue->try_push(handle);
+            }
+
+            [[nodiscard]] bool terminal_handoff(const predex::ingest::kalshi::FrameHandle& handle) noexcept{
+                if(try_route_to_logger(handle)){
+                    ++total_frames_to_logger_;
+                    if(auto* stats = channel_stats(handle.kind); stats != nullptr){
+                        ++stats->logger_only_frames;
+                    }
+                    return true;
+                }
+                if(try_recycle(handle)){
+                    ++total_frames_recycled_;
+                    return true;
+                }
+                report_handle_leak(handle);
+                return false;
+            }
+
+            void maybe_send_periodic_telemetry() noexcept{
+                if(telemetry_send_threshold_ == 0 ||
+                   current_frame_count_ < telemetry_send_threshold_){
+                    return;
+                }
+
+                RouterTelemetry telemetry{
+                    .total_frames_seen = total_frames_seen_,
+                    .frames_to_shards = total_frames_to_shards_,
+                    .frames_to_logger = total_frames_to_logger_,
+                    .frames_recycled = total_frames_recycled_,
+                    .market_barriers_received = market_barriers_received_,
+                    .market_barriers_delivered = market_barriers_delivered_,
+                    .subscription_barriers_received = subscription_barriers_received_,
+                    .subscription_barriers_delivered = subscription_barriers_delivered_,
+                    .barriers_deferred = barriers_deferred_,
+                    .subscription_recovery_facts_deferred =
+                        subscription_recovery_facts_deferred_,
+                    .shard_queue_depth_high_water = shard_queue_depth_high_water_,
+                    .channel_stats = channel_stats_,
+                    .wire_to_router_latency = wire_to_router_latency_,
+                    .router_service_latency = router_service_latency_,
+                };
+                (void)send_telemetry(telemetry);
+                current_frame_count_ = 0;
+            }
+
+            void report_handle_leak(const predex::ingest::kalshi::FrameHandle& handle) const noexcept{
+                RouterHandleLeak leak{
+                    .universe_version = handle.universe_version,
+                    .sid = handle.sid,
+                    .sequence = handle.sequence,
+                    .pool_index = handle.pool_index,
+                    .pool_generation = handle.pool_generation,
+                    .shard_index = handle.shard_index,
+                    .market_id = handle.market_id,
+                    .event_id = handle.event_id,
+                };
+                (void)send_telemetry(leak);
+            }
+
+            [[nodiscard]] RouterRouteResult route_frame(const predex::ingest::kalshi::FrameHandle& handle);
+
+            [[nodiscard]] RouterRouteResult begin_barrier_delivery(const predex::ingest::kalshi::MarketInvalidationBarrier& barrier) noexcept;
+            [[nodiscard]] RouterRouteResult begin_barrier_delivery(const predex::ingest::kalshi::OrderBookSubscriptionInvalidationBarrier& barrier) noexcept;
+
+            [[nodiscard]] BarrierDeliveryResult route_barrier(const predex::ingest::kalshi::MarketInvalidationBarrier& barrier) noexcept;
+            [[nodiscard]] BarrierDeliveryResult route_barrier(
+                const predex::ingest::kalshi::OrderBookSubscriptionInvalidationBarrier& barrier,
+                std::size_t& next_shard_idx) noexcept;
+
+            RouterQueues queues_;
+
+            std::optional<PendingBarrier> pending_barrier_;
+            std::optional<OrderBookSubscriptionBarrierDelivered>
+                pending_subscription_recovery_fact_;
+
+            std::uint64_t next_router_incident_id_ = 1;
+            
+            // Telemetry counters
+            std::uint64_t telemetry_send_threshold_ = kFRAMETHRESHOLD;
+            std::uint64_t current_frame_count_ = 0;
+            std::uint64_t total_frames_seen_ = 0;
+            std::uint64_t total_frames_to_shards_ = 0;
+            std::uint64_t total_frames_to_logger_ = 0;
+            std::uint64_t total_frames_recycled_ = 0;
+            std::uint64_t market_barriers_received_ = 0;
+            std::uint64_t market_barriers_delivered_ = 0;
+            std::uint64_t subscription_barriers_received_ = 0;
+            std::uint64_t subscription_barriers_delivered_ = 0;
+            std::uint64_t barriers_deferred_ = 0;
+            std::uint64_t subscription_recovery_facts_deferred_ = 0;
+            std::uint64_t shard_queue_depth_high_water_ = 0;
+            core::control::MarketDataChannelTelemetry channel_stats_{
+                core::control::make_market_data_channel_telemetry()};
+            core::control::MarketDataChannelLatency wire_to_router_latency_{};
+            core::control::MarketDataChannelLatency router_service_latency_{};
+    };
+}
